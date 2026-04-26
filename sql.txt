@@ -1,0 +1,93 @@
+-- 1. เปิดใช้งาน Extensions
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 2. สร้าง Enum Types
+CREATE TYPE user_role AS ENUM ('user', 'admin');
+CREATE TYPE pet_species AS ENUM ('Cat', 'Dog', 'Bird', 'Other');
+CREATE TYPE pet_status AS ENUM ('Searching', 'Spotted', 'Found');
+CREATE TYPE action_type AS ENUM ('Spotted', 'Caught');
+CREATE TYPE sighting_status AS ENUM ('Pending_Analysis', 'Notified_Owner', 'Confirmed', 'Closed');
+CREATE TYPE owner_decision AS ENUM ('Pending', 'Confirmed', 'Rejected');
+CREATE TYPE transaction_status AS ENUM ('Pending_Verification', 'Verified', 'Rejected');
+CREATE TYPE report_reason AS ENUM ('Spam', 'Not_a_pet', 'Inappropriate_image');
+CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Ban', 'Dismissed');
+
+-- 3. สร้างตาราง USERS
+CREATE TABLE users (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    display_name VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    role user_role DEFAULT 'user',
+    total_score INTEGER DEFAULT 0,
+    profile_image_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 4. สร้างตาราง MISSING_PETS
+CREATE TABLE missing_pets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    pet_name VARCHAR(255) NOT NULL,
+    species pet_species NOT NULL,
+    characteristics JSONB NOT NULL,
+    bounty_amount DECIMAL(12, 2) NOT NULL,
+    last_seen_location GEOGRAPHY(POINT, 4326) NOT NULL,
+    last_seen_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    image_url TEXT NOT NULL,
+    feature_vector vector(512),
+    status pet_status DEFAULT 'Searching',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 5. สร้างตาราง SIGHTINGS
+CREATE TABLE sightings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    hunter_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    sighted_location GEOGRAPHY(POINT, 4326) NOT NULL,
+    image_url TEXT NOT NULL,
+    detected_species pet_species,
+    detected_characteristics JSONB,
+    feature_vector vector(512),
+    initial_target_pet_id UUID REFERENCES missing_pets(id) ON DELETE SET NULL,
+    action_type action_type NOT NULL,
+    sighting_status sighting_status DEFAULT 'Pending_Analysis',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 6. สร้างตาราง SIGHTING_MATCHES
+CREATE TABLE sighting_matches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sighting_id UUID REFERENCES sightings(id) ON DELETE CASCADE,
+    missing_pet_id UUID REFERENCES missing_pets(id) ON DELETE CASCADE,
+    similarity_score DECIMAL(5, 4),
+    owner_status owner_decision DEFAULT 'Pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 7. สร้างตาราง BOUNTY_TRANSACTIONS
+CREATE TABLE bounty_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sighting_id UUID REFERENCES sightings(id) NOT NULL,
+    missing_pet_id UUID REFERENCES missing_pets(id) NOT NULL,
+    owner_id UUID REFERENCES users(id),
+    amount DECIMAL(12, 2) NOT NULL,
+    slip_image_url TEXT NOT NULL,
+    reference_no VARCHAR(255),
+    transfer_datetime TIMESTAMP WITH TIME ZONE,
+    score_awarded INTEGER DEFAULT 0,
+    status transaction_status DEFAULT 'Pending_Verification',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    verified_at TIMESTAMP WITH TIME ZONE,
+    verified_by UUID REFERENCES users(id)
+);
+
+-- 8. สร้างตาราง REPORTS
+CREATE TABLE reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reporter_id UUID REFERENCES users(id),
+    sighting_id UUID REFERENCES sightings(id),
+    reason report_reason NOT NULL,
+    status report_status DEFAULT 'Pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
