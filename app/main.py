@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 
-from app.routers import missing_pets,upload # อิมพอร์ต Router ใหม่
+from app.routers import missing_pets,upload,sightings # อิมพอร์ต Router ใหม่
 
 app = FastAPI(title="Petty Bounty API")
 
 # app.include_router(users.router)
 app.include_router(missing_pets.router) 
 app.include_router(upload.router)
+app.include_router(sightings.router)
 
 @app.get("/")
 def root():
