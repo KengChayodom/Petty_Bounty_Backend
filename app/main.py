@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import missing_pets,upload,sightings # อิมพอร์ต Router ใหม่
+from app.routers import missing_pets,upload,sightings
 
 app = FastAPI(title="Petty Bounty API")
 

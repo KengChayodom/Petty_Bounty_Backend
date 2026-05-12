@@ -91,3 +91,9 @@ CREATE TABLE reports (
     status report_status DEFAULT 'Pending',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+
+
+
+
+

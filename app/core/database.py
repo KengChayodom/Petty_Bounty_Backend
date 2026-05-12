@@ -8,5 +8,12 @@ load_dotenv()
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY")
 
-# สร้างตัวเชื่อมต่อ (Client) ที่ไฟล์อื่นสามารถดึงไปใช้ได้
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+_supabase_client: Client = None
+
+def get_supabase_client() -> Client:
+    global _supabase_client
+    if _supabase_client is None:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _supabase_client

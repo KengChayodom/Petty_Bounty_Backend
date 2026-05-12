@@ -1,0 +1,166 @@
+-- 1. เปิดใช้งาน Extensions
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 2. สร้าง Enum Types
+CREATE TYPE user_role AS ENUM ('user', 'admin');
+CREATE TYPE pet_species AS ENUM ('Cat', 'Dog', 'Bird', 'Other');
+CREATE TYPE pet_status AS ENUM ('Searching', 'Spotted', 'Found');
+CREATE TYPE action_type AS ENUM ('Spotted', 'Caught');
+CREATE TYPE sighting_status AS ENUM ('Pending_Analysis', 'Notified_Owner', 'Confirmed', 'Closed');
+CREATE TYPE owner_decision AS ENUM ('Pending', 'Confirmed', 'Rejected');
+CREATE TYPE transaction_status AS ENUM ('Pending_Verification', 'Verified', 'Rejected');
+CREATE TYPE report_reason AS ENUM ('Spam', 'Not_a_pet', 'Inappropriate_image');
+CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Ban', 'Dismissed');
+
+-- 3. สร้างตาราง USERS
+CREATE TABLE users (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    display_name VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    role user_role DEFAULT 'user',
+    total_score INTEGER DEFAULT 0,
+    profile_image_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 4. สร้างตาราง MISSING_PETS
+CREATE TABLE missing_pets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    pet_name VARCHAR(255) NOT NULL,
+    species pet_species NOT NULL,
+    characteristics JSONB NOT NULL,
+    bounty_amount DECIMAL(12, 2) NOT NULL,
+    last_seen_location GEOGRAPHY(POINT, 4326) NOT NULL,
+    last_seen_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    image_url TEXT NOT NULL,
+    feature_vector vector(512),
+    status pet_status DEFAULT 'Searching',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 5. สร้างตาราง SIGHTINGS
+CREATE TABLE sightings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    hunter_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    sighted_location GEOGRAPHY(POINT, 4326) NOT NULL,
+    image_url TEXT NOT NULL,
+    detected_species pet_species,
+    detected_characteristics JSONB,
+    feature_vector vector(512),
+    initial_target_pet_id UUID REFERENCES missing_pets(id) ON DELETE SET NULL,
+    action_type action_type NOT NULL,
+    sighting_status sighting_status DEFAULT 'Pending_Analysis',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 6. สร้างตาราง SIGHTING_MATCHES
+CREATE TABLE sighting_matches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sighting_id UUID REFERENCES sightings(id) ON DELETE CASCADE,
+    missing_pet_id UUID REFERENCES missing_pets(id) ON DELETE CASCADE,
+    similarity_score DECIMAL(5, 4),
+    owner_status owner_decision DEFAULT 'Pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 7. สร้างตาราง BOUNTY_TRANSACTIONS
+CREATE TABLE bounty_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sighting_id UUID REFERENCES sightings(id) NOT NULL,
+    missing_pet_id UUID REFERENCES missing_pets(id) NOT NULL,
+    owner_id UUID REFERENCES users(id),
+    amount DECIMAL(12, 2) NOT NULL,
+    slip_image_url TEXT NOT NULL,
+    reference_no VARCHAR(255),
+    transfer_datetime TIMESTAMP WITH TIME ZONE,
+    score_awarded INTEGER DEFAULT 0,
+    status transaction_status DEFAULT 'Pending_Verification',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    verified_at TIMESTAMP WITH TIME ZONE,
+    verified_by UUID REFERENCES users(id)
+);
+
+-- 8. สร้างตาราง REPORTS
+CREATE TABLE reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reporter_id UUID REFERENCES users(id),
+    sighting_id UUID REFERENCES sightings(id),
+    reason report_reason NOT NULL,
+    status report_status DEFAULT 'Pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================================
+-- INDEXES
+-- ============================================================
+
+-- 9. สร้าง HNSW Index สำหรับหาความคล้ายของภาพ (ใช้เวลาค้นหาน้อยลง 100 เท่า)
+-- หมายเหตุ: ใช้ vector_cosine_ops เพราะเราใช้ Cosine Similarity ในการเทียบ
+CREATE INDEX ON missing_pets USING hnsw (feature_vector vector_cosine_ops);
+CREATE INDEX ON sightings USING hnsw (feature_vector vector_cosine_ops);
+
+-- 10. สร้าง GIST Index สำหรับพิกัดภูมิศาสตร์ (เพื่อให้หาสัตว์ใน "รัศมี 10 กม." ได้ไวขึ้น)
+CREATE INDEX ON missing_pets USING GIST (last_seen_location);
+CREATE INDEX ON sightings USING GIST (sighted_location);
+
+-- ============================================================
+-- FUNCTIONS
+-- ============================================================
+
+-- 11. ฟังก์ชันสำหรับค้นหาสัตว์ที่คล้ายกัน พร้อมคำนวณระยะทาง
+CREATE OR REPLACE FUNCTION match_missing_pets(
+    query_embedding vector(512),   -- Vector ของรูปที่คนเจอถ่ายมา
+    search_species pet_species,    -- ชนิดสัตว์ (หมา, แมว)
+    sighting_loc GEOGRAPHY,        -- พิกัดที่เจอ
+    radius_meters FLOAT,           -- รัศมีที่ต้องการหา (เช่น 10000 = 10km)
+    match_threshold FLOAT,         -- ความแม่นยำขั้นต่ำ (เช่น 0.7)
+    match_limit INT                -- จำนวนสูงสุดที่จะดึงมาโชว์ (เช่น 5)
+) RETURNS TABLE (
+    id UUID,
+    pet_name VARCHAR,
+    similarity FLOAT,
+    distance_meters FLOAT
+) LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        mp.id,
+        mp.pet_name,
+        1 - (mp.feature_vector <=> query_embedding) AS similarity, -- คำนวณความคล้าย
+        ST_Distance(mp.last_seen_location, sighting_loc) AS distance_meters -- คำนวณระยะทาง
+    FROM
+        missing_pets mp
+    WHERE
+        mp.species = search_species
+        AND mp.status = 'Searching'
+        -- กรองระยะทาง (ใช้ ST_DWithin จะใช้ประโยชน์จาก GIST Index)
+        AND ST_DWithin(mp.last_seen_location, sighting_loc, radius_meters)
+        -- กรองความคล้ายขั้นต่ำ
+        AND 1 - (mp.feature_vector <=> query_embedding) > match_threshold
+    ORDER BY
+        mp.feature_vector <=> query_embedding -- เรียงจากคล้ายมากไปน้อย
+    LIMIT match_limit;
+END;
+$$;
+
+-- ============================================================
+-- ROW LEVEL SECURITY (RLS)
+-- ============================================================
+
+-- 12. เปิดการใช้งาน RLS
+ALTER TABLE missing_pets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sightings ENABLE ROW LEVEL SECURITY;
+
+-- อนุญาตให้ทุกคน "อ่าน" ข้อมูลสัตว์ที่หายได้
+CREATE POLICY "Anyone can view searching pets" ON missing_pets
+    FOR SELECT USING (status = 'Searching');
+
+-- อนุญาตให้เฉพาะเจ้าของ (owner_id) แก้ไขข้อมูลสัตว์ตัวเองได้
+CREATE POLICY "Owners can update their own pets" ON missing_pets
+    FOR UPDATE USING (auth.uid() = owner_id);
+
+-- อนุญาตให้เฉพาะผู้ใช้ที่ Login แล้วเพิ่มข้อมูลได้
+CREATE POLICY "Authenticated users can insert pets" ON missing_pets
+    FOR INSERT WITH CHECK (auth.uid() = owner_id);

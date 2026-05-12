@@ -1,79 +1,61 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from app.schemas.sightings import SightingCreate, AnalyzeRequest
-from app.core.database import supabase
-from ultralytics import YOLO
+from app.schemas.common import StandardResponse
+from app.core.database import get_supabase_client
+from app.services.sighting_service import SightingService
+from app.services.ai_service import AIManager
 
 router = APIRouter(prefix="/sightings", tags=["Sightings"])
 
-yolo_model = YOLO("yolo11s-seg.pt")
-TARGET_ANIMALS = {"bird", "cat", "dog"} 
+def get_sighting_service(supabase = Depends(get_supabase_client)) -> SightingService:
+    
+    return SightingService(db_client=supabase, ai_manager=AIManager)
 
-@router.post("/analyze")
-async def analyze_sighting_image(request: AnalyzeRequest):
+@router.post("/analyze", response_model=StandardResponse)
+async def analyze_image(
+    request: AnalyzeRequest,
+    service: SightingService = Depends(get_sighting_service)
+):
     try:
-        detected_species = "Unknown"
-        highest_conf = 0.0
-        bounding_box = None 
-        
-        # Run YOLO prediction (Only happens here now!)
-        results = yolo_model.predict(source=request.image_url, conf=0.25)
-        
-        if len(results) > 0:
-            result = results[0]
-            
-            for box in result.boxes:
-                class_id = int(box.cls[0])
-                class_name = result.names[class_id].lower() 
-                confidence = float(box.conf[0])
-                
-                if class_name in TARGET_ANIMALS and confidence > highest_conf:
-                    detected_species = class_name.capitalize() 
-                    highest_conf = confidence
-                    bounding_box = box.xyxy[0].tolist() 
-                    
-        if detected_species == "Unknown":
-            return {
-                "status": "not_found",
-                "message": "No target animals detected in this image.",
-            }
-            
+        result = await service.analyze_sighting_image(request.image_url)
+        return StandardResponse(
+            status=result["status"],
+            message=result["message"],
+            data=result.get("data")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Analysis Error: {str(e)}")
+
+@router.post("/", response_model=StandardResponse)
+async def report_sighting(
+    sighting: SightingCreate,
+    service: SightingService = Depends(get_sighting_service)
+):
+    try:
+ 
+        data = await service.process_and_save_sighting(sighting)
+        return StandardResponse(
+            status="success", 
+            message="Sighting reported successfully.",
+            data=data
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process sighting: {str(e)}")
+    
+@router.get("/{sighting_id}/matches")
+async def get_ranking(
+    sighting_id: str, 
+    limit: int = 5,
+    service: SightingService = Depends(get_sighting_service)
+):
+    try:
+
+        matches = await service.get_matches(sighting_id, limit)
         return {
             "status": "success",
-            "message": f"AI detected a {detected_species}.",
-            "prompt_question": f"Is this a {detected_species}?", 
-            "data": {
-                "species": detected_species,
-                "confidence": round(highest_conf * 100, 2),
-                "bbox": bounding_box 
-            }
+            "matches": matches
         }
-
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-@router.post("/")
-async def report_sighting(sighting: SightingCreate):
-    try:
-        location_point = f"POINT({sighting.longitude} {sighting.latitude})"
-        
-        # Prepare data for Supabase 'sightings' table
-        # We now use the 'detected_species' directly from the frontend request!
-        data = {
-            "hunter_id": sighting.hunter_id,
-            "sighted_location": location_point,  
-            "image_url": sighting.image_url,
-            "detected_species": sighting.detected_species, # Confirmed by user
-            "action_type": "Spotted",           
-            "sighting_status": "Pending_Analysis" 
-        }
-        
-        response = supabase.table("sightings").insert(data).execute()
-
-        return {
-            "status": "success", 
-            "message": "Sighting reported successfully with user confirmation!",
-            "data": response.data
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Ranking query failed: {str(e)}")
