@@ -4,3 +4,4 @@ supabase
 python-dotenv
 python-multipart
 ultralytics
+sentence-transformers
