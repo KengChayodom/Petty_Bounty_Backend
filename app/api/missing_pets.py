@@ -45,6 +45,37 @@ async def get_nearby_missing_pets(
         raise HTTPException(status_code=500, detail=f"Failed to find nearby pets: {str(e)}")
 
 
+@router.get("/{pet_id}/sightings", response_model=StandardResponse)
+async def get_sightings_for_pet(
+    pet_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    supabase = Depends(get_supabase_client)
+):
+    """
+    Owner-facing list of sightings reported against this missing pet.
+    Includes AI-matched sightings AND any sighting whose hunter explicitly
+    tagged this pet via `initial_target_pet_id` (per product requirement).
+    Newest first.
+
+    Owner-only access check is deferred to Feature #6 (Auth).
+    """
+    try:
+        data = await PetService.get_sightings_for_pet(
+            supabase, pet_id, limit=limit, offset=offset,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(data)} sightings.",
+            data=data,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch sightings for pet: {str(e)}",
+        )
+
+
 @router.get("/{pet_id}", response_model=StandardResponse)
 async def get_missing_pet(
     pet_id: str,

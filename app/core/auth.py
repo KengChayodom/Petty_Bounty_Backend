@@ -41,3 +41,12 @@ def verify_token_optional(authorization: str = "") -> str | None:
         TEST_USER_ID (hardcoded)
     """
     return TEST_USER_ID
+
+
+def require_admin(authorization: str = "") -> str:
+    """
+    BYPASS for now — returns TEST_USER_ID. Once Feature #6 lands this should
+    load the JWT, look up `users.role`, and 403 if it isn't 'admin'. Every
+    admin endpoint already calls through here so the upgrade is one place.
+    """
+    return TEST_USER_ID
