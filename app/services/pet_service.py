@@ -172,6 +172,32 @@ class PetService:
             raise
 
     @staticmethod
+    async def get_sightings_for_pet(
+        supabase,
+        pet_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """
+        Owner-facing chronological list. Delegates to the `sightings_for_pet`
+        RPC which unions AI-matched (sighting_matches.missing_pet_id) with
+        explicitly-targeted (sightings.initial_target_pet_id) and joins the
+        hunter display name. Doing it in SQL means a single round-trip and
+        no client-side dedupe.
+        """
+        try:
+            response = supabase.rpc("sightings_for_pet", {
+                "p_pet_id":            pet_id,
+                "p_limit":             limit,
+                "p_offset":            offset,
+                "p_include_dismissed": False,  # owner never sees Dismissed reports
+            }).execute()
+            return response.data or []
+        except Exception as e:
+            logger.error("Error fetching sightings for pet %s: %s", pet_id, e)
+            raise
+
+    @staticmethod
     async def get_nearby_missing_pets(
         supabase,
         latitude: float,

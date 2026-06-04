@@ -10,7 +10,7 @@ able to override YOLO's species guess):
     POST /sightings/         →  client sends user-CONFIRMED species; server
                                   pulls the cached vector and saves
 """
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,6 +61,18 @@ class SightingCreate(BaseModel):
         description="User-confirmed species (Cat / Dog / Bird / Other). "
                     "Validator normalises to title-case.",
     )
+    action_type: Literal["Spotted", "Caught"] = Field(
+        "Spotted",
+        description="Whether the hunter only spotted the pet or actually "
+                    "caught/returned it. 'Caught' is the action that makes a "
+                    "sighting eligible to be the bounty-paying final sighting.",
+    )
+    target_pet_id: Optional[str] = Field(
+        None,
+        description="Optional UUID of the missing-pet listing the hunter was "
+                    "explicitly reporting against. Stays NULL when the hunter "
+                    "just reports a stray and lets AI matching find the pet.",
+    )
     notes: Optional[str] = Field(
         None, max_length=500,
         description="Optional free-form notes from the hunter",
@@ -83,6 +95,7 @@ class SightingCreate(BaseModel):
                 "latitude": 13.7563,
                 "longitude": 100.5018,
                 "detected_species": "Dog",
+                "action_type": "Spotted",
                 "notes": "Spotted near the park entrance",
             }
         }

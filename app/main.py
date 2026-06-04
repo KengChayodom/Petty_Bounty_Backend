@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import close_supabase_client
-from app.api import missing_pets, upload, sightings, missions
+from app.api import admin, hunters, missing_pets, missions, sightings, upload
 # 💡 นำเข้า AIManager เพื่อใช้โหลดโมเดลตอนสตาร์ทเซิร์ฟเวอร์
 from app.services.ai_service import AIManager
 
@@ -27,10 +27,11 @@ os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
     # --- Startup (ทำงานก่อนที่เซิร์ฟเวอร์จะเปิดรับ Request แรก) ---
-    print("Load Ai model")
-    AIManager.get_yolo()  # สั่งให้โหลด YOLO ทันที
-    AIManager.get_clip()  # สั่งให้โหลด CLIP ทันที
-    print("✅ Loaded AI models successfully")
+    print("Load Ai model & Warm up")
+    import asyncio
+    await asyncio.to_thread(AIManager.warmup_models)
+
+    print("Loaded and Warmed up AI models successfully")
 
     yield  # จุดนี้คือช่วงที่เซิร์ฟเวอร์รันทำงานปกติ
 
@@ -62,6 +63,8 @@ app.include_router(missing_pets.router)
 app.include_router(upload.router)
 app.include_router(sightings.router)
 app.include_router(missions.router)
+app.include_router(hunters.router)
+app.include_router(admin.router)
 
 
 @app.get("/", tags=["Root"])

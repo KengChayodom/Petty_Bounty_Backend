@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.core.auth import TEST_USER_ID
 from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
 from app.schemas.sightings import AnalyzeRequest, SightingCreate
@@ -7,9 +8,6 @@ from app.services.ai_service import AIManager
 from app.services.sighting_service import SightingService
 
 router = APIRouter(prefix="/sightings", tags=["Sightings"])
-
-# Hardcoded test user ID — bypasses auth until real auth is wired up.
-TEST_USER_ID = "024dd692-8b4a-44b7-968c-f6f3ddac3f4c"
 
 
 def get_sighting_service(
@@ -61,6 +59,33 @@ async def report_sighting(
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process sighting: {e}")
+
+
+@router.get("/me", response_model=StandardResponse)
+async def get_my_activity(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    hunter_id: str | None = Query(
+        None,
+        description="Override for the auth-bypass period — pretend to be a "
+                    "different hunter. Drop this once Feature #6 lands.",
+    ),
+    service: SightingService = Depends(get_sighting_service),
+):
+    """Bounty Hunter activity log — own sightings + matches + earned points."""
+    try:
+        data = await service.get_hunter_activity(
+            hunter_id or TEST_USER_ID, limit=limit, offset=offset,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(data['sightings'])} sightings.",
+            data=data,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve activity: {e}"
+        )
 
 
 @router.get("/{sighting_id}/matches")

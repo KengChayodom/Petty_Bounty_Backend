@@ -128,9 +128,11 @@ class SightingService:
                 "image_url": image_url,
                 "detected_species": sighting.detected_species,  # user-confirmed
                 "feature_vector": vector,
-                "action_type": "Spotted",
+                "action_type": sighting.action_type,
                 "sighting_status": "Pending_Analysis",
             }
+            if sighting.target_pet_id:
+                payload["initial_target_pet_id"] = sighting.target_pet_id
             res = self.db.table("sightings").insert(payload).execute()
             if not res.data:
                 raise ValueError("Insert failed: No data returned from Supabase")
@@ -148,6 +150,12 @@ class SightingService:
                 matches = await self.get_matches(
                     sighting_id, limit=5, threshold=0.0
                 )
+                # Persist the matched results so the owner's "sightings against
+                # my pet" list and the F1 scoring have a sighting↔pet link to
+                # read. Feature #2 requires matched results to be *logged*, not
+                # just returned once. Best-effort: a failure here must not lose
+                # the saved sighting.
+                self._persist_matches(sighting_id, matches)
             except Exception as e:
                 logger.warning(
                     "Sighting %s saved but matches failed: %s", sighting_id, e
@@ -164,6 +172,26 @@ class SightingService:
         except Exception as e:
             logger.error("Error in process_and_save_sighting: %s", e)
             raise
+
+    def _persist_matches(self, sighting_id: str, matches: list[dict]) -> None:
+        """
+        Log AI match results into sighting_matches. The match RPC returns
+        rows keyed `id` (the missing pet) and `similarity`; map them to the
+        sighting_matches columns. No-op when there are no matches.
+        """
+        if not matches:
+            return
+        rows = [
+            {
+                "sighting_id": sighting_id,
+                "missing_pet_id": m["id"],
+                "similarity_score": m.get("similarity"),
+            }
+            for m in matches
+            if m.get("id")
+        ]
+        if rows:
+            self.db.table("sighting_matches").insert(rows).execute()
 
     async def get_matches(
         self,
@@ -223,6 +251,112 @@ class SightingService:
             return row
         except Exception as e:
             logger.error("Error fetching sighting %s: %s", sighting_id, e)
+            raise
+
+    async def get_hunter_activity(
+        self, hunter_id: str, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        """
+        Activity log for a single hunter — sightings (newest first) plus,
+        per sighting, the AI match candidates and the score award (if the
+        target pet has already been resolved).
+
+        Three Supabase round-trips instead of a single big join: simpler to
+        reason about, all three tables are small per-hunter, and supabase-py
+        has no clean way to express a 3-table left-join with the embedded-
+        resource syntax that also covers the score_awards UNIQUE(pet, user)
+        relation (which is not a FK to sightings).
+        """
+        try:
+            count_res = (self.db.table("sightings")
+                                .select("id", count="exact")
+                                .eq("hunter_id", hunter_id)
+                                .execute())
+            total_count = count_res.count or 0
+
+            res = (self.db.table("sightings")
+                          .select("id, image_url, detected_species, "
+                                  "action_type, sighting_status, "
+                                  "verification_status, sighted_location, "
+                                  "initial_target_pet_id, created_at")
+                          .eq("hunter_id", hunter_id)
+                          .order("created_at", desc=True)
+                          .range(offset, offset + limit - 1)
+                          .execute())
+            sightings = res.data or []
+            if not sightings:
+                return {"sightings": [], "total_count": total_count}
+
+            sighting_ids = [s["id"] for s in sightings]
+
+            matches_res = (self.db.table("sighting_matches")
+                                  .select("sighting_id, missing_pet_id, "
+                                          "similarity_score, owner_status")
+                                  .in_("sighting_id", sighting_ids)
+                                  .execute())
+            matches_by_sighting: dict[str, list] = {}
+            for m in (matches_res.data or []):
+                matches_by_sighting.setdefault(m["sighting_id"], []).append(m)
+
+            # Index awards by the sighting that earned them — a hunter has at
+            # most one award per resolved pet, so fetching all of theirs is
+            # cheap and avoids missing awards whose link was an AI match
+            # (initial_target_pet_id NULL) rather than an explicit target.
+            awards_res = (self.db.table("score_awards")
+                                 .select("sighting_id, missing_pet_id, "
+                                         "points, rank, awarded_at")
+                                 .eq("user_id", hunter_id)
+                                 .execute())
+            awards_by_sighting: dict[str, dict] = {
+                a["sighting_id"]: a
+                for a in (awards_res.data or [])
+                if a.get("sighting_id")
+            }
+
+            for s in sightings:
+                s["matches"] = matches_by_sighting.get(s["id"], [])
+                s["score_award"] = awards_by_sighting.get(s["id"])
+
+            return {"sightings": sightings, "total_count": total_count}
+
+        except Exception as e:
+            logger.error("Error fetching activity for hunter %s: %s",
+                         hunter_id, e)
+            raise
+
+    async def get_hunter_stats(self, hunter_id: str) -> dict:
+        """Cumulative stats card for the hunter profile screen."""
+        try:
+            user_res = (self.db.table("users")
+                               .select("total_score")
+                               .eq("id", hunter_id)
+                               .execute())
+            total_score = (user_res.data[0]["total_score"]
+                           if user_res.data else 0)
+
+            submitted_res = (self.db.table("sightings")
+                                    .select("id", count="exact")
+                                    .eq("hunter_id", hunter_id)
+                                    .execute())
+            verified_res = (self.db.table("sightings")
+                                   .select("id", count="exact")
+                                   .eq("hunter_id", hunter_id)
+                                   .eq("verification_status", "Verified")
+                                   .execute())
+            contributions_res = (self.db.table("score_awards")
+                                        .select("missing_pet_id", count="exact")
+                                        .eq("user_id", hunter_id)
+                                        .execute())
+
+            return {
+                "total_score": total_score,
+                "sightings_submitted": submitted_res.count or 0,
+                "sightings_verified": verified_res.count or 0,
+                "resolutions_contributed_to": contributions_res.count or 0,
+            }
+        except Exception as e:
+            logger.error("Error fetching stats for hunter %s: %s",
+                         hunter_id, e)
             raise
 
     async def update_sighting_status(

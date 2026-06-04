@@ -159,3 +159,28 @@ class AIManager:
         model = cls.get_clip()
         vector = await asyncio.to_thread(model.encode, image)
         return vector.tolist()
+
+    @classmethod
+    def warmup_models(cls):
+        """
+        Warm up YOLO and CLIP models by forcing an initial inference pass.
+        This triggers PyTorch internal lazy loading during application startup.
+        """
+        logger.info("Starting AI models warm-up pass...")
+        try:
+            # 1. สร้างรูปภาพสีดำเปล่าๆ ขนาด 224x224 (ขนาดมาตรฐานที่โมเดลใช้ประมวลผล)
+            blank_image = Image.fromarray(np.zeros((224, 224, 3), dtype=np.uint8))
+
+            # 2. หลอกรัน YOLO 1 ครั้ง
+            yolo_model = cls.get_yolo()
+            yolo_model.predict(source=blank_image, conf=0.25, verbose=False)
+            logger.info("  YOLO model warm-up complete.")
+
+            # 3. หลอกรัน CLIP 1 ครั้ง (จุดนี้แหละที่จะทำลายกำแพง 4 วินาทีทิ้งไป)
+            clip_model = cls.get_clip()
+            clip_model.encode(blank_image)
+            logger.info("  CLIP model warm-up complete.")
+
+            logger.info("All AI models warmed up successfully!")
+        except Exception as e:
+            logger.error("Failed to warm up AI models: %s", e)
