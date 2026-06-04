@@ -3,6 +3,7 @@ Petty Bounty FastAPI Application.
 
 This is the main entry point for the FastAPI backend.
 """
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -11,9 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import close_supabase_client
-from app.api import admin, hunters, missing_pets, missions, sightings, upload
+from app.api import admin, auth, hunters, missing_pets, missions, sightings, upload
 # 💡 นำเข้า AIManager เพื่อใช้โหลดโมเดลตอนสตาร์ทเซิร์ฟเวอร์
 from app.services.ai_service import AIManager
+
+logger = logging.getLogger(__name__)
 
 
 # Pin OMP/MKL thread count to the host's CPU count BEFORE torch / onnxruntime
@@ -27,6 +30,18 @@ os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
     # --- Startup (ทำงานก่อนที่เซิร์ฟเวอร์จะเปิดรับ Request แรก) ---
+    if settings.ENABLE_UNAUTHED_ADMIN:
+        logger.warning(
+            "ENABLE_UNAUTHED_ADMIN=true — /admin/* endpoints are open with "
+            "NO authentication. Acceptable for local dev only. Disable "
+            "before any shared or public deploy."
+        )
+    else:
+        logger.info(
+            "Admin endpoints gated: require_admin will 503 until "
+            "ENABLE_UNAUTHED_ADMIN=true or Feature #6 ships real auth."
+        )
+
     print("Load Ai model & Warm up")
     import asyncio
     await asyncio.to_thread(AIManager.warmup_models)
@@ -59,6 +74,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router)
 app.include_router(missing_pets.router)
 app.include_router(upload.router)
 app.include_router(sightings.router)

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.auth import TEST_USER_ID
+from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
 from app.schemas.sightings import AnalyzeRequest, SightingCreate
@@ -40,6 +40,7 @@ async def analyze_image(
 async def report_sighting(
     sighting: SightingCreate,
     service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Hot step. Pulls the cached feature vector, INSERTs the sighting with
@@ -47,7 +48,8 @@ async def report_sighting(
     pgvector match RPC. Returns {sighting, matches} so the client doesn't
     need a separate /matches call.
     """
-    sighting.hunter_id = TEST_USER_ID
+    # Identity comes from the verified JWT, never from the request body.
+    sighting.hunter_id = user_id
     try:
         result = await service.process_and_save_sighting(sighting)
         return StandardResponse(
@@ -65,17 +67,13 @@ async def report_sighting(
 async def get_my_activity(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    hunter_id: str | None = Query(
-        None,
-        description="Override for the auth-bypass period — pretend to be a "
-                    "different hunter. Drop this once Feature #6 lands.",
-    ),
     service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Bounty Hunter activity log — own sightings + matches + earned points."""
     try:
         data = await service.get_hunter_activity(
-            hunter_id or TEST_USER_ID, limit=limit, offset=offset,
+            user_id, limit=limit, offset=offset,
         )
         return StandardResponse(
             status="success",
