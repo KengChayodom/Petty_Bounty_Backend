@@ -22,9 +22,10 @@ class MissingPetCreate(BaseModel):
     for similarity matching.
     """
 
-    owner_id: str = Field(
-        ...,
-        description="ID of the pet owner"
+    owner_id: str | None = Field(
+        None,
+        description="Set server-side from the authenticated user's JWT; "
+                    "any value sent by the client is ignored.",
     )
     pet_name: str = Field(
         ...,

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional
 from app.schemas.common import StandardResponse
+from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from datetime import datetime
 
@@ -10,7 +11,8 @@ router = APIRouter(prefix="/missions", tags=["Missions"])
 @router.post("/accept/{sighting_id}", response_model=StandardResponse)
 async def accept_mission(
     sighting_id: str,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
     try:
         # Fetch the sighting first
@@ -46,7 +48,7 @@ async def accept_mission(
 
         # Create activity log entry
         activity_data = {
-            "user_id": "024dd692-8b4a-44b7-968c-f6f3ddac3f4c",  # Test user ID
+            "user_id": user_id,
             "sighting_id": sighting_id,
             "action_type": "Mission_Accepted",
             "metadata": {
@@ -74,14 +76,14 @@ async def accept_mission(
 
 @router.get("/active", response_model=StandardResponse)
 async def get_active_missions(
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
     try:
-        # Get sightings with status Confirmed for test user
-        test_user_id = "024dd692-8b4a-44b7-968c-f6f3ddac3f4c"
+        # Confirmed sightings for the authenticated hunter.
         response = supabase.table("sightings")\
             .select("*")\
-            .eq("hunter_id", test_user_id)\
+            .eq("hunter_id", user_id)\
             .eq("sighting_status", "Confirmed")\
             .order("created_at", desc=True)\
             .execute()
@@ -101,10 +103,9 @@ async def update_mission_status(
     sighting_id: str,
     status: str,
     notes: Optional[str] = None,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
-    test_user_id = "024dd692-8b4a-44b7-968c-f6f3ddac3f4c"
-
     valid_statuses = ["Confirmed", "Closed"]
 
     if status not in valid_statuses:
@@ -126,7 +127,7 @@ async def update_mission_status(
         response = supabase.table("sightings")\
             .update(update_data)\
             .eq("id", sighting_id)\
-            .eq("hunter_id", test_user_id)\
+            .eq("hunter_id", user_id)\
             .execute()
 
         if not response.data:
@@ -150,14 +151,13 @@ async def update_mission_status(
 @router.get("/history", response_model=StandardResponse)
 async def get_mission_history(
     limit: int = 20,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
-    test_user_id = "024dd692-8b4a-44b7-968c-f6f3ddac3f4c"
-
     try:
         response = supabase.table("sightings")\
             .select("*")\
-            .eq("hunter_id", test_user_id)\
+            .eq("hunter_id", user_id)\
             .order("created_at", desc=True)\
             .limit(limit)\
             .execute()

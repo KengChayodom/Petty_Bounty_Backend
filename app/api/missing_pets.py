@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from app.schemas.missing_pets import MissingPetCreate, MissingPetUpdate
 from app.schemas.common import StandardResponse
 from app.services.pet_service import PetService
+from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 
 router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
@@ -10,9 +11,12 @@ router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
 @router.post("/", response_model=StandardResponse)
 async def create_missing_pet(
     pet: MissingPetCreate,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
     try:
+        # Owner identity comes from the verified JWT, not the request body.
+        pet.owner_id = user_id
         data = await PetService.register_missing_pet(supabase, pet)
         return StandardResponse(
             status="success",

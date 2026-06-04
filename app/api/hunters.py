@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.core.auth import TEST_USER_ID
+from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
 from app.services.ai_service import AIManager
@@ -17,16 +17,12 @@ def get_sighting_service(
 
 @router.get("/me/score", response_model=StandardResponse)
 async def get_my_score(
-    hunter_id: str | None = Query(
-        None,
-        description="Override for the auth-bypass period. Remove once "
-                    "Feature #6 lands and the JWT identifies the caller.",
-    ),
     service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Cumulative scoring + activity stats for the current Bounty Hunter."""
     try:
-        stats = await service.get_hunter_stats(hunter_id or TEST_USER_ID)
+        stats = await service.get_hunter_stats(user_id)
         return StandardResponse(
             status="success",
             message="Hunter stats retrieved successfully.",

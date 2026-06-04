@@ -26,6 +26,23 @@ class Settings:
     PROJECT_NAME: str = "Petty Bounty API"
     VERSION: str = "1.0.0"
 
+    # Admin bypass — must be explicitly opted into per-environment. When False
+    # (the default), `require_admin` short-circuits to 503 instead of returning
+    # TEST_USER_ID, so a deploy without real auth (Feature #6) cannot expose
+    # the bounty-payout endpoints.
+    ENABLE_UNAUTHED_ADMIN: bool = os.getenv(
+        "ENABLE_UNAUTHED_ADMIN", "false"
+    ).lower() in ("1", "true", "yes")
+
+    # Auth dev escape hatch — when True, requests with a missing or invalid
+    # bearer token fall back to the hardcoded TEST_USER_ID instead of being
+    # rejected with 401. Keeps the existing CLI smoke scripts and pytest suite
+    # working without a real Supabase session. MUST stay False (the default)
+    # in any shared or public deploy.
+    AUTH_DEV_BYPASS: bool = os.getenv(
+        "AUTH_DEV_BYPASS", "false"
+    ).lower() in ("1", "true", "yes")
+
     def __init__(self):
         """Validate required settings on initialization."""
         if not self.SUPABASE_URL:

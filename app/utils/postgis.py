@@ -42,8 +42,14 @@ def create_postgis_point_from_dict(coords: dict) -> str:
         KeyError: If required keys are missing
         ValueError: If coordinates are out of valid range
     """
-    latitude = coords.get('latitude') or coords.get('lat')
-    longitude = coords.get('longitude') or coords.get('lng')
+    # Use explicit None checks, not `a or b`: a 0.0 coordinate (equator /
+    # prime meridian) is falsy and would otherwise be treated as missing.
+    latitude = coords.get('latitude')
+    if latitude is None:
+        latitude = coords.get('lat')
+    longitude = coords.get('longitude')
+    if longitude is None:
+        longitude = coords.get('lng')
 
     if latitude is None:
         raise KeyError("latitude or lat key required")

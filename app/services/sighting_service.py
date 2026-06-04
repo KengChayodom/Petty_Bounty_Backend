@@ -146,21 +146,31 @@ class SightingService:
             # Bundle matches in the same response — saves Flutter a round-trip.
             # If the RPC fails the row is still saved; client can re-query
             # via GET /sightings/{id}/matches.
+            matches: list[dict] = []
             try:
                 matches = await self.get_matches(
                     sighting_id, limit=5, threshold=0.0
                 )
-                # Persist the matched results so the owner's "sightings against
-                # my pet" list and the F1 scoring have a sighting↔pet link to
-                # read. Feature #2 requires matched results to be *logged*, not
-                # just returned once. Best-effort: a failure here must not lose
-                # the saved sighting.
-                self._persist_matches(sighting_id, matches)
             except Exception as e:
                 logger.warning(
-                    "Sighting %s saved but matches failed: %s", sighting_id, e
+                    "Sighting %s saved but match RPC failed: %s",
+                    sighting_id, e,
                 )
-                matches = []
+
+            # Persist match results into sighting_matches so the owner timeline
+            # and F1 scoring have a sighting↔pet link to read. Wrapped in its
+            # own try/except: a persist failure must NOT clobber the matches
+            # we already fetched — the client still gets the verify-screen
+            # data, and the sighting row itself remains saved.
+            if matches:
+                try:
+                    self._persist_matches(sighting_id, matches)
+                except Exception as e:
+                    logger.warning(
+                        "Sighting %s match-persist failed "
+                        "(response unaffected): %s",
+                        sighting_id, e,
+                    )
 
             # Strip the 512-D string from the response — clients don't use it
             # and it bloats payloads.
@@ -178,6 +188,10 @@ class SightingService:
         Log AI match results into sighting_matches. The match RPC returns
         rows keyed `id` (the missing pet) and `similarity`; map them to the
         sighting_matches columns. No-op when there are no matches.
+
+        Uses upsert on the (sighting_id, missing_pet_id) unique constraint so
+        a retried request — or any future re-match path — refreshes the
+        similarity_score in place instead of accumulating duplicate rows.
         """
         if not matches:
             return
@@ -191,7 +205,9 @@ class SightingService:
             if m.get("id")
         ]
         if rows:
-            self.db.table("sighting_matches").insert(rows).execute()
+            (self.db.table("sighting_matches")
+                    .upsert(rows, on_conflict="sighting_id,missing_pet_id")
+                    .execute())
 
     async def get_matches(
         self,
