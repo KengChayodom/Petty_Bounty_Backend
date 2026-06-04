@@ -1,0 +1,12 @@
+# Test-only dependencies (not needed by the running app).
+# Install into the test interpreter:  python -m pip install -r requirements-test.txt
+#
+# The suite runs on Python 3.10+ (the app uses PEP-604 `X | None` annotations).
+
+pytest>=8.0
+pytest-cov>=5.0
+
+# Integration layer only — a real ephemeral Postgres (pgvector + PostGIS) via
+# Docker. Requires the Docker daemon running. See tests/integration/README.md.
+testcontainers[postgres]>=4.0
+psycopg[binary]>=3.1
