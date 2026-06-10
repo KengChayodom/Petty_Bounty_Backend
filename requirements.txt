@@ -19,3 +19,6 @@ numpy>=1.26
 # In-memory analyze cache (TTL + size-bounded)
 cachetools>=5.3
 
+# FCM push notifications (SRS-FR-12) — server-side Firebase Admin SDK
+firebase-admin>=6.5
+

@@ -15,6 +15,15 @@ class Settings:
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+    # Anon (publishable) key — same one the Flutter app uses. Only needed by the
+    # DEV-ONLY auth helpers (app/api/dev_auth.py) to proxy Supabase GoTrue.
+    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
+
+    # Firebase Admin SDK — path to the service-account JSON used for FCM push
+    # (SRS-FR-12). Same load pattern as the Supabase keys, but intentionally
+    # NON-FATAL: if unset/invalid the app still boots and only FCM is disabled
+    # (see app/core/firebase.py). Never commit the JSON — load via env.
+    FIREBASE_CREDENTIALS: str = os.getenv("FIREBASE_CREDENTIALS", "")
 
     # Matching Defaults
     DEFAULT_SEARCH_RADIUS_KM: float = 10.0
@@ -41,6 +50,14 @@ class Settings:
     # in any shared or public deploy.
     AUTH_DEV_BYPASS: bool = os.getenv(
         "AUTH_DEV_BYPASS", "false"
+    ).lower() in ("1", "true", "yes")
+
+    # DEV-ONLY: when True, main.py mounts app/api/dev_auth.py (/dev/login,
+    # /dev/register) — thin proxies to Supabase GoTrue so a token can be minted
+    # from /docs without curl. When False (the default), those routes are not
+    # registered at all (404). MUST stay False/unset in any shared/public deploy.
+    ENABLE_DEV_AUTH: bool = os.getenv(
+        "ENABLE_DEV_AUTH", "false"
     ).lower() in ("1", "true", "yes")
 
     def __init__(self):

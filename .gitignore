@@ -1,3 +1,32 @@
 .env
 .env.local
 .env.*.local
+
+# Firebase Admin service-account credentials (FCM push — never commit)
+firebase-credentials*.json
+*serviceAccount*.json
+*service-account*.json
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Machine Learning / AI Models
+*.pt
+*.pth
+
+# Testing
+.coverage
+htmlcov/
+
+petty-bounty-firebase-adminsdk-*.json

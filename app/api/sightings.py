@@ -20,10 +20,14 @@ def get_sighting_service(
 async def analyze_image(
     request: AnalyzeRequest,
     service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Heavy step. Runs YOLO-seg + mask + CLIP and caches the feature vector
     so the follow-up POST /sightings/ only has to write the row.
+
+    Authenticated (Feature #6): this is the most expensive call in the app,
+    so it must not be reachable without a valid session.
     """
     try:
         result = await service.analyze_sighting_image(request.image_url)
