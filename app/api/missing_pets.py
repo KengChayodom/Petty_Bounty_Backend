@@ -1,9 +1,11 @@
 # app/api/missing_pets.py
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from app.schemas.missing_pets import MissingPetCreate, MissingPetUpdate
 from app.schemas.common import StandardResponse
 from app.services.pet_service import PetService
+from app.services.notification_service import notify_nearby_hunters
 from app.core.auth import get_current_user_id
+from app.core.config import settings
 from app.core.database import get_supabase_client
 
 router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
@@ -11,6 +13,7 @@ router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
 @router.post("/", response_model=StandardResponse)
 async def create_missing_pet(
     pet: MissingPetCreate,
+    background_tasks: BackgroundTasks,
     supabase = Depends(get_supabase_client),
     user_id: str = Depends(get_current_user_id),
 ):
@@ -18,6 +21,22 @@ async def create_missing_pet(
         # Owner identity comes from the verified JWT, not the request body.
         pet.owner_id = user_id
         data = await PetService.register_missing_pet(supabase, pet)
+
+        # Fan out a geolocation push to nearby hunters AFTER the insert, in a
+        # background task so the owner's response is never blocked (SRS-FR-12).
+        # Guarded internally by is_firebase_ready() — no-op without creds.
+        background_tasks.add_task(
+            notify_nearby_hunters,
+            supabase,
+            data["id"],
+            pet.latitude,
+            pet.longitude,
+            user_id,
+            settings.DEFAULT_SEARCH_RADIUS_KM,
+            pet.pet_name,
+            pet.species,
+        )
+
         return StandardResponse(
             status="success",
             message="Pet registered successfully.",
@@ -54,7 +73,8 @@ async def get_sightings_for_pet(
     pet_id: str,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
     """
     Owner-facing list of sightings reported against this missing pet.
@@ -62,7 +82,8 @@ async def get_sightings_for_pet(
     tagged this pet via `initial_target_pet_id` (per product requirement).
     Newest first.
 
-    Owner-only access check is deferred to Feature #6 (Auth).
+    Requires authentication (Feature #6); the sighting timeline reveals who
+    spotted a pet and where, so it is not exposed anonymously.
     """
     try:
         data = await PetService.get_sightings_for_pet(
@@ -103,7 +124,8 @@ async def get_missing_pet(
 async def update_missing_pet(
     pet_id: str,
     update: MissingPetUpdate,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
     try:
         # Build update payload with only provided fields
@@ -112,10 +134,22 @@ async def update_missing_pet(
         if not payload:
             raise HTTPException(status_code=400, detail="No fields to update")
 
-        response = supabase.table("missing_pets").update(payload).eq("id", pet_id).execute()
+        # Owner-scoped: the update only matches a row the caller owns. A pet
+        # that doesn't exist OR isn't theirs both yield no rows -> 404 (we don't
+        # leak existence of other owners' reports).
+        response = (
+            supabase.table("missing_pets")
+            .update(payload)
+            .eq("id", pet_id)
+            .eq("owner_id", user_id)
+            .execute()
+        )
 
         if not response.data:
-            raise HTTPException(status_code=404, detail=f"Missing pet {pet_id} not found")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Missing pet {pet_id} not found or not owned by you",
+            )
 
         return StandardResponse(
             status="success",

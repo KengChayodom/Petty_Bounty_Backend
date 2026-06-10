@@ -26,13 +26,24 @@ TEST_USER_ID = "024dd692-8b4a-44b7-968c-f6f3ddac3f4c"
 
 
 def _strip_bearer(authorization: str | None) -> str | None:
-    """Pull the raw JWT out of an `Authorization: Bearer <jwt>` header."""
+    """
+    Pull the raw JWT out of an `Authorization: Bearer <jwt>` header.
+
+    Returns None for anything that doesn't carry credentials — a missing header,
+    whitespace only, or a bare scheme word (`Bearer` with no token). A bare
+    token with no scheme is accepted as-is. JWTs contain no spaces, so splitting
+    on whitespace is safe.
+    """
     if not authorization:
         return None
-    token = authorization.strip()
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
-    return token or None
+    parts = authorization.split()
+    if not parts:
+        return None
+    if len(parts) >= 2 and parts[0].lower() == "bearer":
+        return parts[1] or None
+    if len(parts) == 1 and parts[0].lower() != "bearer":
+        return parts[0]
+    return None
 
 
 def _resolve_user_id(authorization: str | None) -> str | None:
@@ -103,15 +114,19 @@ def require_admin(authorization: str | None = Header(default=None)) -> str:
         )
 
     try:
+        # maybe_single() returns data=None for a missing profile row instead of
+        # raising — so "no profile" falls through to the 403 below (a missing
+        # profile is an authorization condition, not a server error). A genuine
+        # DB/transport failure still raises and surfaces as 500.
         result = (
             get_supabase_client()
             .table("users")
             .select("role")
             .eq("id", user_id)
-            .single()
+            .maybe_single()
             .execute()
         )
-        role = (result.data or {}).get("role")
+        role = (getattr(result, "data", None) or {}).get("role")
     except Exception as exc:
         logger.error("Admin role lookup failed for %s: %s", user_id, exc)
         raise HTTPException(

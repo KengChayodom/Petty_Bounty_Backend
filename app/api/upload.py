@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
 import uuid
@@ -8,7 +9,8 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 @router.post("/pet-image", response_model=StandardResponse)
 async def upload_pet_image(
     file: UploadFile = File(...),
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
     try:
         # Validate file exists

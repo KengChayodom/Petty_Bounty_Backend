@@ -12,7 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import close_supabase_client
-from app.api import admin, auth, hunters, missing_pets, missions, sightings, upload
+from app.core.firebase import init_firebase
+from app.api import admin, auth, dev_auth, devices, hunters, me, missing_pets, missions, sightings, upload
 # 💡 นำเข้า AIManager เพื่อใช้โหลดโมเดลตอนสตาร์ทเซิร์ฟเวอร์
 from app.services.ai_service import AIManager
 
@@ -41,6 +42,10 @@ async def lifespan(app: FastAPI):
             "Admin endpoints gated: require_admin will 503 until "
             "ENABLE_UNAUTHED_ADMIN=true or Feature #6 ships real auth."
         )
+
+    # Initialize Firebase Admin for FCM push (SRS-FR-12). Non-fatal: logs a
+    # warning and disables push if FIREBASE_CREDENTIALS is unset/invalid.
+    init_firebase()
 
     print("Load Ai model & Warm up")
     import asyncio
@@ -81,6 +86,18 @@ app.include_router(sightings.router)
 app.include_router(missions.router)
 app.include_router(hunters.router)
 app.include_router(admin.router)
+app.include_router(devices.router)
+app.include_router(me.router)
+
+# DEV-ONLY: mount auth convenience endpoints ONLY when explicitly enabled.
+# When the flag is off these routes are never registered (404), not just
+# disabled. Keep ENABLE_DEV_AUTH false/unset in any shared or public deploy.
+if settings.ENABLE_DEV_AUTH:
+    app.include_router(dev_auth.router)
+    logger.warning(
+        "DEV AUTH endpoints enabled (/dev/login, /dev/register) — "
+        "do not use in production."
+    )
 
 
 @app.get("/", tags=["Root"])

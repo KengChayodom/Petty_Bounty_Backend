@@ -166,10 +166,17 @@ class SightingService:
                 try:
                     self._persist_matches(sighting_id, matches)
                 except Exception as e:
-                    logger.warning(
-                        "Sighting %s match-persist failed "
-                        "(response unaffected): %s",
+                    # Swallow so we don't clobber the matches already fetched for
+                    # the verify screen — but log at ERROR, not WARNING. A silent
+                    # warning is exactly why a broken upsert (missing UNIQUE on
+                    # sighting_matches) dropped every AI match for ~10 days
+                    # unnoticed: owner timelines + F1 scoring read this table.
+                    logger.error(
+                        "Sighting %s match-persist FAILED — matches NOT written "
+                        "to sighting_matches (owner timeline + scoring will miss "
+                        "them); response unaffected: %s",
                         sighting_id, e,
+                        exc_info=True,
                     )
 
             # Strip the 512-D string from the response — clients don't use it

@@ -106,6 +106,12 @@ class PetService:
         """
         Fetch a single missing pet by ID.
 
+        Uses the get_missing_pet_by_id RPC (not select('*')) so the response
+        projects latitude/longitude out of the last_seen_location geography
+        (ST_Y/ST_X) and returns the SAME shape as get_nearby_missing_pets —
+        honouring the MissingPetResponse contract. A raw select would omit
+        lat/lng entirely and break clients that expect numeric coordinates.
+
         Args:
             supabase: Supabase client instance
             pet_id: UUID of the missing pet
@@ -114,10 +120,9 @@ class PetService:
             Missing pet record or None if not found
         """
         try:
-            response = supabase.table("missing_pets")\
-                .select("*")\
-                .eq("id", pet_id)\
-                .execute()
+            response = supabase.rpc(
+                "get_missing_pet_by_id", {"p_pet_id": pet_id}
+            ).execute()
 
             return response.data[0] if response.data else None
 
