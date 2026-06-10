@@ -1,0 +1,13 @@
+# Test-only Postgres image: pgvector + PostGIS in one container.
+#
+# The Petty_Bounty schema needs BOTH extensions — `vector(512)` cosine ops
+# (pgvector) AND GEOGRAPHY columns / ST_DWithin / ST_Distance (PostGIS). No
+# official image ships both, so we extend the pgvector image (Debian/PGDG
+# based, same as official `postgres:16`) and apt-install the PostGIS package.
+#
+# Build is driven by tests/integration/conftest.py (built once, then reused).
+FROM pgvector/pgvector:pg16
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-16-postgis-3 \
+    && rm -rf /var/lib/apt/lists/*
