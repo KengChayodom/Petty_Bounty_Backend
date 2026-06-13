@@ -91,32 +91,43 @@ class SightingService:
         """
         try:
             image_url = str(sighting.image_url)
-            cached = AnalyzeCache.get(image_url)
 
-            if cached is not None:
-                vector = cached["feature_vector"]
-                logger.warning(
-                    "Analyze-cache HIT key=%r — reusing CLIP vector", image_url
-                )
+            # Two distinct paths share this endpoint:
+            #   targeted (skip_matching): the hunter is reporting THIS specific
+            #     pet by eye — no CLIP vector, no pgvector match. The sighting
+            #     is owner-visible via the initial_target_pet_id branch of
+            #     sightings_for_pet, so it needs no sighting_matches row.
+            #   discovery (default): pull the cached vector (or re-run the
+            #     pipeline on a cache miss) and run the match RPC.
+            if sighting.skip_matching:
+                vector = None
             else:
-                logger.warning(
-                    "Analyze-cache MISS key=%r — re-running YOLO + CLIP",
-                    image_url,
-                )
-                image = await self.ai.download_image(image_url)
-                results = await self.ai.run_yolo_seg(image)
-                # Forgiving re-run: don't constrain by user-confirmed species.
-                # The user may have corrected YOLO's guess; the vector should
-                # still represent whatever animal pixels YOLO actually finds
-                # in the photo. The user's species choice is honoured at the
-                # INSERT step regardless.
-                iso = self.ai.isolate_subject(image, results)
-                if iso is None:
-                    raise ValueError(
-                        "No target animal detected in image during re-run."
+                cached = AnalyzeCache.get(image_url)
+                if cached is not None:
+                    vector = cached["feature_vector"]
+                    logger.warning(
+                        "Analyze-cache HIT key=%r — reusing CLIP vector",
+                        image_url,
                     )
-                isolated, _, _, _ = iso
-                vector = await self.ai.clip_encode(isolated)
+                else:
+                    logger.warning(
+                        "Analyze-cache MISS key=%r — re-running YOLO + CLIP",
+                        image_url,
+                    )
+                    image = await self.ai.download_image(image_url)
+                    results = await self.ai.run_yolo_seg(image)
+                    # Forgiving re-run: don't constrain by user-confirmed species.
+                    # The user may have corrected YOLO's guess; the vector should
+                    # still represent whatever animal pixels YOLO actually finds
+                    # in the photo. The user's species choice is honoured at the
+                    # INSERT step regardless.
+                    iso = self.ai.isolate_subject(image, results)
+                    if iso is None:
+                        raise ValueError(
+                            "No target animal detected in image during re-run."
+                        )
+                    isolated, _, _, _ = iso
+                    vector = await self.ai.clip_encode(isolated)
 
             # CRITICAL: detected_species is the CLIENT-supplied (user-confirmed)
             # value, NOT YOLO's cached guess. This is the entire reason for
@@ -127,10 +138,12 @@ class SightingService:
                 "sighted_location": location,
                 "image_url": image_url,
                 "detected_species": sighting.detected_species,  # user-confirmed
-                "feature_vector": vector,
                 "action_type": sighting.action_type,
                 "sighting_status": "Pending_Analysis",
             }
+            # Targeted sightings have no vector; leave the column NULL.
+            if vector is not None:
+                payload["feature_vector"] = vector
             if sighting.target_pet_id:
                 payload["initial_target_pet_id"] = sighting.target_pet_id
             res = self.db.table("sightings").insert(payload).execute()
@@ -140,44 +153,49 @@ class SightingService:
             sighting_row = res.data[0]
             sighting_id = sighting_row["id"]
             logger.info(
-                "Sighting %s saved (species=%s)", sighting_id, sighting.detected_species
+                "Sighting %s saved (species=%s, targeted=%s)",
+                sighting_id, sighting.detected_species, sighting.skip_matching,
             )
 
-            # Bundle matches in the same response — saves Flutter a round-trip.
-            # If the RPC fails the row is still saved; client can re-query
-            # via GET /sightings/{id}/matches.
+            # Discovery only: bundle matches in the same response (saves Flutter
+            # a round-trip) and persist them. Targeted sightings skip both.
             matches: list[dict] = []
-            try:
-                matches = await self.get_matches(
-                    sighting_id, limit=5, threshold=0.0
-                )
-            except Exception as e:
-                logger.warning(
-                    "Sighting %s saved but match RPC failed: %s",
-                    sighting_id, e,
-                )
-
-            # Persist match results into sighting_matches so the owner timeline
-            # and F1 scoring have a sighting↔pet link to read. Wrapped in its
-            # own try/except: a persist failure must NOT clobber the matches
-            # we already fetched — the client still gets the verify-screen
-            # data, and the sighting row itself remains saved.
-            if matches:
+            if not sighting.skip_matching:
+                # If the RPC fails the row is still saved; client can re-query
+                # via GET /sightings/{id}/matches.
                 try:
-                    self._persist_matches(sighting_id, matches)
-                except Exception as e:
-                    # Swallow so we don't clobber the matches already fetched for
-                    # the verify screen — but log at ERROR, not WARNING. A silent
-                    # warning is exactly why a broken upsert (missing UNIQUE on
-                    # sighting_matches) dropped every AI match for ~10 days
-                    # unnoticed: owner timelines + F1 scoring read this table.
-                    logger.error(
-                        "Sighting %s match-persist FAILED — matches NOT written "
-                        "to sighting_matches (owner timeline + scoring will miss "
-                        "them); response unaffected: %s",
-                        sighting_id, e,
-                        exc_info=True,
+                    matches = await self.get_matches(
+                        sighting_id, limit=5, threshold=0.0
                     )
+                except Exception as e:
+                    logger.warning(
+                        "Sighting %s saved but match RPC failed: %s",
+                        sighting_id, e,
+                    )
+
+                # Persist match results into sighting_matches so the owner
+                # timeline and F1 scoring have a sighting↔pet link to read.
+                # Wrapped in its own try/except: a persist failure must NOT
+                # clobber the matches we already fetched — the client still
+                # gets the verify-screen data, and the sighting row itself
+                # remains saved.
+                if matches:
+                    try:
+                        self._persist_matches(sighting_id, matches)
+                    except Exception as e:
+                        # Swallow so we don't clobber the matches already fetched
+                        # for the verify screen — but log at ERROR, not WARNING.
+                        # A silent warning is exactly why a broken upsert (missing
+                        # UNIQUE on sighting_matches) dropped every AI match for
+                        # ~10 days unnoticed: owner timelines + F1 scoring read
+                        # this table.
+                        logger.error(
+                            "Sighting %s match-persist FAILED — matches NOT "
+                            "written to sighting_matches (owner timeline + "
+                            "scoring will miss them); response unaffected: %s",
+                            sighting_id, e,
+                            exc_info=True,
+                        )
 
             # Strip the 512-D string from the response — clients don't use it
             # and it bloats payloads.

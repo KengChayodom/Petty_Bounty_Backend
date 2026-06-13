@@ -8,6 +8,17 @@ guess) and the *cached* vector are what get persisted on the hot path.
 
 The Supabase client is faked at the boundary (see conftest.FakeSupabase);
 the AI manager is a MagicMock that the cache-hit path must never touch.
+
+Progress-I SRS traceability:
+  * SRS-31 — sighting save returns the ranked matches (TestProcessAndSaveCacheHit,
+    TestGetMatches).
+  * SRS-38 — the sighting row stores the USER-confirmed species + the cached
+    vector, and candidate pets are linked via sighting_matches; the explicit
+    Pet ID is stored only for the targeted flow (TestPersistMatches,
+    TestProcessAndSaveCacheHit::{test_persists_user_species_and_cached_vector_not_yolo,
+    test_persists_matches_into_sighting_matches,
+    test_target_pet_id_is_threaded_into_insert_payload,
+    test_initial_target_pet_id_omitted_when_no_target, test_targeted_path_skips_vector_and_match}).
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
@@ -300,6 +311,32 @@ class TestProcessAndSaveCacheHit:
         insert_payload = fake_db.payload_for("sightings", "insert")
         assert "initial_target_pet_id" not in insert_payload
 
+    def test_targeted_path_skips_vector_and_match(self, fake_db):
+        # skip_matching (pet-detail targeted report): the hunter chose the pet
+        # by eye, so the service must NOT pull/compute a vector, must NOT call
+        # the match RPC, and must persist against initial_target_pet_id with
+        # feature_vector left out of the INSERT. matches comes back empty.
+        sighting = make_sighting(
+            target_pet_id="target-pet-1", skip_matching=True,
+        )
+        fake_db.set_table_result("sightings", "insert", data=[{
+            "id": "s1",
+            "hunter_id": "hunter-1",
+            "detected_species": "Dog",
+            "sighted_location": "POINT(100.5018 13.7563)",
+        }])
+        # No AnalyzeCache entry and a MagicMock AI that would explode if touched
+        # — proves the targeted path never reaches the AI pipeline.
+        svc = SightingService(fake_db, ai_manager=MagicMock())
+
+        result = run(svc.process_and_save_sighting(sighting))
+
+        insert_payload = fake_db.payload_for("sightings", "insert")
+        assert insert_payload["initial_target_pet_id"] == "target-pet-1"
+        assert "feature_vector" not in insert_payload
+        assert all(name != "match_missing_pets" for name, _ in fake_db.rpc_calls)
+        assert result["matches"] == []
+
 
 # --------------------------------------------------------------------------- #
 # process_and_save_sighting — the cache-MISS branch (TTL expiry / worker restart)
@@ -360,6 +397,8 @@ class TestProcessAndSaveCacheMiss:
         ai.isolate_subject.assert_called_once_with("PIL_IMAGE", "YOLO_RESULTS")
 
     def test_miss_yolo_finds_nothing_raises_and_skips_insert(self, fake_db):
+        # SRS-30: when no cat/dog/bird is detected the server refuses to save a
+        # sighting (the UI surfaces "No target animal detected, please try again").
         # isolate_subject returns None (YOLO miss) -> ValueError, no row written,
         # and CLIP must not be invoked on a non-existent subject.
         sighting = make_sighting()

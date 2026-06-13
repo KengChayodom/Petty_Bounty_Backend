@@ -1,8 +1,12 @@
 """
 Route unit tests for the FCM geo-push surface (SRS-FR-12):
-  * POST /devices/register  — upsert keyed on fcm_token (re-registration reassigns)
-  * POST /me/location       — write last_location + last_location_at for the JWT user
-  * POST /missing-pets/     — fan out notify_nearby_hunters via BackgroundTasks
+  * POST /devices/register   — upsert keyed on fcm_token (re-registration reassigns)  [SRS-19]
+  * POST /devices/unregister — drop the caller's token on logout                       [SRS-20]
+  * POST /me/location        — write last_location + last_location_at for the JWT user [SRS-23]
+  * POST /missing-pets/      — fan out notify_nearby_hunters via BackgroundTasks  [SRS-21, SRS-22]
+
+Progress-I SRS traceability: SRS-19 (TestRegisterDevice), SRS-20 (TestUnregisterDevice),
+SRS-23 (TestUpdateLocation), SRS-21 + SRS-22 (TestMissingPetFanout).
 
 Boundary rule: the auth dependency and the Supabase client are the boundaries;
 both are replaced via FastAPI dependency_overrides. We assert on the payload the
@@ -36,7 +40,7 @@ def _app(router, fake_db):
 
 
 # --------------------------------------------------------------------------- #
-# POST /devices/register
+# POST /devices/register  (SRS-19: capture/store the FCM token on login)
 # --------------------------------------------------------------------------- #
 class TestRegisterDevice:
     def test_upserts_keyed_on_fcm_token_with_jwt_user(self, fake_db):
@@ -109,7 +113,38 @@ class TestRegisterDevice:
 
 
 # --------------------------------------------------------------------------- #
-# POST /me/location
+# POST /devices/unregister  (SRS-20: drop the token on logout)
+# --------------------------------------------------------------------------- #
+class TestUnregisterDevice:
+    def test_deletes_scoped_to_jwt_user_and_token(self, fake_db):
+        client = _app(devices.router, fake_db)
+
+        r = client.post("/devices/unregister", json={"fcm_token": "tok-abc"})
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "success"
+        # The delete MUST be scoped to BOTH the JWT user and the given token,
+        # so a client can never drop another account's token.
+        filters = fake_db.filters_for("device_tokens", "delete")
+        assert ("user_id", JWT_USER) in filters
+        assert ("fcm_token", "tok-abc") in filters
+
+    def test_deleting_absent_token_is_still_success(self, fake_db):
+        # Default execute -> data=[]. A re-logout / already-rotated token must
+        # NOT 404 — unregister is idempotent.
+        client = _app(devices.router, fake_db)
+        r = client.post("/devices/unregister", json={"fcm_token": "gone"})
+        assert r.status_code == 200
+
+    def test_empty_fcm_token_is_422_and_never_writes(self, fake_db):
+        client = _app(devices.router, fake_db)
+        r = client.post("/devices/unregister", json={"fcm_token": ""})
+        assert r.status_code == 422
+        assert fake_db.recorded == []
+
+
+# --------------------------------------------------------------------------- #
+# POST /me/location  (SRS-23: keep the hunter's location fresh for geo-alerts)
 # --------------------------------------------------------------------------- #
 class TestUpdateLocation:
     def test_writes_location_and_timestamp_for_jwt_user(self, fake_db):
@@ -147,6 +182,7 @@ class TestUpdateLocation:
 
 # --------------------------------------------------------------------------- #
 # POST /missing-pets/  — the geo-push fan-out
+# (SRS-21: push to hunters within 10 km; SRS-22: exclude the owner)
 # --------------------------------------------------------------------------- #
 class TestMissingPetFanout:
     _BODY = {

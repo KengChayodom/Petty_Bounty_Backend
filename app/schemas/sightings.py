@@ -77,6 +77,13 @@ class SightingCreate(BaseModel):
         None, max_length=500,
         description="Optional free-form notes from the hunter",
     )
+    skip_matching: bool = Field(
+        False,
+        description="Targeted path: persist the sighting against target_pet_id "
+                    "WITHOUT computing a CLIP vector or running the match RPC. "
+                    "The hunter already chose the pet by eye, so no AI discovery "
+                    "is needed. The discovery path leaves this False.",
+    )
 
     @field_validator("detected_species")
     @classmethod

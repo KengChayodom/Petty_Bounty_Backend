@@ -5,6 +5,10 @@ Verifies, against a real pgvector+PostGIS database, the five things only this
 layer can: cosine ranking, the hardcoded 10 km radius, species + status
 filters, the no-threshold NULL-vector fallback ordering, and the missing-vector
 RAISE. All vectors are hand-built (see _helpers) so similarities are exact.
+
+Progress-I SRS traceability: SRS-32 (same-species-only ranking — test_filters_out_other_species,
+test_filters_out_non_searching_status), SRS-35 (cosine similarity score —
+test_ranks_by_cosine_similarity_descending).
 """
 import uuid
 

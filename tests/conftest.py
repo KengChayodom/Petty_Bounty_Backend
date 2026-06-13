@@ -157,6 +157,10 @@ class _Chain:
         self._op = "select"
         return self
 
+    def delete(self):
+        self._op = "delete"
+        return self
+
     # eq is captured so tests can assert a write was scoped to the right row
     # (e.g. /me/location updating ONLY the JWT user). Other filters are swallowed.
     def eq(self, *args, **_k):
