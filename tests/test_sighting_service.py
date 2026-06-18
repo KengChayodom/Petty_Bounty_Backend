@@ -410,3 +410,115 @@ class TestProcessAndSaveCacheMiss:
 
         ai.clip_encode.assert_not_awaited()
         assert fake_db.payload_for("sightings", "insert") is None
+
+
+# --------------------------------------------------------------------------- #
+# analyze_sighting_image (UTC-15, SRS-30/31) — the heavy first step. We test its
+# COORDINATION logic with a mocked AI manager + the real AnalyzeCache: the
+# success path returns the verify-screen payload and caches the full result; a
+# YOLO miss returns not_found without caching or encoding; a pipeline error
+# re-raises without caching. (The real YOLO/CLIP detection accuracy is manual.)
+# --------------------------------------------------------------------------- #
+class TestAnalyzeSightingImage:
+    @staticmethod
+    def _make_ai(*, isolate_return, vector=None, download_exc=None,
+                 image="PIL_IMAGE", results="YOLO_RESULTS"):
+        ai = MagicMock()
+        if download_exc is not None:
+            ai.download_image = AsyncMock(side_effect=download_exc)
+        else:
+            ai.download_image = AsyncMock(return_value=image)
+        ai.run_yolo_seg = AsyncMock(return_value=results)
+        ai.isolate_subject = MagicMock(return_value=isolate_return)  # sync
+        ai.clip_encode = AsyncMock(return_value=vector)
+        return ai
+
+    def test_success_caches_and_returns_payload(self, fake_db):
+        url = "https://img.example/analyze.jpg"
+        bbox = [1.0, 2.0, 3.0, 4.0]
+        ai = self._make_ai(
+            isolate_return=("ISOLATED_IMG", "Dog", 0.8825, bbox),
+            vector=[0.11, 0.22],
+        )
+        svc = SightingService(fake_db, ai_manager=ai)
+
+        out = run(svc.analyze_sighting_image(url))
+
+        assert out["status"] == "success"
+        assert out["data"]["species"] == "Dog"
+        assert out["data"]["confidence"] == 88.25      # round(0.8825 * 100, 2)
+        assert out["data"]["bbox"] == bbox
+
+        cached = AnalyzeCache.get(url)
+        assert cached is not None
+        assert cached["feature_vector"] == [0.11, 0.22]
+        assert cached["confidence"] == 0.8825          # raw, not the percentage
+        assert cached["species"] == "Dog"
+        assert cached["pil_image"] == "PIL_IMAGE"
+        assert cached["isolated_image"] == "ISOLATED_IMG"
+
+    def test_no_target_animal_returns_not_found_without_caching(self, fake_db):
+        url = "https://img.example/empty-scene.jpg"
+        ai = self._make_ai(isolate_return=None)
+        svc = SightingService(fake_db, ai_manager=ai)
+
+        out = run(svc.analyze_sighting_image(url))
+
+        assert out["status"] == "not_found"
+        assert AnalyzeCache.get(url) is None
+        ai.clip_encode.assert_not_awaited()
+
+    def test_pipeline_error_reraises_without_caching(self, fake_db):
+        url = "https://img.example/broken.jpg"
+        ai = self._make_ai(
+            isolate_return=None, download_exc=RuntimeError("download failed"),
+        )
+        svc = SightingService(fake_db, ai_manager=ai)
+
+        with pytest.raises(RuntimeError):
+            run(svc.analyze_sighting_image(url))
+        assert AnalyzeCache.get(url) is None
+
+
+# --------------------------------------------------------------------------- #
+# get_sighting_by_id (UTC-19) — single read with the internal feature vector
+# stripped; an unknown id returns None (not an error); a DB error re-raises.
+# --------------------------------------------------------------------------- #
+class _RaisingSelectDB:
+    """Supabase double whose table(...).select(...).eq(...).execute() raises."""
+    def table(self, _name):
+        return self
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        raise RuntimeError("DB connection lost")
+
+
+class TestGetSightingById:
+    def test_returns_row_with_vector_stripped(self, fake_db):
+        fake_db.set_table_result("sightings", "select", data=[{
+            "id": "s1",
+            "detected_species": "Dog",
+            "feature_vector": [0.1, 0.2, 0.3],
+        }])
+        svc = SightingService(fake_db, ai_manager=MagicMock())
+
+        row = run(svc.get_sighting_by_id("s1"))
+
+        assert row["id"] == "s1"
+        assert "feature_vector" not in row
+
+    def test_unknown_id_returns_none(self, fake_db):
+        # default fake select result is data=[] -> None
+        svc = SightingService(fake_db, ai_manager=MagicMock())
+        assert run(svc.get_sighting_by_id("ghost")) is None
+
+    def test_db_error_is_reraised(self):
+        svc = SightingService(_RaisingSelectDB(), ai_manager=MagicMock())
+        with pytest.raises(RuntimeError):
+            run(svc.get_sighting_by_id("s1"))

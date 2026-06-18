@@ -76,7 +76,10 @@ def _apply_schema(dsn: str) -> None:
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:
-            conn.execute(f.read_text())
+            # Force UTF-8: the migration files contain UTF-8 punctuation (em-dash
+            # etc.). Path.read_text() otherwise uses the OS default encoding,
+            # which is cp874 on a Thai-locale Windows and fails to decode them.
+            conn.execute(f.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="session")
