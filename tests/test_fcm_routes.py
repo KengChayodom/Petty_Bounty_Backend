@@ -1,5 +1,5 @@
 """
-Route unit tests for the FCM geo-push surface (SRS-FR-12):
+Route unit tests for the FCM geo-push surface (UTC-07, UTC-08, UTC-09, UTC-11):
   * POST /devices/register   — upsert keyed on fcm_token (re-registration reassigns)  [SRS-19]
   * POST /devices/unregister — drop the caller's token on logout                       [SRS-20]
   * POST /me/location        — write last_location + last_location_at for the JWT user [SRS-23]

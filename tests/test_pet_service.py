@@ -4,10 +4,13 @@ Unit tests for app/services/pet_service.py:
   * UTC-12  get_nearby_missing_pets (MD-15, SRS-24) — Home Map proximity query:
     WKT centre in POINT(lng lat) form, km->m conversion, limit passthrough,
     empty-result normalisation, transport-error re-raise.
-  * UTC-13  register_missing_pet (MD-11, trigger of SRS-21) — owner report runs
-    the same mask-isolate + CLIP path as the live sighting save (full-frame
-    fallback on a YOLO miss), builds the PostGIS point, inserts with status
-    "Searching" and the feature vector; a no-row insert raises.
+  * UTC-13  register_missing_pet (MD-11, SRS-47, trigger of SRS-21) — owner
+    report runs the same mask-isolate + CLIP path as the live sighting save
+    (full-frame fallback on a YOLO miss), builds the PostGIS point, inserts with
+    status "Searching" and the feature vector; a no-row insert raises.
+    SRS-47 = store missing-pet reports with details + last-seen location to
+    support location-based proximity alerts (asserted via the inserted
+    last_seen_location POINT and status).
 
 The Supabase client is the FakeSupabase boundary double; the AIManager pipeline
 is mocked at the class boundary (download/yolo/isolate/clip).

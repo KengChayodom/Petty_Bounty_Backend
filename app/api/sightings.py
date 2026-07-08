@@ -3,7 +3,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
-from app.schemas.sightings import AnalyzeRequest, SightingCreate
+from app.schemas.sightings import (
+    AnalyzeRequest,
+    SightingCreate,
+    TargetedSightingCreate,
+)
 from app.services.ai_service import AIManager
 from app.services.sighting_service import SightingService
 
@@ -47,10 +51,13 @@ async def report_sighting(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Hot step. Pulls the cached feature vector, INSERTs the sighting with
-    the USER-CONFIRMED species (may override YOLO's guess), and runs the
+    Discovery hot step. Pulls the cached feature vector, INSERTs the sighting
+    with the USER-CONFIRMED species (may override YOLO's guess), and runs the
     pgvector match RPC. Returns {sighting, matches} so the client doesn't
     need a separate /matches call.
+
+    The pet-detail *targeted* flow does NOT use this endpoint — see
+    POST /sightings/targeted.
     """
     # Identity comes from the verified JWT, never from the request body.
     sighting.hunter_id = user_id
@@ -65,6 +72,37 @@ async def report_sighting(
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process sighting: {e}")
+
+
+@router.post("/targeted", response_model=StandardResponse)
+async def report_targeted_sighting(
+    sighting: TargetedSightingCreate,
+    service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Targeted step. The hunter is reporting ONE known missing pet straight to
+    its owner (from that pet's detail view), so there is NO AI species
+    analysis and NO similarity matching — the row is persisted with
+    initial_target_pet_id set and no feature_vector. Returns
+    {sighting, matches: []} (same shape as POST /sightings/ so the client
+    parses both identically).
+    """
+    # Identity comes from the verified JWT, never from the request body.
+    sighting.hunter_id = user_id
+    try:
+        result = await service.save_targeted_sighting(sighting)
+        return StandardResponse(
+            status="success",
+            message="Targeted sighting sent to the owner.",
+            data=result,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to process targeted sighting: {e}"
+        )
 
 
 @router.get("/me", response_model=StandardResponse)

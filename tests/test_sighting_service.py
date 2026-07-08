@@ -10,22 +10,30 @@ The Supabase client is faked at the boundary (see conftest.FakeSupabase);
 the AI manager is a MagicMock that the cache-hit path must never touch.
 
 Progress-I SRS traceability:
-  * SRS-31 — sighting save returns the ranked matches (TestProcessAndSaveCacheHit,
-    TestGetMatches).
-  * SRS-38 — the sighting row stores the USER-confirmed species + the cached
-    vector, and candidate pets are linked via sighting_matches; the explicit
-    Pet ID is stored only for the targeted flow (TestPersistMatches,
-    TestProcessAndSaveCacheHit::{test_persists_user_species_and_cached_vector_not_yolo,
-    test_persists_matches_into_sighting_matches,
-    test_target_pet_id_is_threaded_into_insert_payload,
-    test_initial_target_pet_id_omitted_when_no_target, test_targeted_path_skips_vector_and_match}).
+  * SRS-30 — the server refuses to save when no cat/dog/bird is detected
+    (TestProcessAndSaveCacheMiss::test_miss_yolo_finds_nothing_raises_and_skips_insert).
+  * SRS-31 — the sighting save persists the USER-confirmed species + the cached
+    vector, returns the ranked matches (with their cosine similarity scores,
+    SRS-35), and links candidate pets via sighting_matches
+    (TestProcessAndSaveCacheHit::{test_persists_user_species_and_cached_vector_not_yolo,
+    test_persists_matches_into_sighting_matches}, TestGetMatches, TestPersistMatches).
+  * SRS-50 — the TARGETED flow: the hunter reports one known pet straight to its
+    owner (pet-detail "Report Sighting"). It stores initial_target_pet_id, skips
+    the CLIP vector + match RPC, and goes through the dedicated
+    save_targeted_sighting method (its own endpoint POST /sightings/targeted),
+    NOT a skip_matching flag (TestSaveTargetedSighting).
+  * SRS-43 — the species-correction dropdown ("No" -> pick correct species) is a
+    DISCOVERY re-submit: the client calls createSightingWithMatch, which goes
+    through process_and_save_sighting (matching runs again with the corrected
+    species). It has no target pet, so it is distinct from SRS-50
+    (TestProcessAndSaveCacheHit::test_persists_user_species_and_cached_vector_not_yolo).
 """
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.schemas.sightings import SightingCreate
+from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
 from app.services.sighting_service import SightingService
 
@@ -46,6 +54,20 @@ def make_sighting(**overrides):
     }
     data.update(overrides)
     return SightingCreate(**data)
+
+
+def make_targeted_sighting(**overrides):
+    data = {
+        "hunter_id": "hunter-1",
+        "image_url": "https://img.example/sighting.jpg",
+        "latitude": 13.7563,
+        "longitude": 100.5018,
+        "detected_species": "Dog",
+        "action_type": "Spotted",
+        "target_pet_id": "target-pet-1",
+    }
+    data.update(overrides)
+    return TargetedSightingCreate(**data)
 
 
 def wire_save_path(fake_db, stored_vector, similarity=0.88):
@@ -281,25 +303,11 @@ class TestProcessAndSaveCacheHit:
             {"sighting_id": "s1", "missing_pet_id": "pet-1", "similarity_score": 0.88},
         ]
 
-    def test_target_pet_id_is_threaded_into_insert_payload(self, fake_db):
+    def test_discovery_leaves_initial_target_pet_id_unset(self, fake_db):
+        # Discovery never targets a specific pet, so the INSERT must NOT write
+        # an initial_target_pet_id key at all (that column is targeted-only).
         cached_vector = [0.1, 0.2]
-        sighting = make_sighting(target_pet_id="target-pet-1")
-        AnalyzeCache.set(str(sighting.image_url), {
-            "species": "Dog", "feature_vector": cached_vector,
-        })
-        wire_save_path(fake_db, cached_vector)
-        svc = SightingService(fake_db, ai_manager=MagicMock())
-
-        run(svc.process_and_save_sighting(sighting))
-
-        insert_payload = fake_db.payload_for("sightings", "insert")
-        assert insert_payload["initial_target_pet_id"] == "target-pet-1"
-
-    def test_initial_target_pet_id_omitted_when_no_target(self, fake_db):
-        # The NULL branch: a stray report (no target_pet_id) must NOT write an
-        # initial_target_pet_id key at all (not even None).
-        cached_vector = [0.1, 0.2]
-        sighting = make_sighting()  # target_pet_id defaults to None
+        sighting = make_sighting()
         AnalyzeCache.set(str(sighting.image_url), {
             "species": "Dog", "feature_vector": cached_vector,
         })
@@ -311,31 +319,54 @@ class TestProcessAndSaveCacheHit:
         insert_payload = fake_db.payload_for("sightings", "insert")
         assert "initial_target_pet_id" not in insert_payload
 
-    def test_targeted_path_skips_vector_and_match(self, fake_db):
-        # skip_matching (pet-detail targeted report): the hunter chose the pet
-        # by eye, so the service must NOT pull/compute a vector, must NOT call
-        # the match RPC, and must persist against initial_target_pet_id with
-        # feature_vector left out of the INSERT. matches comes back empty.
-        sighting = make_sighting(
-            target_pet_id="target-pet-1", skip_matching=True,
-        )
+
+# --------------------------------------------------------------------------- #
+# save_targeted_sighting — the pet-detail TARGETED path (UTC-28, MD-33). The
+# hunter reports ONE known pet straight to its owner: no CLIP vector, no match
+# RPC, initial_target_pet_id set, matches always empty. Its own method + its
+# own endpoint (POST /sightings/targeted), NOT a skip_matching flag.
+# --------------------------------------------------------------------------- #
+class TestSaveTargetedSighting:
+    def test_persists_target_pet_id_and_omits_vector(self, fake_db):
+        sighting = make_targeted_sighting(target_pet_id="target-pet-1")
         fake_db.set_table_result("sightings", "insert", data=[{
             "id": "s1",
             "hunter_id": "hunter-1",
             "detected_species": "Dog",
             "sighted_location": "POINT(100.5018 13.7563)",
         }])
-        # No AnalyzeCache entry and a MagicMock AI that would explode if touched
-        # — proves the targeted path never reaches the AI pipeline.
         svc = SightingService(fake_db, ai_manager=MagicMock())
 
-        result = run(svc.process_and_save_sighting(sighting))
+        run(svc.save_targeted_sighting(sighting))
 
         insert_payload = fake_db.payload_for("sightings", "insert")
         assert insert_payload["initial_target_pet_id"] == "target-pet-1"
         assert "feature_vector" not in insert_payload
+
+    def test_skips_match_rpc_and_ai_pipeline_returns_empty_matches(self, fake_db):
+        # The hunter chose the pet by eye — no AnalyzeCache entry, and a
+        # MagicMock AI that would explode if any pipeline call were made.
+        sighting = make_targeted_sighting()
+        fake_db.set_table_result("sightings", "insert", data=[{
+            "id": "s1",
+            "hunter_id": "hunter-1",
+            "detected_species": "Dog",
+            "sighted_location": "POINT(100.5018 13.7563)",
+        }])
+        ai = MagicMock()
+        svc = SightingService(fake_db, ai_manager=ai)
+
+        result = run(svc.save_targeted_sighting(sighting))
+
+        # no similarity search
         assert all(name != "match_missing_pets" for name, _ in fake_db.rpc_calls)
         assert result["matches"] == []
+        # never reaches the AI pipeline
+        ai.download_image.assert_not_called()
+        ai.run_yolo_seg.assert_not_called()
+        ai.clip_encode.assert_not_called()
+        # feature_vector stripped from the returned row
+        assert "feature_vector" not in result["sighting"]
 
 
 # --------------------------------------------------------------------------- #
@@ -413,7 +444,7 @@ class TestProcessAndSaveCacheMiss:
 
 
 # --------------------------------------------------------------------------- #
-# analyze_sighting_image (UTC-15, SRS-30/31) — the heavy first step. We test its
+# analyze_sighting_image (UTC-15, SRS-29/30) — the heavy first step. We test its
 # COORDINATION logic with a mocked AI manager + the real AnalyzeCache: the
 # success path returns the verify-screen payload and caches the full result; a
 # YOLO miss returns not_found without caching or encoding; a pipeline error

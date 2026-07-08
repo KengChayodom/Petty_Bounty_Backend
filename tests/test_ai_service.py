@@ -1,11 +1,15 @@
 """
 Unit tests for the pure / boundary-mockable parts of app/services/ai_service.py:
 
-  * UTC-20  AIManager.isolate_subject  (MD-20) — pure selection + mask + crop
-    logic, exercised with a hand-built YOLO results double (real numpy masks +
-    a real PIL image). No model is loaded.
-  * UTC-21  AIManager.download_image   (MD-18) — httpx is replaced at the
+  * UTC-20  AIManager.isolate_subject  (MD-20, SRS-48) — pure selection + mask +
+    crop logic, exercised with a hand-built YOLO results double (real numpy masks
+    + a real PIL image). No model is loaded.
+  * UTC-21  AIManager.download_image   (MD-18, SRS-48) — httpx is replaced at the
     boundary; HTTP-status and transport errors must propagate.
+
+SRS-48 = download, decode, and isolate the targeted animal subject from the
+background before feature extraction: UTC-21 covers download+RGB-decode, UTC-20
+covers background-mask-out + tight crop to the subject.
 
 run_yolo_seg / clip_encode are thin asyncio.to_thread wrappers around the models
 (no branch logic) and stay covered by the parity smoke + integration, per plan.
