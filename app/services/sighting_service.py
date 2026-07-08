@@ -16,7 +16,7 @@ full pipeline transparently.
 """
 import logging
 
-from app.schemas.sightings import SightingCreate
+from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
 from app.utils.postgis import create_postgis_point
 
@@ -84,19 +84,62 @@ class SightingService:
             logger.error("Error in analyze_sighting_image: %s", e)
             raise
 
+    def _insert_sighting_row(
+        self, sighting, *, vector, target_pet_id: str | None
+    ) -> dict:
+        """
+        Build the sighting payload, INSERT it, and return the saved row with
+        the 512-D feature_vector stripped out (clients never use it and it
+        bloats payloads). Shared by the discovery and targeted paths so the
+        INSERT contract lives in one place.
+
+        CRITICAL: detected_species is the CLIENT-supplied (user-confirmed)
+        value, NOT YOLO's guess — the whole point of the verification screen.
+
+        `vector` is the CLIP embedding for discovery, or None for targeted
+        (column left NULL). `target_pet_id` is set only for targeted reports.
+        """
+        location = create_postgis_point(sighting.latitude, sighting.longitude)
+        payload = {
+            "hunter_id": sighting.hunter_id,
+            "sighted_location": location,
+            "image_url": str(sighting.image_url),
+            "detected_species": sighting.detected_species,  # user-confirmed
+            "action_type": sighting.action_type,
+            "sighting_status": "Pending_Analysis",
+        }
+        if vector is not None:
+            payload["feature_vector"] = vector
+        if target_pet_id:
+            payload["initial_target_pet_id"] = target_pet_id
+
+        res = self.db.table("sightings").insert(payload).execute()
+        if not res.data:
+            raise ValueError("Insert failed: No data returned from Supabase")
+
+        sighting_row = res.data[0]
+        sighting_row.pop("feature_vector", None)
+        return sighting_row
+
     async def process_and_save_sighting(self, sighting: SightingCreate) -> dict:
         """
-        Hot path: pull cached feature_vector, INSERT with user-confirmed
-        species, run pgvector match RPC, return {sighting, matches}.
+        Discovery hot path: pull the cached feature_vector (or re-run the
+        pipeline on a cache miss), INSERT with the user-confirmed species,
+        run the pgvector match RPC, and return {sighting, matches}.
+
+        The targeted (pet-detail) flow does NOT come through here — it has its
+        own endpoint/method (save_targeted_sighting), so this path is always
+        discovery: it always computes a vector and always runs matching.
         """
         try:
             image_url = str(sighting.image_url)
-            cached = AnalyzeCache.get(image_url)
 
+            cached = AnalyzeCache.get(image_url)
             if cached is not None:
                 vector = cached["feature_vector"]
                 logger.warning(
-                    "Analyze-cache HIT key=%r — reusing CLIP vector", image_url
+                    "Analyze-cache HIT key=%r — reusing CLIP vector",
+                    image_url,
                 )
             else:
                 logger.warning(
@@ -118,32 +161,16 @@ class SightingService:
                 isolated, _, _, _ = iso
                 vector = await self.ai.clip_encode(isolated)
 
-            # CRITICAL: detected_species is the CLIENT-supplied (user-confirmed)
-            # value, NOT YOLO's cached guess. This is the entire reason for
-            # the verification screen — the user can override misclassification.
-            location = create_postgis_point(sighting.latitude, sighting.longitude)
-            payload = {
-                "hunter_id": sighting.hunter_id,
-                "sighted_location": location,
-                "image_url": image_url,
-                "detected_species": sighting.detected_species,  # user-confirmed
-                "feature_vector": vector,
-                "action_type": sighting.action_type,
-                "sighting_status": "Pending_Analysis",
-            }
-            if sighting.target_pet_id:
-                payload["initial_target_pet_id"] = sighting.target_pet_id
-            res = self.db.table("sightings").insert(payload).execute()
-            if not res.data:
-                raise ValueError("Insert failed: No data returned from Supabase")
-
-            sighting_row = res.data[0]
+            sighting_row = self._insert_sighting_row(
+                sighting, vector=vector, target_pet_id=None
+            )
             sighting_id = sighting_row["id"]
             logger.info(
-                "Sighting %s saved (species=%s)", sighting_id, sighting.detected_species
+                "Sighting %s saved (species=%s, discovery)",
+                sighting_id, sighting.detected_species,
             )
 
-            # Bundle matches in the same response — saves Flutter a round-trip.
+            # Bundle matches in the same response (saves Flutter a round-trip).
             # If the RPC fails the row is still saved; client can re-query
             # via GET /sightings/{id}/matches.
             matches: list[dict] = []
@@ -157,37 +184,65 @@ class SightingService:
                     sighting_id, e,
                 )
 
-            # Persist match results into sighting_matches so the owner timeline
-            # and F1 scoring have a sighting↔pet link to read. Wrapped in its
-            # own try/except: a persist failure must NOT clobber the matches
-            # we already fetched — the client still gets the verify-screen
-            # data, and the sighting row itself remains saved.
+            # Persist match results into sighting_matches so the owner
+            # timeline and F1 scoring have a sighting↔pet link to read.
+            # Wrapped in its own try/except: a persist failure must NOT
+            # clobber the matches we already fetched — the client still
+            # gets the verify-screen data, and the sighting row itself
+            # remains saved.
             if matches:
                 try:
                     self._persist_matches(sighting_id, matches)
                 except Exception as e:
-                    # Swallow so we don't clobber the matches already fetched for
-                    # the verify screen — but log at ERROR, not WARNING. A silent
-                    # warning is exactly why a broken upsert (missing UNIQUE on
-                    # sighting_matches) dropped every AI match for ~10 days
-                    # unnoticed: owner timelines + F1 scoring read this table.
+                    # Swallow so we don't clobber the matches already fetched
+                    # for the verify screen — but log at ERROR, not WARNING.
+                    # A silent warning is exactly why a broken upsert (missing
+                    # UNIQUE on sighting_matches) dropped every AI match for
+                    # ~10 days unnoticed: owner timelines + F1 scoring read
+                    # this table.
                     logger.error(
-                        "Sighting %s match-persist FAILED — matches NOT written "
-                        "to sighting_matches (owner timeline + scoring will miss "
-                        "them); response unaffected: %s",
+                        "Sighting %s match-persist FAILED — matches NOT "
+                        "written to sighting_matches (owner timeline + "
+                        "scoring will miss them); response unaffected: %s",
                         sighting_id, e,
                         exc_info=True,
                     )
 
-            # Strip the 512-D string from the response — clients don't use it
-            # and it bloats payloads.
-            sighting_row.pop("feature_vector", None)
             return {"sighting": sighting_row, "matches": matches}
 
         except ValueError:
             raise
         except Exception as e:
             logger.error("Error in process_and_save_sighting: %s", e)
+            raise
+
+    async def save_targeted_sighting(
+        self, sighting: TargetedSightingCreate
+    ) -> dict:
+        """
+        Targeted path: the hunter is reporting ONE known pet straight to its
+        owner. No CLIP vector, no pgvector match — just persist the row with
+        initial_target_pet_id set so it surfaces on the owner's timeline via
+        the initial_target_pet_id branch of sightings_for_pet.
+
+        Returns {sighting, matches: []} — the same shape as the discovery
+        endpoint so the client parses both responses identically.
+        """
+        try:
+            sighting_row = self._insert_sighting_row(
+                sighting, vector=None, target_pet_id=sighting.target_pet_id
+            )
+            logger.info(
+                "Sighting %s saved (species=%s, targeted → pet %s)",
+                sighting_row["id"], sighting.detected_species,
+                sighting.target_pet_id,
+            )
+            return {"sighting": sighting_row, "matches": []}
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error("Error in save_targeted_sighting: %s", e)
             raise
 
     def _persist_matches(self, sighting_id: str, matches: list[dict]) -> None:

@@ -1,5 +1,17 @@
 """
-Unit tests for app/core/auth.py — the Feature #6 server-side trust boundary.
+Unit tests for app/core/auth.py — the Feature #1 (Authentication) server-side
+trust boundary.
+
+Covered (per test_plan.md / test_traceability.md):
+  * UTC-01 _strip_bearer                  (MD-05, SRS-44)
+  * UTC-02 _resolve_user_id               (MD-07, SRS-44)
+  * UTC-03 get_current_user_id            (MD-02, SRS-13) + auth-guard e2e
+  * UTC-04 get_current_user_id_optional   (MD-03, SRS-44)
+  * UTC-05 require_admin                  (MD-04, SRS-45)
+
+SRS-44 = extract & validate the JWT to authorize requests; SRS-45 = role-based
+access control restricting admin functions; SRS-13 = maintain the authenticated
+session.
 
 Every protected route depends on this module, and a silent regression here is a
 security hole (auth bypass) or a lockout (false 401). The logic is pure and

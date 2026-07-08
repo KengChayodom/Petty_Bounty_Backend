@@ -1,5 +1,9 @@
 """
-Unit tests for app/services/notification_service.send_to_users (SRS-FR-12).
+Unit tests for app/services/notification_service.send_to_users (UTC-10, MD-13, SRS-21).
+
+Progress-I SRS traceability: SRS-21 (a push is sent to nearby hunters — the
+multicast token/title/body/data assertions) and SRS-22 (owner exclusion is
+enforced upstream by get_nearby_hunters; see integration/test_get_nearby_hunters).
 
 Boundary rule (per the automated-testing skill): the only things mocked are the
 *boundaries* — the FCM SDK (messaging.send_each_for_multicast) and the Supabase

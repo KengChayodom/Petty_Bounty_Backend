@@ -1,6 +1,10 @@
 """
 Integration tests for the deployed get_nearby_hunters RPC (SRS-FR-12 geo push).
 
+Progress-I SRS traceability: SRS-21 (10 km proximity radius — test_radius_filters_out_far_hunter)
+and SRS-22 (owner exclusion — test_excludes_owner_via_exclude_user_id,
+test_null_exclude_user_id_returns_everyone).
+
 These run against a real pgvector+PostGIS database (the FCM migration applied
 verbatim — see conftest) because the behaviour we care about lives entirely in
 SQL: the staleness window, the NULL filters, the owner exclusion, and the
