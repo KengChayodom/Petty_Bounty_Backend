@@ -436,25 +436,3 @@ class SightingService:
             logger.error("Error fetching stats for hunter %s: %s",
                          hunter_id, e)
             raise
-
-    async def update_sighting_status(
-        self, sighting_id: str, status: str,
-    ) -> dict:
-        valid_statuses = [
-            "Pending_Analysis", "Notified_Owner", "Confirmed", "Closed"
-        ]
-        if status not in valid_statuses:
-            raise ValueError(f"Invalid status. Must be one of: {valid_statuses}")
-        try:
-            res = (self.db.table("sightings")
-                          .update({"sighting_status": status})
-                          .eq("id", sighting_id)
-                          .execute())
-            if not res.data:
-                raise ValueError(f"Sighting {sighting_id} not found")
-            return res.data[0]
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error("Error updating sighting status: %s", e)
-            raise

@@ -90,33 +90,6 @@ def wire_save_path(fake_db, stored_vector, similarity=0.88):
 
 
 # --------------------------------------------------------------------------- #
-# update_sighting_status — pure allow-list validation + not-found handling.
-# --------------------------------------------------------------------------- #
-class TestUpdateSightingStatus:
-    def test_rejects_status_outside_allowlist(self, fake_db):
-        svc = SightingService(fake_db, ai_manager=None)
-        with pytest.raises(ValueError):
-            run(svc.update_sighting_status("s1", "Teleported"))
-        # invalid status must be caught *before* any DB write
-        assert fake_db.recorded == []
-
-    def test_accepts_valid_status_and_returns_row(self, fake_db):
-        fake_db.set_table_result(
-            "sightings", "update",
-            data=[{"id": "s1", "sighting_status": "Confirmed"}],
-        )
-        svc = SightingService(fake_db, ai_manager=None)
-        row = run(svc.update_sighting_status("s1", "Confirmed"))
-        assert row["sighting_status"] == "Confirmed"
-
-    def test_unknown_sighting_id_raises(self, fake_db):
-        fake_db.set_table_result("sightings", "update", data=[])  # nothing updated
-        svc = SightingService(fake_db, ai_manager=None)
-        with pytest.raises(ValueError):
-            run(svc.update_sighting_status("ghost", "Confirmed"))
-
-
-# --------------------------------------------------------------------------- #
 # _persist_matches — maps RPC rows -> sighting_matches rows.
 # --------------------------------------------------------------------------- #
 class TestPersistMatches:

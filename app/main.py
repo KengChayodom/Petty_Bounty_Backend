@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import close_supabase_client
 from app.core.firebase import init_firebase
-from app.api import admin, auth, dev_auth, devices, hunters, me, missing_pets, missions, sightings, upload
+from app.api import admin, auth, dev_auth, devices, hunters, me, missing_pets, sightings, upload
 # 💡 นำเข้า AIManager เพื่อใช้โหลดโมเดลตอนสตาร์ทเซิร์ฟเวอร์
 from app.services.ai_service import AIManager
 
@@ -83,7 +83,6 @@ app.include_router(auth.router)
 app.include_router(missing_pets.router)
 app.include_router(upload.router)
 app.include_router(sightings.router)
-app.include_router(missions.router)
 app.include_router(hunters.router)
 app.include_router(admin.router)
 app.include_router(devices.router)
