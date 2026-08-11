@@ -13,9 +13,19 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
+from app.repositories.device_token_repository import DeviceTokenRepository
+from app.repositories.supabase_device_token_repository import (
+    SupabaseDeviceTokenRepository,
+)
 from app.schemas.common import StandardResponse
 
 router = APIRouter(prefix="/devices", tags=["Devices"])
+
+
+def get_device_token_repository(
+    supabase=Depends(get_supabase_client),
+) -> DeviceTokenRepository:
+    return SupabaseDeviceTokenRepository(supabase)
 
 
 class DeviceRegisterRequest(BaseModel):
@@ -30,7 +40,7 @@ class DeviceUnregisterRequest(BaseModel):
 @router.post("/register", response_model=StandardResponse)
 async def register_device(
     payload: DeviceRegisterRequest,
-    supabase=Depends(get_supabase_client),
+    repo: DeviceTokenRepository = Depends(get_device_token_repository),
     user_id: str = Depends(get_current_user_id),
 ):
     """Upsert the caller's FCM token (keyed on fcm_token)."""
@@ -41,17 +51,13 @@ async def register_device(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        res = (
-            supabase.table("device_tokens")
-            .upsert(row, on_conflict="fcm_token")
-            .execute()
-        )
-        if not res.data:
+        created = repo.upsert_device_token(row)
+        if not created:
             raise ValueError("Token upsert returned no row")
         return StandardResponse(
             status="success",
             message="Device token registered.",
-            data=res.data[0],
+            data=created,
         )
     except Exception as e:
         raise HTTPException(
@@ -62,7 +68,7 @@ async def register_device(
 @router.post("/unregister", response_model=StandardResponse)
 async def unregister_device(
     payload: DeviceUnregisterRequest,
-    supabase=Depends(get_supabase_client),
+    repo: DeviceTokenRepository = Depends(get_device_token_repository),
     user_id: str = Depends(get_current_user_id),
 ):
     """Drop the caller's FCM token on logout (SRS-20).
@@ -73,13 +79,7 @@ async def unregister_device(
     row is success, not a 404.
     """
     try:
-        (
-            supabase.table("device_tokens")
-            .delete()
-            .eq("user_id", user_id)
-            .eq("fcm_token", payload.fcm_token)
-            .execute()
-        )
+        repo.delete_device_token(user_id, payload.fcm_token)
         return StandardResponse(
             status="success",
             message="Device token unregistered.",

@@ -13,12 +13,23 @@ out of `POST /sightings/` and into `POST /sightings/analyze`:
 Hot path on confirm is just a DB write + RPC call (~100 ms).
 On cache miss (>10 min idle or server restart) the save step re-runs the
 full pipeline transparently.
+
+All DB access goes through a SightingRepository port (app/repositories/); this
+service holds zero supabase-py calls. Pure logic (payload build, threshold
+filter, row mapping, activity assembly) lives in sighting_logic.py.
 """
 import logging
 
+from app.repositories.sighting_repository import SightingRepository
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
-from app.utils.postgis import create_postgis_point
+from app.services.sighting_logic import (
+    assemble_hunter_activity,
+    build_match_rows,
+    build_sighting_payload,
+    filter_by_threshold,
+    strip_feature_vector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +37,8 @@ logger = logging.getLogger(__name__)
 class SightingService:
     """Coordinates the AI pipeline, sighting persistence, and pgvector match."""
 
-    def __init__(self, db_client, ai_manager):
-        self.db = db_client
+    def __init__(self, repo: SightingRepository, ai_manager):
+        self.repo = repo
         self.ai = ai_manager
 
     async def analyze_sighting_image(self, image_url: str, conf: float = 0.25):
@@ -88,38 +99,18 @@ class SightingService:
         self, sighting, *, vector, target_pet_id: str | None
     ) -> dict:
         """
-        Build the sighting payload, INSERT it, and return the saved row with
-        the 512-D feature_vector stripped out (clients never use it and it
-        bloats payloads). Shared by the discovery and targeted paths so the
-        INSERT contract lives in one place.
-
-        CRITICAL: detected_species is the CLIENT-supplied (user-confirmed)
-        value, NOT YOLO's guess — the whole point of the verification screen.
+        Build the sighting payload, INSERT it via the repo, and return the saved
+        row with the 512-D feature_vector stripped out. Shared by the discovery
+        and targeted paths so the INSERT contract lives in one place.
 
         `vector` is the CLIP embedding for discovery, or None for targeted
         (column left NULL). `target_pet_id` is set only for targeted reports.
         """
-        location = create_postgis_point(sighting.latitude, sighting.longitude)
-        payload = {
-            "hunter_id": sighting.hunter_id,
-            "sighted_location": location,
-            "image_url": str(sighting.image_url),
-            "detected_species": sighting.detected_species,  # user-confirmed
-            "action_type": sighting.action_type,
-            "sighting_status": "Pending_Analysis",
-        }
-        if vector is not None:
-            payload["feature_vector"] = vector
-        if target_pet_id:
-            payload["initial_target_pet_id"] = target_pet_id
-
-        res = self.db.table("sightings").insert(payload).execute()
-        if not res.data:
-            raise ValueError("Insert failed: No data returned from Supabase")
-
-        sighting_row = res.data[0]
-        sighting_row.pop("feature_vector", None)
-        return sighting_row
+        payload = build_sighting_payload(
+            sighting, vector=vector, target_pet_id=target_pet_id
+        )
+        sighting_row = self.repo.insert_sighting(payload)
+        return strip_feature_vector(sighting_row)
 
     async def process_and_save_sighting(self, sighting: SightingCreate) -> dict:
         """
@@ -247,29 +238,14 @@ class SightingService:
 
     def _persist_matches(self, sighting_id: str, matches: list[dict]) -> None:
         """
-        Log AI match results into sighting_matches. The match RPC returns
-        rows keyed `id` (the missing pet) and `similarity`; map them to the
-        sighting_matches columns. No-op when there are no matches.
-
-        Uses upsert on the (sighting_id, missing_pet_id) unique constraint so
-        a retried request — or any future re-match path — refreshes the
-        similarity_score in place instead of accumulating duplicate rows.
+        Log AI match results into sighting_matches via the repo's upsert (on the
+        (sighting_id, missing_pet_id) unique constraint, so a retry refreshes
+        similarity_score in place rather than duplicating). No-op when the
+        mapped row set is empty.
         """
-        if not matches:
-            return
-        rows = [
-            {
-                "sighting_id": sighting_id,
-                "missing_pet_id": m["id"],
-                "similarity_score": m.get("similarity"),
-            }
-            for m in matches
-            if m.get("id")
-        ]
+        rows = build_match_rows(sighting_id, matches)
         if rows:
-            (self.db.table("sighting_matches")
-                    .upsert(rows, on_conflict="sighting_id,missing_pet_id")
-                    .execute())
+            self.repo.upsert_sighting_matches(rows)
 
     async def get_matches(
         self,
@@ -279,13 +255,9 @@ class SightingService:
     ) -> list[dict]:
         """Find matching missing pets via the match_missing_pets RPC."""
         try:
-            sighting_res = (self.db.table("sightings")
-                                   .select("id, feature_vector, detected_species, sighted_location")
-                                   .eq("id", sighting_id)
-                                   .execute())
-            if not sighting_res.data:
+            sighting = self.repo.get_sighting_for_match(sighting_id)
+            if not sighting:
                 raise ValueError(f"Sighting {sighting_id} not found")
-            sighting = sighting_res.data[0]
             if not sighting.get("feature_vector"):
                 raise ValueError(f"Sighting {sighting_id} has no feature vector")
             if not sighting.get("detected_species"):
@@ -293,17 +265,8 @@ class SightingService:
             if not sighting.get("sighted_location"):
                 raise ValueError(f"Sighting {sighting_id} has no location")
 
-            res = self.db.rpc("match_missing_pets", {
-                "p_sighting_id": sighting_id,
-                "match_limit": limit,
-            }).execute()
-
-            matches = res.data or []
-            if threshold:
-                matches = [
-                    m for m in matches
-                    if (m.get("similarity") or 0.0) >= threshold
-                ]
+            matches = self.repo.match_missing_pets(sighting_id, limit)
+            matches = filter_by_threshold(matches, threshold)
             logger.info(
                 "Found %d matches for sighting %s (threshold=%s)",
                 len(matches), sighting_id, threshold,
@@ -318,15 +281,10 @@ class SightingService:
 
     async def get_sighting_by_id(self, sighting_id: str) -> dict | None:
         try:
-            res = (self.db.table("sightings")
-                          .select("*")
-                          .eq("id", sighting_id)
-                          .execute())
-            if not res.data:
+            row = self.repo.get_sighting(sighting_id)
+            if row is None:
                 return None
-            row = res.data[0]
-            row.pop("feature_vector", None)
-            return row
+            return strip_feature_vector(row)
         except Exception as e:
             logger.error("Error fetching sighting %s: %s", sighting_id, e)
             raise
@@ -339,62 +297,29 @@ class SightingService:
         per sighting, the AI match candidates and the score award (if the
         target pet has already been resolved).
 
-        Three Supabase round-trips instead of a single big join: simpler to
-        reason about, all three tables are small per-hunter, and supabase-py
-        has no clean way to express a 3-table left-join with the embedded-
-        resource syntax that also covers the score_awards UNIQUE(pet, user)
-        relation (which is not a FK to sightings).
+        Three repo round-trips instead of a single big join: simpler to reason
+        about, all three tables are small per-hunter, and there is no clean
+        embedded-resource join that also covers the score_awards
+        UNIQUE(pet, user) relation (which is not a FK to sightings).
         """
         try:
-            count_res = (self.db.table("sightings")
-                                .select("id", count="exact")
-                                .eq("hunter_id", hunter_id)
-                                .execute())
-            total_count = count_res.count or 0
+            total_count = self.repo.count_sightings_for_hunter(hunter_id)
 
-            res = (self.db.table("sightings")
-                          .select("id, image_url, detected_species, "
-                                  "action_type, sighting_status, "
-                                  "verification_status, sighted_location, "
-                                  "initial_target_pet_id, created_at")
-                          .eq("hunter_id", hunter_id)
-                          .order("created_at", desc=True)
-                          .range(offset, offset + limit - 1)
-                          .execute())
-            sightings = res.data or []
+            sightings = self.repo.list_sightings_for_hunter(
+                hunter_id, limit, offset
+            )
             if not sightings:
                 return {"sightings": [], "total_count": total_count}
 
             sighting_ids = [s["id"] for s in sightings]
-
-            matches_res = (self.db.table("sighting_matches")
-                                  .select("sighting_id, missing_pet_id, "
-                                          "similarity_score, owner_status")
-                                  .in_("sighting_id", sighting_ids)
-                                  .execute())
-            matches_by_sighting: dict[str, list] = {}
-            for m in (matches_res.data or []):
-                matches_by_sighting.setdefault(m["sighting_id"], []).append(m)
-
+            matches = self.repo.get_matches_for_sightings(sighting_ids)
             # Index awards by the sighting that earned them — a hunter has at
             # most one award per resolved pet, so fetching all of theirs is
             # cheap and avoids missing awards whose link was an AI match
             # (initial_target_pet_id NULL) rather than an explicit target.
-            awards_res = (self.db.table("score_awards")
-                                 .select("sighting_id, missing_pet_id, "
-                                         "points, rank, awarded_at")
-                                 .eq("user_id", hunter_id)
-                                 .execute())
-            awards_by_sighting: dict[str, dict] = {
-                a["sighting_id"]: a
-                for a in (awards_res.data or [])
-                if a.get("sighting_id")
-            }
+            awards = self.repo.get_awards_for_hunter(hunter_id)
 
-            for s in sightings:
-                s["matches"] = matches_by_sighting.get(s["id"], [])
-                s["score_award"] = awards_by_sighting.get(s["id"])
-
+            sightings = assemble_hunter_activity(sightings, matches, awards)
             return {"sightings": sightings, "total_count": total_count}
 
         except Exception as e:
@@ -405,32 +330,17 @@ class SightingService:
     async def get_hunter_stats(self, hunter_id: str) -> dict:
         """Cumulative stats card for the hunter profile screen."""
         try:
-            user_res = (self.db.table("users")
-                               .select("total_score")
-                               .eq("id", hunter_id)
-                               .execute())
-            total_score = (user_res.data[0]["total_score"]
-                           if user_res.data else 0)
-
-            submitted_res = (self.db.table("sightings")
-                                    .select("id", count="exact")
-                                    .eq("hunter_id", hunter_id)
-                                    .execute())
-            verified_res = (self.db.table("sightings")
-                                   .select("id", count="exact")
-                                   .eq("hunter_id", hunter_id)
-                                   .eq("verification_status", "Verified")
-                                   .execute())
-            contributions_res = (self.db.table("score_awards")
-                                        .select("missing_pet_id", count="exact")
-                                        .eq("user_id", hunter_id)
-                                        .execute())
+            user = self.repo.get_user(hunter_id)
+            total_score = user["total_score"] if user else 0
 
             return {
                 "total_score": total_score,
-                "sightings_submitted": submitted_res.count or 0,
-                "sightings_verified": verified_res.count or 0,
-                "resolutions_contributed_to": contributions_res.count or 0,
+                "sightings_submitted":
+                    self.repo.count_sightings_for_hunter(hunter_id),
+                "sightings_verified":
+                    self.repo.count_verified_sightings_for_hunter(hunter_id),
+                "resolutions_contributed_to":
+                    self.repo.count_contributions_for_hunter(hunter_id),
             }
         except Exception as e:
             logger.error("Error fetching stats for hunter %s: %s",

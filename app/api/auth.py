@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
+from app.repositories.supabase_user_repository import SupabaseUserRepository
+from app.repositories.user_repository import UserProfileNotFound
 from app.schemas.common import StandardResponse
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -22,15 +24,8 @@ async def get_me(
 ):
     """Return the authenticated user's public.users profile row."""
     try:
-        result = (
-            supabase.table("users")
-            .select("id, display_name, phone, role, total_score, profile_image_url, created_at")
-            .eq("id", user_id)
-            .single()
-            .execute()
-        )
-    except Exception as e:
-        # `.single()` raises when no row exists (e.g. profile trigger missed).
+        data = SupabaseUserRepository(supabase).get_user_profile(user_id)
+    except UserProfileNotFound as e:
         raise HTTPException(
             status_code=404,
             detail=f"Profile not found for the authenticated user: {e}",
@@ -39,5 +34,5 @@ async def get_me(
     return StandardResponse(
         status="success",
         message="Profile retrieved successfully.",
-        data=result.data,
+        data=data,
     )
