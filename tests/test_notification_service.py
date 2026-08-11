@@ -5,80 +5,45 @@ Progress-I SRS traceability: SRS-21 (a push is sent to nearby hunters — the
 multicast token/title/body/data assertions) and SRS-22 (owner exclusion is
 enforced upstream by get_nearby_hunters; see integration/test_get_nearby_hunters).
 
-Boundary rule (per the automated-testing skill): the only things mocked are the
-*boundaries* — the FCM SDK (messaging.send_each_for_multicast) and the Supabase
-client (token select + stale-token delete). We assert on WHAT was sent (the
-multicast tokens / title / body / data) and WHAT was pruned (the deleted
-tokens), never on "a mock was called".
+Boundary rule (per db-testing-seams): the DB is reached only through the
+NotificationRepository port owned by this codebase, so we double THAT with
+MagicMock(spec=...) — never a hand-rolled Supabase client. The FCM SDK
+(messaging.send_each_for_multicast) is the other boundary. We assert on WHAT was
+sent (the multicast tokens / title / body / data) and WHAT was pruned (the token
+list handed to delete_device_tokens), never on incidental call plumbing.
 
 The firebase SDK boundary is provided by the conftest stub when the real SDK
 isn't installed, so this suite is hermetic and fast.
 
 Each test owns its data: is_firebase_ready is pinned per-test (default OFF is
-the production-safe state) and a fresh fake DB is built each time.
+the production-safe state) and a fresh repo double is built each time.
 """
 import logging
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.repositories.notification_repository import NotificationRepository
 from app.services import notification_service as ns
 
 messaging = ns.messaging
 
 
 # --------------------------------------------------------------------------- #
-# Boundary fakes
+# Boundary doubles
 # --------------------------------------------------------------------------- #
-class _NotifQuery:
-    """The supabase chain send_to_users uses: select/delete + .in_ + .execute."""
-
-    def __init__(self, db):
-        self._db = db
-        self._op = "select"
-        self._filter_vals = None
-
-    def select(self, *_a, **_k):
-        self._op = "select"
-        return self
-
-    def delete(self):
-        self._op = "delete"
-        return self
-
-    def in_(self, _column, values):
-        self._filter_vals = list(values)
-        return self
-
-    def execute(self):
-        if self._op == "select":
-            self._db.selected_user_ids = self._filter_vals
-            if self._db.select_raises:
-                raise RuntimeError("token load failed")
-            return SimpleNamespace(data=self._db.token_rows)
-        # delete (prune)
-        self._db.deleted_tokens = self._filter_vals
-        if self._db.delete_raises:
-            raise RuntimeError("prune failed")
-        return SimpleNamespace(data=[])
-
-
-class FakeDB:
-    def __init__(self, token_rows=None, select_raises=False, delete_raises=False):
-        self.token_rows = token_rows if token_rows is not None else []
-        self.select_raises = select_raises
-        self.delete_raises = delete_raises
-        self.selected_user_ids = None
-        self.deleted_tokens = None
-        self.table_calls = []
-
-    def table(self, name):
-        self.table_calls.append(name)
-        return _NotifQuery(self)
-
-
-def _rows(*tokens):
-    return [{"fcm_token": t} for t in tokens]
+def _repo(tokens=None, tokens_raise=False, delete_raises=False):
+    """A NotificationRepository double: get_fcm_tokens_for_users returns the
+    given tokens (or raises); delete_device_tokens records / optionally raises."""
+    repo = MagicMock(spec=NotificationRepository)
+    if tokens_raise:
+        repo.get_fcm_tokens_for_users.side_effect = RuntimeError("token load failed")
+    else:
+        repo.get_fcm_tokens_for_users.return_value = list(tokens or [])
+    if delete_raises:
+        repo.delete_device_tokens.side_effect = RuntimeError("prune failed")
+    return repo
 
 
 def _batch(*results):
@@ -118,63 +83,63 @@ def ready(monkeypatch):
 def test_noop_when_no_user_ids(monkeypatch, fcm):
     # Empty recipient list short-circuits before readiness/DB/FCM are touched.
     monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
-    db = FakeDB(token_rows=_rows("t0"))
+    repo = _repo(tokens=["t0"])
 
-    ns.send_to_users(db, [], "T", "B")
+    ns.send_to_users(repo, [], "T", "B")
 
-    assert db.table_calls == []
+    repo.get_fcm_tokens_for_users.assert_not_called()
     assert fcm["messages"] == []
 
 
 def test_noop_when_firebase_not_ready(monkeypatch, fcm):
     # The whole feature is OFF when Firebase isn't configured: no DB, no send.
     monkeypatch.setattr(ns, "is_firebase_ready", lambda: False)
-    db = FakeDB(token_rows=_rows("t0"))
+    repo = _repo(tokens=["t0"])
 
-    ns.send_to_users(db, ["u1"], "T", "B")
+    ns.send_to_users(repo, ["u1"], "T", "B")
 
-    assert db.table_calls == []
+    repo.get_fcm_tokens_for_users.assert_not_called()
     assert fcm["messages"] == []
 
 
 def test_noop_when_no_tokens_for_users(ready, fcm):
-    db = FakeDB(token_rows=[])  # users have registered no devices
+    repo = _repo(tokens=[])  # users have registered no devices
 
-    ns.send_to_users(db, ["u1"], "T", "B")
+    ns.send_to_users(repo, ["u1"], "T", "B")
 
-    assert db.selected_user_ids == ["u1"]  # it DID query...
-    assert fcm["messages"] == []           # ...but sent nothing
+    repo.get_fcm_tokens_for_users.assert_called_once_with(["u1"])  # it DID query...
+    assert fcm["messages"] == []                                   # ...but sent nothing
 
 
 def test_db_load_failure_is_swallowed(ready, fcm):
-    db = FakeDB(token_rows=_rows("t0"), select_raises=True)
+    repo = _repo(tokens_raise=True)
 
-    ns.send_to_users(db, ["u1"], "T", "B")  # must not raise
+    ns.send_to_users(repo, ["u1"], "T", "B")  # must not raise
 
     assert fcm["messages"] == []
 
 
 def test_send_failure_is_swallowed(ready, fcm):
-    db = FakeDB(token_rows=_rows("t0"))
+    repo = _repo(tokens=["t0"])
     fcm["raises"] = RuntimeError("FCM unreachable")
 
-    ns.send_to_users(db, ["u1"], "T", "B")  # must not raise
+    ns.send_to_users(repo, ["u1"], "T", "B")  # must not raise
 
-    assert db.deleted_tokens is None  # never reaches the prune step
+    repo.delete_device_tokens.assert_not_called()  # never reaches the prune step
 
 
 # --------------------------------------------------------------------------- #
 # Happy path: sends exactly the right tokens / payload
 # --------------------------------------------------------------------------- #
 def test_sends_all_tokens_with_stringified_data(ready, fcm):
-    db = FakeDB(token_rows=_rows("tok-a", "tok-b", "tok-c"))
+    repo = _repo(tokens=["tok-a", "tok-b", "tok-c"])
     fcm["response"] = _batch((True, None), (True, None), (True, None))
 
     ns.send_to_users(
-        db, ["u1", "u2"], "Title!", "Body!", data={"petId": 42, "kind": "lost"}
+        repo, ["u1", "u2"], "Title!", "Body!", data={"petId": 42, "kind": "lost"}
     )
 
-    assert db.selected_user_ids == ["u1", "u2"]
+    repo.get_fcm_tokens_for_users.assert_called_once_with(["u1", "u2"])
     assert len(fcm["messages"]) == 1
     msg = fcm["messages"][0]
     assert msg.tokens == ["tok-a", "tok-b", "tok-c"]
@@ -182,14 +147,14 @@ def test_sends_all_tokens_with_stringified_data(ready, fcm):
     assert msg.notification.body == "Body!"
     # FCM requires string data values — ints must be coerced.
     assert msg.data == {"petId": "42", "kind": "lost"}
-    assert db.deleted_tokens is None  # all delivered -> nothing pruned
+    repo.delete_device_tokens.assert_not_called()  # all delivered -> nothing pruned
 
 
 # --------------------------------------------------------------------------- #
 # Pruning of dead tokens
 # --------------------------------------------------------------------------- #
 def test_prunes_only_unregistered_tokens(ready, fcm):
-    db = FakeDB(token_rows=_rows("good", "dead", "transient"))
+    repo = _repo(tokens=["good", "dead", "transient"])
     # good -> ok; dead -> UnregisteredError (prune); transient -> other error (keep)
     fcm["response"] = _batch(
         (True, None),
@@ -197,29 +162,28 @@ def test_prunes_only_unregistered_tokens(ready, fcm):
         (False, ValueError("temporary")),
     )
 
-    ns.send_to_users(db, ["u1"], "T", "B")
+    ns.send_to_users(repo, ["u1"], "T", "B")
 
     # Exactly the UnregisteredError token is deleted; the transient one is kept.
-    assert db.deleted_tokens == ["dead"]
+    repo.delete_device_tokens.assert_called_once_with(["dead"])
 
 
 def test_no_prune_when_all_delivered(ready, fcm):
-    db = FakeDB(token_rows=_rows("t0", "t1"))
+    repo = _repo(tokens=["t0", "t1"])
     fcm["response"] = _batch((True, None), (True, None))
 
-    ns.send_to_users(db, ["u1"], "T", "B")
+    ns.send_to_users(repo, ["u1"], "T", "B")
 
-    assert db.deleted_tokens is None
-    assert db.table_calls == ["device_tokens"]  # select only, no delete call
+    repo.delete_device_tokens.assert_not_called()
 
 
 def test_prune_failure_is_swallowed(ready, fcm):
-    db = FakeDB(token_rows=_rows("dead"), delete_raises=True)
+    repo = _repo(tokens=["dead"], delete_raises=True)
     fcm["response"] = _batch((False, messaging.UnregisteredError("x")))
 
-    ns.send_to_users(db, ["u1"], "T", "B")  # delete blows up but is caught
+    ns.send_to_users(repo, ["u1"], "T", "B")  # delete blows up but is caught
 
-    assert db.deleted_tokens == ["dead"]  # it attempted the prune
+    repo.delete_device_tokens.assert_called_once_with(["dead"])  # it attempted the prune
 
 
 # --------------------------------------------------------------------------- #
@@ -227,14 +191,75 @@ def test_prune_failure_is_swallowed(ready, fcm):
 # --------------------------------------------------------------------------- #
 def test_never_logs_tokens(ready, fcm, caplog):
     secret = "FCM-SECRET-TOKEN-do-not-log"
-    db = FakeDB(token_rows=_rows(secret, "another-SECRET-tok"))
+    repo = _repo(tokens=[secret, "another-SECRET-tok"])
     fcm["response"] = _batch(
         (True, None),
         (False, messaging.UnregisteredError("gone")),
     )
 
     with caplog.at_level(logging.DEBUG, logger="app.services.notification_service"):
-        ns.send_to_users(db, ["u1"], "T", "B")
+        ns.send_to_users(repo, ["u1"], "T", "B")
 
     assert secret not in caplog.text
     assert "another-SECRET-tok" not in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# notify_nearby_hunters — the fan-out entry point (runs as a BackgroundTask).
+# It builds its own NotificationRepository from the raw client, so we patch that
+# construction + send_to_users. Category-Partition:
+#   * firebase not ready            -> no-op                       [single]
+#   * get_nearby_hunters raises      -> swallowed, no send          [error]
+#   * get_nearby_hunters returns []  -> no-op                       [single]
+#   * returns ids                    -> send_to_users with geo+payload
+# --------------------------------------------------------------------------- #
+class TestNotifyNearbyHunters:
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        """Patch the boundaries the fn builds/calls internally: the repo it
+        constructs from the raw client, and send_to_users (spied)."""
+        repo = MagicMock(spec=NotificationRepository)
+        monkeypatch.setattr(ns, "SupabaseNotificationRepository", lambda db: repo)
+        sends = []
+        monkeypatch.setattr(ns, "send_to_users", lambda *a, **k: sends.append((a, k)))
+        return SimpleNamespace(repo=repo, sends=sends)
+
+    @staticmethod
+    def _notify():
+        ns.notify_nearby_hunters(
+            object(), "pet-1", 13.7563, 100.5018, "owner-1", 10.0, "Luna", "Dog",
+            max_age_hours=12,
+        )
+
+    def test_noop_when_firebase_not_ready(self, monkeypatch, wired):
+        monkeypatch.setattr(ns, "is_firebase_ready", lambda: False)
+        self._notify()
+        wired.repo.get_nearby_hunters.assert_not_called()
+        assert wired.sends == []
+
+    def test_swallows_nearby_query_failure(self, monkeypatch, wired):
+        monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
+        wired.repo.get_nearby_hunters.side_effect = RuntimeError("rpc down")
+        self._notify()  # must not raise
+        assert wired.sends == []
+
+    def test_noop_when_no_nearby_hunters(self, monkeypatch, wired):
+        monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
+        wired.repo.get_nearby_hunters.return_value = []
+        self._notify()
+        assert wired.sends == []
+
+    def test_sends_to_nearby_hunters_with_geo_and_payload(self, monkeypatch, wired):
+        monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
+        wired.repo.get_nearby_hunters.return_value = ["u1", "u2"]
+        self._notify()
+        # geo query: WKT (lng lat), km->m, freshness window, owner excluded
+        wired.repo.get_nearby_hunters.assert_called_once_with(
+            "POINT(100.5018 13.7563)", 10000.0, 12, "owner-1"
+        )
+        assert len(wired.sends) == 1
+        args, kwargs = wired.sends[0]
+        assert args[0] is wired.repo          # the same repo instance is reused
+        assert args[1] == ["u1", "u2"]        # the resolved hunter ids
+        assert kwargs["data"] == {"petId": "pet-1"}
+        assert "Luna" in kwargs["body"] and "Dog" in kwargs["body"]

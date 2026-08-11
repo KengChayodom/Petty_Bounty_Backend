@@ -15,21 +15,24 @@ dependency runs:
                                 scoped to the resolved user id).
 
 Only the boundaries are faked: the Supabase client the guard calls to validate
-the token (auth.get_supabase_client) and the DB client the route writes through
-(get_supabase_client dependency). The guard itself is the real code.
+the token (auth.get_supabase_client) and the UserRepository the route writes
+through (get_user_repository, doubled with MagicMock(spec=...)). The guard
+itself is the real code.
 
 AUTH_DEV_BYPASS is pinned False so the 401 can't be masked by the dev bypass
 inheriting the ambient .env.
 """
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import me
+from app.api.me import get_user_repository
 from app.core import auth
-from app.core.database import get_supabase_client
+from app.repositories.user_repository import UserRepository
 
 VALID_USER = "real-user-42"
 
@@ -49,18 +52,23 @@ class _FakeAuthClient:
 
 
 @pytest.fixture
-def client(monkeypatch, fake_db):
+def repo():
+    r = MagicMock(spec=UserRepository)
+    r.update_last_location.return_value = {"id": VALID_USER}  # write succeeds
+    return r
+
+
+@pytest.fixture
+def client(monkeypatch, repo):
     # The guard must reject, not fall back to a dev user.
     monkeypatch.setattr(auth.settings, "AUTH_DEV_BYPASS", False)
     # Boundary the REAL guard calls internally (not a dependency override).
     monkeypatch.setattr(auth, "get_supabase_client", lambda: _FakeAuthClient())
-    # The route body's DB write succeeds for the JWT user.
-    fake_db.set_table_result("users", "update", data=[{"id": VALID_USER}])
 
     app = FastAPI()
     app.include_router(me.router)
     # NOTE: get_current_user_id is deliberately NOT overridden — that's the point.
-    app.dependency_overrides[get_supabase_client] = lambda: fake_db
+    app.dependency_overrides[get_user_repository] = lambda: repo
     return TestClient(app)
 
 
@@ -71,7 +79,7 @@ def test_protected_route_401_without_token(client):
     assert r.headers.get("WWW-Authenticate") == "Bearer"
 
 
-def test_protected_route_200_with_valid_token(client, fake_db):
+def test_protected_route_200_with_valid_token(client, repo):
     r = client.post(
         "/me/location",
         json={"latitude": 1.0, "longitude": 2.0},
@@ -82,4 +90,5 @@ def test_protected_route_200_with_valid_token(client, fake_db):
     assert r.json()["status"] == "success"
     # Proof the REAL guard resolved the token and handed the id to the route:
     # the update is scoped to the resolved user, not a hardcoded dev id.
-    assert ("id", VALID_USER) in fake_db.filters_for("users", "update")
+    repo.update_last_location.assert_called_once()
+    assert repo.update_last_location.call_args.args[0] == VALID_USER

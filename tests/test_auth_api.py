@@ -7,8 +7,8 @@ read is scoped to the JWT user id on the `users` table.
 Boundary rule: the auth dependency and the Supabase client are the boundaries,
 replaced via FastAPI dependency_overrides. The route reads the caller's profile
 from `users` via a `.single()` terminal, so the DB double here exposes exactly
-that terminal (the shared FakeSupabase intentionally does not). We assert on the
-returned body and on the fact that the read was scoped to the JWT user id.
+that terminal. We assert on the returned body and on the fact that the read was
+scoped to the JWT user id.
 """
 from types import SimpleNamespace
 

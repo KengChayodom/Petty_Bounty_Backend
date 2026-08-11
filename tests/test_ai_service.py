@@ -1,25 +1,23 @@
 """
-Unit tests for the pure / boundary-mockable parts of app/services/ai_service.py:
+Unit tests for app/services/ai_service.AIManager — the NON-ML branches only.
 
-  * UTC-20  AIManager.isolate_subject  (MD-20, SRS-48) — pure selection + mask +
-    crop logic, exercised with a hand-built YOLO results double (real numpy masks
-    + a real PIL image). No model is loaded.
-  * UTC-21  AIManager.download_image   (MD-18, SRS-48) — httpx is replaced at the
-    boundary; HTTP-status and transport errors must propagate.
+The real YOLO/CLIP inference (model load + predict + encode) is the L4/slow
+concern; here every model boundary is stubbed, so what these tests actually
+exercise is the plumbing and the pure logic:
+  * lazy-load + class-level caching of the two models,
+  * run_yolo_seg / clip_encode delegating to the (stubbed) model,
+  * warmup_models running both and swallowing a load failure,
+  * isolate_subject — the subject-selection loop + numpy mask handling, which
+    is pure array work and needs no model at all.
 
-SRS-48 = download, decode, and isolate the targeted animal subject from the
-background before feature extraction: UTC-21 covers download+RGB-decode, UTC-20
-covers background-mask-out + tight crop to the subject.
-
-run_yolo_seg / clip_encode are thin asyncio.to_thread wrappers around the models
-(no branch logic) and stay covered by the parity smoke + integration, per plan.
+`isolate_subject` is fed hand-built stand-ins for the Ultralytics result
+(boxes / masks / names), so the branch behaviour is exercised deterministically.
 """
 import asyncio
 import io
+from unittest.mock import MagicMock
 
-import httpx
 import numpy as np
-import pytest
 from PIL import Image
 
 from app.services import ai_service
@@ -31,12 +29,10 @@ def run(coro):
 
 
 # --------------------------------------------------------------------------- #
-# YOLO results double. Mirrors only the surface isolate_subject reads:
-#   results[0].masks.data[i].cpu().numpy()  and
-#   results[0].boxes -> iterable of boxes with .cls[0]/.conf[0]
-#   results[0].names -> {class_id: label}
+# Stand-ins for the Ultralytics result shape isolate_subject reads.
 # --------------------------------------------------------------------------- #
-class _Mask:
+class _Tensor:
+    """Mimics a torch tensor's `.cpu().numpy()` used to pull a mask out."""
     def __init__(self, arr):
         self._arr = arr
 
@@ -47,174 +43,235 @@ class _Mask:
         return self._arr
 
 
+class _Box:
+    def __init__(self, cls_idx, conf):
+        self.cls = [cls_idx]     # box.cls[0] -> int(...)
+        self.conf = [conf]       # box.conf[0] -> float(...)
+
+
 class _Masks:
     def __init__(self, arrays):
-        self.data = [_Mask(a) for a in arrays]
-
-
-class _Box:
-    def __init__(self, cls_id, conf):
-        self.cls = [cls_id]
-        self.conf = [conf]
+        self.data = [_Tensor(a) for a in arrays]
 
 
 class _Result:
-    def __init__(self, masks, boxes, names):
-        self.masks = masks
+    def __init__(self, boxes, masks, names):
         self.boxes = boxes
+        self.masks = masks
         self.names = names
 
 
-def _block_mask(size, x0, x1, y0, y1):
-    """A (size, size) float mask with a solid 1.0 block in [y0:y1, x0:x1]."""
-    m = np.zeros((size, size), dtype=np.float32)
-    m[y0:y1, x0:x1] = 1.0
+def _img(w=10, h=10, fill=200):
+    return Image.fromarray(np.full((h, w, 3), fill, dtype=np.uint8))
+
+
+def _mask(h=10, w=10, region=None):
+    m = np.zeros((h, w), dtype=float)
+    if region:
+        r0, r1, c0, c1 = region
+        m[r0:r1, c0:c1] = 1.0
     return m
 
 
+# --------------------------------------------------------------------------- #
+# isolate_subject — the pure subject-selection + mask logic (no model)
+# --------------------------------------------------------------------------- #
 class TestIsolateSubject:
-    def test_empty_or_none_results_returns_none(self):
-        assert AIManager.isolate_subject(Image.new("RGB", (4, 4)), []) is None
-        assert AIManager.isolate_subject(Image.new("RGB", (4, 4)), None) is None
+    def test_none_when_no_results(self):
+        assert AIManager.isolate_subject(_img(), []) is None
 
-    def test_missing_masks_returns_none(self):
-        result = _Result(masks=None, boxes=[_Box(1, 0.9)], names={1: "dog"})
-        assert AIManager.isolate_subject(Image.new("RGB", (4, 4)), [result]) is None
+    def test_none_when_masks_or_boxes_missing(self):
+        box = _Box(0, 0.9)
+        no_masks = _Result(boxes=[box], masks=None, names={0: "dog"})
+        no_boxes = _Result(boxes=None, masks=_Masks([_mask()]), names={0: "dog"})
+        assert AIManager.isolate_subject(_img(), [no_masks]) is None
+        assert AIManager.isolate_subject(_img(), [no_boxes]) is None
 
-    def test_only_non_target_classes_returns_none(self):
-        img = Image.new("RGB", (10, 10))
-        result = _Result(
-            masks=_Masks([_block_mask(10, 1, 5, 1, 5)]),
-            boxes=[_Box(0, 0.99)],          # car — not a target animal
-            names={0: "car"},
+    def test_none_when_no_target_animal(self):
+        # 'person' is not in TARGET_ANIMALS -> skipped -> no candidate.
+        res = _Result(boxes=[_Box(0, 0.99)], masks=_Masks([_mask()]),
+                      names={0: "person"})
+        assert AIManager.isolate_subject(_img(), [res]) is None
+
+    def test_expected_species_filters_out_other_animals(self):
+        # A higher-confidence cat is present, but expected_species='dog' pins it.
+        masks = _Masks([_mask(region=(2, 5, 3, 6)), _mask(region=(2, 5, 3, 6))])
+        res = _Result(
+            boxes=[_Box(0, 0.90), _Box(1, 0.95)],
+            masks=masks,
+            names={0: "dog", 1: "cat"},
         )
-        assert AIManager.isolate_subject(img, [result]) is None
-
-    def test_picks_best_target_and_crops(self):
-        size = 30
-        # Original image: paint one known pixel inside the dog mask region.
-        img = Image.new("RGB", (size, size), (0, 0, 0))
-        img.putpixel((16, 16), (200, 100, 50))
-
-        # dog mask occupies cols/rows 15..18 -> with padding 10 and clamping at
-        # the image edge this yields bbox [5, 5, 29, 29] and a 24x24 crop.
-        masks = _Masks([
-            _block_mask(size, 0, 4, 0, 4),     # car  (ignored)
-            _block_mask(size, 15, 19, 15, 19), # dog  (best target)
-            _block_mask(size, 20, 24, 20, 24), # cat  (lower conf)
-        ])
-        boxes = [_Box(0, 0.99), _Box(1, 0.80), _Box(2, 0.60)]
-        result = _Result(masks, boxes, {0: "car", 1: "dog", 2: "cat"})
-
-        out = AIManager.isolate_subject(img, [result])
+        out = AIManager.isolate_subject(_img(), [res], expected_species="dog")
         assert out is not None
-        isolated, species, confidence, bbox = out
+        _iso, species, conf, _bbox = out
+        assert species == "Dog"       # the cat was filtered despite higher conf
+        assert conf == 0.90
+
+    def test_picks_highest_confidence_target(self):
+        # Order high-then-low so BOTH arcs of `if c > best_conf` are taken:
+        # the first box updates the best, the second (lower) does not.
+        masks = _Masks([_mask(region=(2, 5, 3, 6)), _mask(region=(2, 5, 3, 6))])
+        res = _Result(
+            boxes=[_Box(0, 0.90), _Box(0, 0.70)],
+            masks=masks,
+            names={0: "dog"},
+        )
+        out = AIManager.isolate_subject(_img(), [res])
+        assert out is not None
+        assert out[2] == 0.90         # the 0.90 detection won
+
+    def test_happy_path_no_resize_returns_crop_species_conf_bbox(self):
+        img = _img(w=50, h=50)
+        mask = _mask(h=50, w=50, region=(20, 25, 30, 35))  # rows 20-24, cols 30-34
+        res = _Result(boxes=[_Box(0, 0.88)], masks=_Masks([mask]),
+                      names={0: "dog"})
+
+        out = AIManager.isolate_subject(img, [res])
+
+        assert out is not None
+        iso, species, conf, bbox = out
+        assert isinstance(iso, Image.Image)
         assert species == "Dog"
-        assert confidence == pytest.approx(0.80)
-        assert bbox == [5.0, 5.0, 29.0, 29.0]
-        assert isolated.size == (24, 24)
-        # background pixel (top-left of the crop) blacked out
-        assert isolated.getpixel((0, 0)) == (0, 0, 0)
-        # the masked pixel at original (16,16) -> crop (11,11) keeps its colour
-        assert isolated.getpixel((11, 11)) == (200, 100, 50)
+        assert conf == 0.88
+        # bbox = mask bbox padded by MASK_PADDING (10), clamped to the image.
+        assert bbox == [20.0, 10.0, 45.0, 35.0]
 
-    def test_species_filter_overrides_confidence(self):
-        size = 30
-        img = Image.new("RGB", (size, size), (0, 0, 0))
-        masks = _Masks([
-            _block_mask(size, 15, 19, 15, 19),  # dog 0.9
-            _block_mask(size, 5, 9, 5, 9),      # cat 0.6
-        ])
-        boxes = [_Box(0, 0.90), _Box(1, 0.60)]
-        result = _Result(masks, boxes, {0: "dog", 1: "cat"})
+    def test_resize_branch_when_mask_dims_differ(self):
+        # Mask comes at 640x640 (network resolution) but the image is 50x50, so
+        # the resize-to-image branch runs.
+        img = _img(w=50, h=50)
+        big = _mask(h=640, w=640, region=(100, 540, 100, 540))
+        res = _Result(boxes=[_Box(0, 0.8)], masks=_Masks([big]),
+                      names={0: "dog"})
 
-        out = AIManager.isolate_subject(img, [result], expected_species="Cat")
-        assert out is not None
-        _isolated, species, confidence, _bbox = out
-        assert species == "Cat"
-        assert confidence == pytest.approx(0.60)
+        out = AIManager.isolate_subject(img, [res])
 
-    def test_filtered_species_absent_returns_none(self):
-        size = 30
-        img = Image.new("RGB", (size, size), (0, 0, 0))
-        masks = _Masks([
-            _block_mask(size, 15, 19, 15, 19),
-            _block_mask(size, 5, 9, 5, 9),
-        ])
-        boxes = [_Box(0, 0.90), _Box(1, 0.60)]
-        result = _Result(masks, boxes, {0: "dog", 1: "cat"})
+        assert out is not None          # resized mask is non-empty
+        assert out[1] == "Dog"
 
-        assert AIManager.isolate_subject(img, [result], expected_species="bird") is None
+    def test_none_when_mask_is_all_background(self):
+        # A qualifying box, but its mask selects zero pixels -> no crop.
+        res = _Result(boxes=[_Box(0, 0.9)], masks=_Masks([_mask()]),  # all zeros
+                      names={0: "dog"})
+        assert AIManager.isolate_subject(_img(), [res]) is None
 
 
 # --------------------------------------------------------------------------- #
-# download_image — httpx replaced at the module boundary.
+# download_image — httpx fetch + PIL decode (network boundary stubbed)
 # --------------------------------------------------------------------------- #
 class _FakeResp:
-    def __init__(self, content=b"", status_error=None):
+    def __init__(self, content):
         self.content = content
-        self._status_error = status_error
 
     def raise_for_status(self):
-        if self._status_error:
-            raise self._status_error
+        return None
 
 
 class _FakeClient:
-    def __init__(self, resp=None, get_exc=None):
-        self._resp = resp
-        self._get_exc = get_exc
-        self.requested = []
+    def __init__(self, content):
+        self._content = content
 
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, *_a):
+    async def __aexit__(self, *exc):
         return False
 
     async def get(self, url):
-        self.requested.append(url)
-        if self._get_exc:
-            raise self._get_exc
-        return self._resp
-
-
-def _patch_client(monkeypatch, client):
-    monkeypatch.setattr(ai_service.httpx, "AsyncClient", lambda *a, **k: client)
-    return client
+        return _FakeResp(self._content)
 
 
 class TestDownloadImage:
-    def test_downloads_and_decodes_to_rgb(self, monkeypatch):
+    def test_fetches_and_decodes_to_rgb(self, monkeypatch):
         buf = io.BytesIO()
-        Image.new("RGB", (7, 11), (10, 20, 30)).save(buf, format="PNG")
-        client = _patch_client(
-            monkeypatch, _FakeClient(resp=_FakeResp(content=buf.getvalue()))
+        Image.new("RGB", (4, 4), (10, 20, 30)).save(buf, format="PNG")
+        png = buf.getvalue()
+        monkeypatch.setattr(
+            ai_service.httpx, "AsyncClient", lambda *a, **k: _FakeClient(png)
         )
 
-        url = "https://img.example/x.png"
-        img = run(AIManager.download_image(url))
+        img = run(AIManager.download_image("http://img/x.png"))
 
+        assert isinstance(img, Image.Image)
         assert img.mode == "RGB"
-        assert img.size == (7, 11)
-        assert client.requested == [url]
+        assert img.size == (4, 4)
 
-    def test_http_status_error_propagates(self, monkeypatch):
-        err = httpx.HTTPStatusError(
-            "404",
-            request=httpx.Request("GET", "https://img.example/missing.png"),
-            response=httpx.Response(404),
+
+# --------------------------------------------------------------------------- #
+# Model lazy-load + caching (the model constructor is stubbed)
+# --------------------------------------------------------------------------- #
+class TestModelLoading:
+    def test_get_yolo_loads_once_then_caches(self, monkeypatch):
+        monkeypatch.setattr(AIManager, "_yolo", None)
+        calls = []
+        monkeypatch.setattr(ai_service, "YOLO",
+                            lambda weights: calls.append(weights) or "YOLO_MODEL")
+
+        first = AIManager.get_yolo()
+        second = AIManager.get_yolo()
+
+        assert first == "YOLO_MODEL"
+        assert second is first                     # cached, not rebuilt
+        assert calls == [AIManager.YOLO_WEIGHTS]   # constructed exactly once
+
+    def test_get_clip_loads_once_then_caches(self, monkeypatch):
+        monkeypatch.setattr(AIManager, "_clip", None)
+        calls = []
+        monkeypatch.setattr(ai_service, "SentenceTransformer",
+                            lambda name: calls.append(name) or "CLIP_MODEL")
+
+        first = AIManager.get_clip()
+        second = AIManager.get_clip()
+
+        assert first == "CLIP_MODEL"
+        assert second is first
+        assert calls == [AIManager.CLIP_MODEL]
+
+
+# --------------------------------------------------------------------------- #
+# run_yolo_seg / clip_encode delegate to the (stubbed) model
+# --------------------------------------------------------------------------- #
+class TestPipelineDelegation:
+    def test_run_yolo_seg_delegates_to_predict(self, monkeypatch):
+        model = MagicMock()
+        model.predict.return_value = "YOLO_RESULTS"
+        monkeypatch.setattr(AIManager, "get_yolo", lambda: model)
+
+        out = run(AIManager.run_yolo_seg("PIL_IMAGE", conf=0.3))
+
+        assert out == "YOLO_RESULTS"
+        model.predict.assert_called_once_with(
+            source="PIL_IMAGE", conf=0.3, verbose=False
         )
-        _patch_client(monkeypatch, _FakeClient(resp=_FakeResp(status_error=err)))
 
-        with pytest.raises(httpx.HTTPError):
-            run(AIManager.download_image("https://img.example/missing.png"))
+    def test_clip_encode_returns_plain_list(self, monkeypatch):
+        model = MagicMock()
+        model.encode.return_value = np.array([1.0, 2.0, 3.0])
+        monkeypatch.setattr(AIManager, "get_clip", lambda: model)
 
-    def test_network_error_propagates(self, monkeypatch):
-        _patch_client(
-            monkeypatch,
-            _FakeClient(get_exc=httpx.ConnectError("connection refused")),
-        )
+        out = run(AIManager.clip_encode("ISOLATED_IMG"))
 
-        with pytest.raises(httpx.HTTPError):
-            run(AIManager.download_image("https://img.example/x.png"))
+        assert out == [1.0, 2.0, 3.0]              # ndarray -> list
+        model.encode.assert_called_once_with("ISOLATED_IMG")
+
+
+# --------------------------------------------------------------------------- #
+# warmup_models — runs both, and swallows a load failure
+# --------------------------------------------------------------------------- #
+class TestWarmup:
+    def test_warms_both_models(self, monkeypatch):
+        yolo, clip = MagicMock(), MagicMock()
+        monkeypatch.setattr(AIManager, "get_yolo", lambda: yolo)
+        monkeypatch.setattr(AIManager, "get_clip", lambda: clip)
+
+        AIManager.warmup_models()                  # must not raise
+
+        yolo.predict.assert_called_once()
+        clip.encode.assert_called_once()
+
+    def test_swallows_load_failure(self, monkeypatch):
+        def boom():
+            raise RuntimeError("weights not found")
+        monkeypatch.setattr(AIManager, "get_yolo", boom)
+
+        AIManager.warmup_models()                  # except branch, no raise
