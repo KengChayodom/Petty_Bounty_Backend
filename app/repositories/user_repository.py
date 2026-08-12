@@ -28,3 +28,6 @@ class UserRepository(Protocol):
     def update_last_location(
         self, user_id: str, location_point: str
     ) -> dict | None: ...
+    def update_profile(
+        self, user_id: str, patch: dict
+    ) -> dict | None: ...

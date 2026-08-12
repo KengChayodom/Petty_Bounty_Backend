@@ -29,6 +29,7 @@ class AnalyzePayload(TypedDict):
     bbox: list[float]            # [x1, y1, x2, y2] in original image coords
     confidence: float            # 0.0–1.0, YOLO confidence on the picked detection
     feature_vector: list[float]  # 512-D CLIP embedding (the heavy artefact)
+    primary_color_hex: Optional[str]  # '#RRGGBB' coat colour, or None if unreadable
 
 
 class AnalyzeCache:

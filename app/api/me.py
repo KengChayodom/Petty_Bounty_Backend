@@ -12,11 +12,14 @@ from pydantic import BaseModel, Field
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.repositories.supabase_user_repository import SupabaseUserRepository
-from app.repositories.user_repository import UserRepository
+from app.repositories.user_repository import UserProfileNotFound, UserRepository
 from app.schemas.common import StandardResponse
 from app.utils.postgis import create_postgis_point
 
 router = APIRouter(prefix="/me", tags=["Me"])
+
+# Object-Storage photo formats accepted for the profile picture (MD-42/SRS-70).
+_ALLOWED_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
 def get_user_repository(
@@ -53,3 +56,70 @@ async def update_my_location(
         raise HTTPException(
             status_code=500, detail=f"Failed to update location: {e}"
         )
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Profile edit payload (MD-41 username + MD-42 photo). Both fields are
+    optional so the client can save either one alone or both together, but at
+    least one must be present — an empty PATCH is rejected. `display_name`
+    carries the username (stored in the users.display_name column, SRS-69);
+    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-70).
+    """
+    display_name: str | None = None
+    photo_url: str | None = None
+
+
+@router.patch("", response_model=StandardResponse)
+async def update_my_profile(
+    payload: ProfileUpdateRequest,
+    repo: UserRepository = Depends(get_user_repository),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Edit the caller's own profile — username (MD-41) and/or photo (MD-42).
+
+    Caller identity comes solely from the JWT; the update is self-scoped to that
+    row in `users`. Validation mirrors UD-15: a blank username -> 400, an
+    unsupported photo format -> 400, a missing profile row -> 404.
+    """
+    patch: dict = {}
+
+    if payload.display_name is not None:
+        display_name = payload.display_name.strip()
+        if not display_name:
+            raise HTTPException(
+                status_code=400, detail="Username cannot be empty."
+            )
+        patch["display_name"] = display_name
+
+    if payload.photo_url is not None:
+        photo_url = payload.photo_url.strip()
+        if not photo_url.lower().endswith(_ALLOWED_PHOTO_EXTENSIONS):
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file format. Please upload JPG, JPEG, or PNG.",
+            )
+        patch["profile_image_url"] = photo_url
+
+    if not patch:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a username or a photo to update.",
+        )
+
+    try:
+        updated = repo.update_profile(user_id, patch)
+    except UserProfileNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update profile: {e}"
+        )
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User profile not found.")
+
+    return StandardResponse(
+        status="success",
+        message="Profile updated successfully.",
+        data=updated,
+    )
