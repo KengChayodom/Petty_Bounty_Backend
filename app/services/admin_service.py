@@ -6,9 +6,15 @@ The hard part (transferring the bounty + distributing F1 clue scores +
 flipping pet status, all atomically) is delegated to the
 `resolve_missing_pet` PostgreSQL function. This module is just the thin
 Python wrapper.
+
+All DB access goes through an AdminRepository port (app/repositories/); this
+service holds zero supabase-py calls.
 """
 import logging
 from typing import Optional
+
+from app.repositories.admin_repository import AdminRepository
+from app.services.sighting_logic import strip_feature_vector
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +22,8 @@ logger = logging.getLogger(__name__)
 class AdminService:
     """Verification + resolution operations available to admins only."""
 
-    def __init__(self, db_client):
-        self.db = db_client
+    def __init__(self, repo: AdminRepository):
+        self.repo = repo
 
     async def verify_sighting(
         self, sighting_id: str, verification_status: str,
@@ -27,14 +33,12 @@ class AdminService:
                 "verification_status must be 'Verified' or 'Dismissed'"
             )
         try:
-            res = (self.db.table("sightings")
-                          .update({"verification_status": verification_status})
-                          .eq("id", sighting_id)
-                          .execute())
-            if not res.data:
+            row = self.repo.update_sighting_verification(
+                sighting_id, verification_status
+            )
+            if not row:
                 raise ValueError(f"Sighting {sighting_id} not found")
-            row = res.data[0]
-            row.pop("feature_vector", None)
+            row = strip_feature_vector(row)
             logger.warning(
                 "Admin set sighting %s verification_status=%s",
                 sighting_id, verification_status,
@@ -55,13 +59,7 @@ class AdminService:
         to see Dismissed entries too).
         """
         try:
-            response = self.db.rpc("sightings_for_pet", {
-                "p_pet_id":            pet_id,
-                "p_limit":             limit,
-                "p_offset":            offset,
-                "p_include_dismissed": True,  # admins must see Dismissed entries
-            }).execute()
-            return response.data or []
+            return self.repo.get_sighting_timeline(pet_id, limit, offset)
         except Exception as e:
             logger.error("Error fetching timeline for pet %s: %s", pet_id, e)
             raise
@@ -80,18 +78,15 @@ class AdminService:
         we re-raise as ValueError so the API layer can return 400.
         """
         try:
-            res = self.db.rpc("resolve_missing_pet", {
-                "p_pet_id":            pet_id,
-                "p_final_sighting_id": final_sighting_id,
-                "p_slip_image_url":    slip_image_url,
-                "p_reference_no":      reference_no,
-                "p_verified_by":       verified_by,
-            }).execute()
+            result = self.repo.resolve_missing_pet(
+                pet_id, final_sighting_id, slip_image_url,
+                reference_no, verified_by,
+            )
             logger.warning(
                 "Pet %s resolved by %s — final_sighting=%s",
                 pet_id, verified_by, final_sighting_id,
             )
-            return res.data
+            return result
         except Exception as e:
             msg = str(e)
             # The DB function raises with these prefixes — translate to a

@@ -6,17 +6,23 @@ The client pushes the device's current position (from the existing geolocator
 in home_map) so the backend can answer "which hunters are near this newly
 reported pet" via the get_nearby_hunters RPC.
 """
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
+from app.repositories.supabase_user_repository import SupabaseUserRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.common import StandardResponse
 from app.utils.postgis import create_postgis_point
 
 router = APIRouter(prefix="/me", tags=["Me"])
+
+
+def get_user_repository(
+    supabase=Depends(get_supabase_client),
+) -> UserRepository:
+    return SupabaseUserRepository(supabase)
 
 
 class LocationUpdateRequest(BaseModel):
@@ -27,24 +33,14 @@ class LocationUpdateRequest(BaseModel):
 @router.post("/location", response_model=StandardResponse)
 async def update_my_location(
     payload: LocationUpdateRequest,
-    supabase=Depends(get_supabase_client),
+    repo: UserRepository = Depends(get_user_repository),
     user_id: str = Depends(get_current_user_id),
 ):
     """Write the caller's current location + timestamp onto their users row."""
     location_point = create_postgis_point(payload.latitude, payload.longitude)
     try:
-        res = (
-            supabase.table("users")
-            .update(
-                {
-                    "last_location": location_point,
-                    "last_location_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            .eq("id", user_id)
-            .execute()
-        )
-        if not res.data:
+        updated = repo.update_last_location(user_id, location_point)
+        if not updated:
             raise HTTPException(
                 status_code=404, detail="User profile not found."
             )

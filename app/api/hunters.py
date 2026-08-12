@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
+from app.repositories.supabase_sighting_repository import (
+    SupabaseSightingRepository,
+)
 from app.schemas.common import StandardResponse
 from app.services.ai_service import AIManager
 from app.services.sighting_service import SightingService
@@ -12,7 +15,9 @@ router = APIRouter(prefix="/hunters", tags=["Hunters"])
 def get_sighting_service(
     supabase=Depends(get_supabase_client),
 ) -> SightingService:
-    return SightingService(db_client=supabase, ai_manager=AIManager)
+    return SightingService(
+        repo=SupabaseSightingRepository(supabase), ai_manager=AIManager
+    )
 
 
 @router.get("/me/score", response_model=StandardResponse)

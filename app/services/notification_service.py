@@ -11,6 +11,10 @@ import logging
 from firebase_admin import messaging
 
 from app.core.firebase import is_firebase_ready
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.supabase_notification_repository import (
+    SupabaseNotificationRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +25,7 @@ _ANDROID_CHANNEL_ID = "pet_alerts"
 
 
 def send_to_users(
-    db,
+    repo: NotificationRepository,
     user_ids: list[str],
     title: str,
     body: str,
@@ -41,17 +45,11 @@ def send_to_users(
         return
 
     try:
-        res = (
-            db.table("device_tokens")
-            .select("fcm_token")
-            .in_("user_id", user_ids)
-            .execute()
-        )
+        tokens = repo.get_fcm_tokens_for_users(user_ids)
     except Exception as e:
         logger.warning("Failed to load device tokens: %s", e)
         return
 
-    tokens = [r["fcm_token"] for r in (res.data or []) if r.get("fcm_token")]
     if not tokens:
         logger.info("No device tokens for %d user(s) — nothing to send.", len(user_ids))
         return
@@ -89,7 +87,7 @@ def send_to_users(
 
     if stale:
         try:
-            db.table("device_tokens").delete().in_("fcm_token", stale).execute()
+            repo.delete_device_tokens(stale)
             logger.info("Pruned %d stale FCM token(s).", len(stale))
         except Exception as e:
             logger.warning("Failed to prune stale tokens: %s", e)
@@ -119,30 +117,28 @@ def notify_nearby_hunters(
     if not is_firebase_ready():
         return
 
+    # `db` is the raw request-scoped client (this runs as a BackgroundTask
+    # scheduled straight from the route); wrap it in the port here — the
+    # composition point for the fan-out.
+    repo = SupabaseNotificationRepository(db)
+
     # WKT 'POINT(lng lat)' — Postgres casts to geography(4326); mirrors the
     # convention used by get_nearby_missing_pets.
     center_wkt = f"POINT({longitude} {latitude})"
     try:
-        res = db.rpc(
-            "get_nearby_hunters",
-            {
-                "center_location": center_wkt,
-                "radius_meters": radius_km * 1000.0,
-                "max_age_hours": max_age_hours,
-                "exclude_user_id": owner_id,
-            },
-        ).execute()
+        user_ids = repo.get_nearby_hunters(
+            center_wkt, radius_km * 1000.0, max_age_hours, owner_id
+        )
     except Exception as e:
         logger.warning("get_nearby_hunters failed for pet %s: %s", pet_id, e)
         return
 
-    user_ids = [r["user_id"] for r in (res.data or []) if r.get("user_id")]
     if not user_ids:
         logger.info("No fresh nearby hunters for pet %s.", pet_id)
         return
 
     send_to_users(
-        db,
+        repo,
         user_ids,
         title="Missing pet nearby 🐾",
         body=f"{pet_name} ({species}) was just reported near you. Can you help?",

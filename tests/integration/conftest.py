@@ -189,6 +189,14 @@ class Seeder:
                 (sighting_id, missing_pet_id, similarity),
             )
 
+    def device_token(self, *, user_id, fcm_token="tok", platform="android") -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO device_tokens (user_id, fcm_token, platform) "
+                "VALUES (%s, %s, %s)",
+                (user_id, fcm_token, platform),
+            )
+
 
 @pytest.fixture
 def seed(conn):

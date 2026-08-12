@@ -27,6 +27,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import settings
 from app.core.database import get_supabase_client
+from app.repositories.supabase_user_repository import SupabaseUserRepository
 
 logger = getLogger(__name__)
 
@@ -180,19 +181,13 @@ def require_admin(
         )
 
     try:
-        # maybe_single() returns data=None for a missing profile row instead of
-        # raising — so "no profile" falls through to the 403 below (a missing
-        # profile is an authorization condition, not a server error). A genuine
+        # get_user_role() uses maybe_single(): a missing profile row yields
+        # role None (falls through to the 403 below — a missing profile is an
+        # authorization condition, not a server error), while a genuine
         # DB/transport failure still raises and surfaces as 500.
-        result = (
+        role = SupabaseUserRepository(
             get_supabase_client()
-            .table("users")
-            .select("role")
-            .eq("id", user_id)
-            .maybe_single()
-            .execute()
-        )
-        role = (getattr(result, "data", None) or {}).get("role")
+        ).get_user_role(user_id)
     except Exception as exc:
         logger.error("Admin role lookup failed for %s: %s", user_id, exc)
         raise HTTPException(

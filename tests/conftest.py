@@ -1,10 +1,10 @@
 """
-Shared fixtures + a Supabase test double.
+Shared fixtures + boundary stubs.
 
-Design rule (per the automated-testing skill): mock only at the *boundary*
-— here that boundary is the supabase-py client. The fake records the exact
-payloads the service hands to the DB and returns programmable responses, so
-tests assert on real results/state rather than "a mock was called".
+Design rule (per db-testing-seams): service/route tests double the repository
+*ports* this codebase owns (MagicMock(spec=<Repo>)), never the supabase-py
+client. There is deliberately NO hand-rolled Supabase fake here — the vendor
+client is exercised only by the adapter integration suite (tests/integration).
 """
 import sys
 import types
@@ -115,131 +115,3 @@ def _clean_analyze_cache():
     AnalyzeCache.clear()
     yield
     AnalyzeCache.clear()
-
-
-# --------------------------------------------------------------------------- #
-# Fake Supabase client
-# --------------------------------------------------------------------------- #
-class FakeResult:
-    """Mimics the supabase-py APIResponse shape the service reads: .data/.count."""
-
-    def __init__(self, data=None, count=None):
-        self.data = data
-        self.count = count
-
-
-class _Chain:
-    """A fluent query builder. Filters/modifiers are no-ops returning self;
-    .execute() records the terminal op and returns the queued result."""
-
-    def __init__(self, db, table):
-        self._db = db
-        self._table = table
-        self._op = "select"
-        self._payload = None
-        self._on_conflict = None
-        self._filters = []   # [(col, value), ...] captured from .eq(...)
-
-    # mutating ops capture their payload
-    def insert(self, payload):
-        self._op, self._payload = "insert", payload
-        return self
-
-    def upsert(self, rows, on_conflict=None):
-        self._op, self._payload, self._on_conflict = "upsert", rows, on_conflict
-        return self
-
-    def update(self, payload):
-        self._op, self._payload = "update", payload
-        return self
-
-    def select(self, *_a, **_k):
-        self._op = "select"
-        return self
-
-    def delete(self):
-        self._op = "delete"
-        return self
-
-    # eq is captured so tests can assert a write was scoped to the right row
-    # (e.g. /me/location updating ONLY the JWT user). Other filters are swallowed.
-    def eq(self, *args, **_k):
-        if args:
-            self._filters.append(tuple(args))
-        return self
-
-    def in_(self, *_a, **_k):
-        return self
-
-    def order(self, *_a, **_k):
-        return self
-
-    def range(self, *_a, **_k):
-        return self
-
-    def execute(self):
-        self._db.recorded.append((self._table, self._op, self._payload, self._on_conflict))
-        self._db.recorded_filters.append((self._table, self._op, list(self._filters)))
-        return self._db._table_results.get((self._table, self._op), FakeResult(data=[]))
-
-
-class _RpcChain:
-    def __init__(self, db, name):
-        self._db = db
-        self._name = name
-
-    def execute(self):
-        return self._db._rpc_results.get(self._name, FakeResult(data=[]))
-
-
-class FakeSupabase:
-    """Programmable stand-in for the supabase-py client."""
-
-    def __init__(self):
-        self.recorded = []          # [(table, op, payload, on_conflict), ...]
-        self.recorded_filters = []  # [(table, op, [(col, value), ...]), ...]
-        self.rpc_calls = []         # [(name, params), ...]
-        self._table_results = {}    # (table, op) -> FakeResult
-        self._rpc_results = {}      # name -> FakeResult
-
-    # --- programming the responses ---------------------------------------- #
-    def set_table_result(self, table, op, data=None, count=None):
-        self._table_results[(table, op)] = FakeResult(data=data, count=count)
-
-    def set_rpc_result(self, name, data):
-        self._rpc_results[name] = FakeResult(data=data)
-
-    # --- the client surface the service actually calls -------------------- #
-    def table(self, name):
-        return _Chain(self, name)
-
-    def rpc(self, name, params):
-        self.rpc_calls.append((name, params))
-        return _RpcChain(self, name)
-
-    # --- helpers for assertions ------------------------------------------- #
-    def payload_for(self, table, op):
-        """Return the payload from the (last) recorded op on table, or None."""
-        for t, o, payload, _oc in reversed(self.recorded):
-            if t == table and o == op:
-                return payload
-        return None
-
-    def on_conflict_for(self, table, op):
-        """Return the on_conflict key from the (last) recorded op, or None."""
-        for t, o, _payload, oc in reversed(self.recorded):
-            if t == table and o == op:
-                return oc
-        return None
-
-    def filters_for(self, table, op):
-        """Return the [(col, value), ...] eq-filters from the last recorded op."""
-        for t, o, filters in reversed(self.recorded_filters):
-            if t == table and o == op:
-                return filters
-        return []
-
-
-@pytest.fixture
-def fake_db():
-    return FakeSupabase()

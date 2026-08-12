@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import require_admin
 from app.core.database import get_supabase_client
+from app.repositories.supabase_admin_repository import SupabaseAdminRepository
 from app.schemas.admin import ResolveMissingPetRequest, VerifySightingRequest
 from app.schemas.common import StandardResponse
 from app.services.admin_service import AdminService
@@ -10,7 +11,7 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 def get_admin_service(supabase=Depends(get_supabase_client)) -> AdminService:
-    return AdminService(db_client=supabase)
+    return AdminService(repo=SupabaseAdminRepository(supabase))
 
 
 @router.patch(
