@@ -1,8 +1,10 @@
 -- The DEPLOYED matcher overload the app actually calls.
 --
--- PROVENANCE: copied verbatim from the live Supabase project on 2026-06-04 via
+-- PROVENANCE: copied verbatim from the live Supabase project (last re-pulled
+--   2026-08-13, after the colour-matching migration) via
 --   SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname='match_missing_pets'
--- and the signature is match_missing_pets(uuid, integer).
+-- and the signature is match_missing_pets(uuid, integer). The final RETURN
+-- column `primary_color_hex` feeds the Python colour re-rank (sighting_logic).
 --
 -- WHY THIS FILE EXISTS: this 2-arg `p_sighting_id` overload is NOT in any repo
 -- SQL file — sql-update.txt only defines a different 6-arg variant. CLAUDE.md
@@ -17,7 +19,7 @@
 -- returned (similarity COALESCEd to 0, ordered last via NULLS LAST).
 
 CREATE OR REPLACE FUNCTION public.match_missing_pets(p_sighting_id uuid, match_limit integer)
- RETURNS TABLE(id uuid, pet_name text, species text, characteristics jsonb, bounty_amount numeric, last_seen_location text, last_seen_time text, image_url text, similarity double precision, distance_meters double precision, status text)
+ RETURNS TABLE(id uuid, pet_name text, species text, characteristics jsonb, bounty_amount numeric, last_seen_location text, last_seen_time text, image_url text, similarity double precision, distance_meters double precision, status text, primary_color_hex text)
  LANGUAGE plpgsql
 AS $function$
 DECLARE
@@ -47,7 +49,8 @@ BEGIN
         mp.image_url,
         COALESCE(1 - (mp.feature_vector <=> v_embedding), 0)::float AS similarity,
         ST_Distance(mp.last_seen_location, v_location)::float       AS distance_meters,
-        mp.status::text
+        mp.status::text,
+        mp.primary_color_hex::text
     FROM missing_pets mp
     WHERE LOWER(mp.species::text) = LOWER(v_species::text)
       AND mp.status = 'Searching'

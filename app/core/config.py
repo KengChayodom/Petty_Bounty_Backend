@@ -38,17 +38,29 @@ class Settings:
     CLIP_MATCH_WEIGHT: float = 0.7
     COLOR_MATCH_WEIGHT: float = 0.3
 
-    # Hard exclusion for clearly-wrong colours. Colour distance is measured in
-    # CIELab with lightness down-weighted (COLOR_LIGHTNESS_WEIGHT) so a bright
-    # owner-picked swatch and the same coat photographed under shade still count
-    # as the same colour "family" — what separates grey from orange is chroma
-    # (a*/b*), not brightness. A candidate whose colour distance exceeds
-    # COLOR_EXCLUDE_DISTANCE is dropped from the results entirely. Tuned lenient
-    # on purpose: only obviously-different colours (grey vs orange) get cut;
-    # shade/lighting variants of the same colour survive. Colour is only ever
-    # applied when BOTH sides have a colour — a missing colour never excludes.
-    COLOR_EXCLUDE_DISTANCE: float = 45.0
-    COLOR_LIGHTNESS_WEIGHT: float = 0.25
+    # Colour exclusion works in two regimes, split by chroma (C* = √(a*²+b*²) in
+    # CIELab) so "grey vs black" and "grey vs orange" are judged by the right
+    # signal — see app/services/sighting_logic.color_similarity:
+    #
+    #   • A colour with C* below NEUTRAL_CHROMA_THRESHOLD is NEUTRAL (grey/
+    #     black/white/cream); at/above it the colour is CHROMATIC (orange/
+    #     ginger/brown/tan).
+    #   • neutral vs chromatic  → different family, EXCLUDE outright (grey coat
+    #     vs orange coat — the bug this whole feature exists to kill).
+    #   • both CHROMATIC → CIELab distance with lightness down-weighted
+    #     (COLOR_LIGHTNESS_WEIGHT) so a bright swatch and the same coat in shade
+    #     stay the same family; EXCLUDE past COLOR_EXCLUDE_DISTANCE.
+    #   • both NEUTRAL → chroma can't tell them apart, so brightness decides:
+    #     EXCLUDE when |ΔL*| exceeds NEUTRAL_LIGHTNESS_EXCLUDE (this is what
+    #     separates black from grey) while shade/lighting variants of one grey
+    #     coat stay together.
+    #
+    # Colour is only ever applied when BOTH sides have a colour — a missing
+    # colour never excludes (falls back to CLIP-only).
+    NEUTRAL_CHROMA_THRESHOLD: float = 10.0
+    NEUTRAL_LIGHTNESS_EXCLUDE: float = 45.0
+    COLOR_EXCLUDE_DISTANCE: float = 42.0
+    COLOR_LIGHTNESS_WEIGHT: float = 0.4
 
     # Candidate pool the match RPC is asked for before the colour re-rank trims
     # to the client's limit. Must exceed DEFAULT_MATCH_LIMIT so the colour pass

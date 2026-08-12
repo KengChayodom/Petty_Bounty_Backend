@@ -295,6 +295,8 @@ class SightingService:
                 color_weight=settings.COLOR_MATCH_WEIGHT,
                 exclude_distance=settings.COLOR_EXCLUDE_DISTANCE,
                 lightness_weight=settings.COLOR_LIGHTNESS_WEIGHT,
+                neutral_chroma=settings.NEUTRAL_CHROMA_THRESHOLD,
+                neutral_lightness_exclude=settings.NEUTRAL_LIGHTNESS_EXCLUDE,
                 limit=limit,
             )
             logger.info(

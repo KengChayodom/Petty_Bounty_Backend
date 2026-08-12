@@ -101,12 +101,73 @@ def color_distance(
     return math.sqrt(dl * dl + da * da + db * db)
 
 
+def _chroma(lab: tuple[float, float, float]) -> float:
+    """CIELab chroma C* = √(a*² + b*²) — how colourful (vs neutral grey) a
+    colour is, independent of brightness."""
+    return math.hypot(lab[1], lab[2])
+
+
+# EXCLUDE is a sentinel score meaning "drop this candidate", kept distinct from a
+# real 0.0 similarity so a same-family-but-distant colour can still score 0.
+EXCLUDE = -1.0
+
+
+def color_similarity(
+    hex_a: str | None,
+    hex_b: str | None,
+    *,
+    neutral_chroma: float,
+    neutral_lightness_exclude: float,
+    chromatic_exclude: float,
+    lightness_weight: float,
+) -> float | None:
+    """Coat-colour agreement between two hex colours, split by chroma regime.
+
+    Returns:
+      • None    — colour unavailable/malformed on a side (caller falls back to
+                  CLIP-only; a missing colour never excludes);
+      • EXCLUDE — clearly different colour, drop the candidate. Two cases:
+                  a NEUTRAL colour (C* < `neutral_chroma`, e.g. grey) paired
+                  with a CHROMATIC one (e.g. orange) — different family; or two
+                  NEUTRALs whose |ΔL*| exceeds `neutral_lightness_exclude`
+                  (black vs grey);
+      • 0..1    — similarity (1 = identical). For two CHROMATICs it falls off
+                  linearly to 0 at `chromatic_exclude` on the lightness-weighted
+                  CIELab distance; for two NEUTRALs, linearly to 0 at
+                  `neutral_lightness_exclude` on |ΔL*|.
+    """
+    lab_a, lab_b = hex_to_lab(hex_a), hex_to_lab(hex_b)
+    if lab_a is None or lab_b is None:
+        return None
+    a_neutral = _chroma(lab_a) < neutral_chroma
+    b_neutral = _chroma(lab_b) < neutral_chroma
+
+    if a_neutral != b_neutral:
+        return EXCLUDE  # neutral vs chromatic — different family (grey vs orange)
+
+    if a_neutral and b_neutral:
+        dl = abs(lab_a[0] - lab_b[0])
+        if dl > neutral_lightness_exclude:
+            return EXCLUDE  # black vs grey — same hue, far apart in brightness
+        return (max(0.0, 1.0 - dl / neutral_lightness_exclude)
+                if neutral_lightness_exclude > 0 else 0.0)
+
+    # both chromatic — chroma-forgiving CIELab distance decides the family.
+    dist = color_distance(hex_a, hex_b, lightness_weight=lightness_weight)
+    if dist > chromatic_exclude:
+        return EXCLUDE
+    return (max(0.0, 1.0 - dist / chromatic_exclude)
+            if chromatic_exclude > 0 else 0.0)
+
+
 def _combined_score(
     match: dict,
     sighting_hex: str | None,
     *,
     clip_weight: float,
     color_weight: float,
+    neutral_chroma: float,
+    neutral_lightness_exclude: float,
     exclude_distance: float,
     lightness_weight: float,
 ) -> float | None:
@@ -115,17 +176,18 @@ def _combined_score(
     on either side, the raw CLIP similarity is returned (old behaviour — colour
     can neither help nor exclude)."""
     clip = match.get("similarity") or 0.0
-    dist = color_distance(
+    sim = color_similarity(
         sighting_hex, match.get("primary_color_hex"),
+        neutral_chroma=neutral_chroma,
+        neutral_lightness_exclude=neutral_lightness_exclude,
+        chromatic_exclude=exclude_distance,
         lightness_weight=lightness_weight,
     )
-    if dist is None:
+    if sim is None:
         return clip
-    if dist > exclude_distance:
+    if sim == EXCLUDE:
         return None  # exclude
-    color_sim = (max(0.0, 1.0 - dist / exclude_distance)
-                 if exclude_distance > 0 else 0.0)
-    return clip_weight * clip + color_weight * color_sim
+    return clip_weight * clip + color_weight * sim
 
 
 def rerank_by_color(
@@ -137,16 +199,20 @@ def rerank_by_color(
     exclude_distance: float,
     lightness_weight: float,
     limit: int,
+    neutral_chroma: float = 10.0,
+    neutral_lightness_exclude: float = 45.0,
 ) -> list[dict]:
     """Fold coat-colour similarity into CLIP ranking, then trim to `limit`.
 
-    Per candidate (each carries CLIP `similarity` + its own `primary_color_hex`):
-      • colour missing on either side → keep, ranked by raw CLIP (old behaviour,
-        so a NULL colour never excludes or penalises);
-      • colour distance > `exclude_distance` → DROP (clearly-wrong colour, e.g.
-        an orange sighting against a grey pet);
+    Per candidate (each carries CLIP `similarity` + its own `primary_color_hex`),
+    colour is judged by regime (see `color_similarity`):
+      • colour missing on either side → keep, ranked by raw CLIP (a NULL colour
+        never excludes or penalises);
+      • neutral coat vs chromatic coat (grey vs orange) → DROP;
+      • two neutrals too far apart in brightness (black vs grey) → DROP;
+      • two chromatics past `exclude_distance` (orange vs blue) → DROP;
       • otherwise → ranked by clip_weight*clip + color_weight*color_sim, where
-        color_sim ∈ [0,1] falls off linearly to 0 at the exclusion boundary.
+        color_sim ∈ [0,1] falls off to 0 at the relevant exclusion boundary.
 
     The returned match dicts are the SAME objects, UNMUTATED (the response
     contract stays `{id, pet_name, similarity, …}` — `similarity` remains the
@@ -158,6 +224,8 @@ def rerank_by_color(
         score = _combined_score(
             m, sighting_hex,
             clip_weight=clip_weight, color_weight=color_weight,
+            neutral_chroma=neutral_chroma,
+            neutral_lightness_exclude=neutral_lightness_exclude,
             exclude_distance=exclude_distance, lightness_weight=lightness_weight,
         )
         if score is None:

@@ -29,7 +29,8 @@ class SupabaseSightingRepository:
     # --- discovery / match reads ---------------------------------------- #
     def get_sighting_for_match(self, sighting_id: str) -> dict | None:
         res = (self._db.table("sightings")
-                       .select("id, feature_vector, detected_species, sighted_location")
+                       .select("id, feature_vector, detected_species, "
+                               "sighted_location, primary_color_hex")
                        .eq("id", sighting_id)
                        .execute())
         return res.data[0] if res.data else None

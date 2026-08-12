@@ -14,8 +14,10 @@ from PIL import Image
 
 from app.services.ai_service import AIManager
 from app.services.sighting_logic import (
+    EXCLUDE as EXCLUDE_SENTINEL,
     build_sighting_payload,
     color_distance,
+    color_similarity,
     hex_to_lab,
     rerank_by_color,
 )
@@ -23,6 +25,12 @@ from app.services.sighting_logic import (
 # Explicit knobs so these tests don't drift with config tuning.
 W_CLIP, W_COLOR = 0.7, 0.3
 EXCLUDE, W_L = 45.0, 0.25
+# Neutral-gate knobs (mirror config defaults) used by the regime tests below.
+NEUTRAL_CHROMA, NEUTRAL_L_EXCLUDE = 10.0, 45.0
+
+# Representative swatches, each side of the neutral/chromatic split.
+GREY, DARK_GREY, BLACK = "#8A8A88", "#3A3B3D", "#151412"
+ORANGE, GINGER = "#E6B174", "#C8702A"
 
 
 def _rerank(matches, sighting_hex, *, limit=5):
@@ -30,6 +38,17 @@ def _rerank(matches, sighting_hex, *, limit=5):
         matches, sighting_hex,
         clip_weight=W_CLIP, color_weight=W_COLOR,
         exclude_distance=EXCLUDE, lightness_weight=W_L, limit=limit,
+        neutral_chroma=NEUTRAL_CHROMA,
+        neutral_lightness_exclude=NEUTRAL_L_EXCLUDE,
+    )
+
+
+def _sim(hex_a, hex_b):
+    return color_similarity(
+        hex_a, hex_b,
+        neutral_chroma=NEUTRAL_CHROMA,
+        neutral_lightness_exclude=NEUTRAL_L_EXCLUDE,
+        chromatic_exclude=EXCLUDE, lightness_weight=W_L,
     )
 
 
@@ -84,6 +103,40 @@ class TestColorDistance:
 
 
 # --------------------------------------------------------------------------- #
+# color_similarity — the chroma-split regime (neutral gate)
+# --------------------------------------------------------------------------- #
+class TestColorSimilarityRegime:
+    def test_missing_either_side_is_none(self):
+        # Colour unavailable on a side never decides — caller falls back to CLIP.
+        assert _sim(None, GREY) is None
+        assert _sim(GREY, "bad") is None
+
+    def test_neutral_vs_chromatic_excluded(self):
+        # THE acceptance case: a grey coat and an orange coat are different
+        # families — orange must not surface for a grey search.
+        assert _sim(GREY, ORANGE) == EXCLUDE_SENTINEL
+        assert _sim(ORANGE, GREY) == EXCLUDE_SENTINEL
+
+    def test_two_neutrals_far_in_brightness_excluded(self):
+        # Grey vs black: same (absent) hue, but far apart in lightness → drop.
+        assert _sim(GREY, BLACK) == EXCLUDE_SENTINEL
+
+    def test_two_neutrals_close_are_kept(self):
+        # Shade variants of one grey coat stay together (positive similarity).
+        s = _sim(GREY, DARK_GREY)
+        assert s is not None and s != EXCLUDE_SENTINEL and s > 0.0
+
+    def test_two_chromatics_same_family_kept(self):
+        # Orange and ginger are the same warm family → kept, positive score.
+        s = _sim(ORANGE, GINGER)
+        assert s is not None and s != EXCLUDE_SENTINEL and s > 0.0
+
+    def test_identical_colour_scores_one(self):
+        assert _sim(ORANGE, ORANGE) == pytest.approx(1.0)
+        assert _sim(GREY, GREY) == pytest.approx(1.0)
+
+
+# --------------------------------------------------------------------------- #
 # rerank_by_color — exclusion, re-ranking, fallback, trim, no mutation
 # --------------------------------------------------------------------------- #
 class TestRerankByColor:
@@ -95,6 +148,18 @@ class TestRerankByColor:
         ]
         out = _rerank(matches, "#E8820E")
         assert [m["id"] for m in out] == ["orange"]
+
+    def test_grey_search_drops_orange_and_black_keeps_grey(self):
+        # The user's report: searching a grey cat, an orange (and a black) coat
+        # must not surface, but other greys still do — even when the wrong
+        # colours have the higher CLIP score.
+        matches = [
+            {"id": "orange", "similarity": 0.95, "primary_color_hex": ORANGE},
+            {"id": "black", "similarity": 0.90, "primary_color_hex": BLACK},
+            {"id": "grey", "similarity": 0.55, "primary_color_hex": DARK_GREY},
+        ]
+        out = _rerank(matches, GREY)
+        assert [m["id"] for m in out] == ["grey"]
 
     def test_colour_reranks_above_higher_clip(self):
         # pB has higher CLIP but an off colour; pA's exact-colour blend wins.

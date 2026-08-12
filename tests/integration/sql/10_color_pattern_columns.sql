@@ -11,3 +11,10 @@
 ALTER TABLE missing_pets
     ADD COLUMN IF NOT EXISTS primary_color_hex character varying,
     ADD COLUMN IF NOT EXISTS pattern_id        character varying;
+
+-- sightings gets its OWN auto-extracted coat colour (migration
+-- migrations/2026-08-13_colour_matching.sql on prod). The live match RPC in
+-- 20_live_match_rpc.sql projects missing_pets.primary_color_hex; the sightings
+-- column feeds the query side (repo get_sighting_for_match). Mirror it here.
+ALTER TABLE sightings
+    ADD COLUMN IF NOT EXISTS primary_color_hex character varying;
