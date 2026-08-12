@@ -50,3 +50,19 @@ class SupabaseUserRepository:
             .execute()
         )
         return res.data[0] if res.data else None
+
+    def update_profile(self, user_id: str, patch: dict) -> dict | None:
+        # Self-scoped: the update matches only the caller's own row. A missing
+        # profile row yields no rows updated (caller -> 404). On success we
+        # re-read through the same projection as get_user_profile so the
+        # response body matches the GET /auth/me contract exactly (no leaking
+        # of last_location / last_location_at that a bare update would return).
+        res = (
+            self._db.table("users")
+            .update(patch)
+            .eq("id", user_id)
+            .execute()
+        )
+        if not res.data:
+            return None
+        return self.get_user_profile(user_id)

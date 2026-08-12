@@ -30,6 +30,32 @@ class Settings:
     DEFAULT_MATCH_THRESHOLD: float = 0.7
     DEFAULT_MATCH_LIMIT: int = 5
 
+    # Colour-aware matching (see app/services/sighting_logic.rerank_by_color).
+    # The final match score blends CLIP cosine with coat-colour similarity:
+    #   combined = CLIP_MATCH_WEIGHT * clip_sim + COLOR_MATCH_WEIGHT * color_sim
+    # The two weights should sum to 1.0. CLIP stays dominant — colour is a
+    # tie-breaker/penalty, not the primary signal.
+    CLIP_MATCH_WEIGHT: float = 0.7
+    COLOR_MATCH_WEIGHT: float = 0.3
+
+    # Hard exclusion for clearly-wrong colours. Colour distance is measured in
+    # CIELab with lightness down-weighted (COLOR_LIGHTNESS_WEIGHT) so a bright
+    # owner-picked swatch and the same coat photographed under shade still count
+    # as the same colour "family" — what separates grey from orange is chroma
+    # (a*/b*), not brightness. A candidate whose colour distance exceeds
+    # COLOR_EXCLUDE_DISTANCE is dropped from the results entirely. Tuned lenient
+    # on purpose: only obviously-different colours (grey vs orange) get cut;
+    # shade/lighting variants of the same colour survive. Colour is only ever
+    # applied when BOTH sides have a colour — a missing colour never excludes.
+    COLOR_EXCLUDE_DISTANCE: float = 45.0
+    COLOR_LIGHTNESS_WEIGHT: float = 0.25
+
+    # Candidate pool the match RPC is asked for before the colour re-rank trims
+    # to the client's limit. Must exceed DEFAULT_MATCH_LIMIT so the colour pass
+    # can reorder/exclude before the top-N is cut (otherwise SQL's CLIP-only
+    # LIMIT would hide colour-better candidates ranked just outside it).
+    MATCH_CANDIDATE_POOL: int = 50
+
     # API Configuration
     API_PREFIX: str = "/api"
     PROJECT_NAME: str = "Petty Bounty API"

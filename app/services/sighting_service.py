@@ -20,6 +20,7 @@ filter, row mapping, activity assembly) lives in sighting_logic.py.
 """
 import logging
 
+from app.core.config import settings
 from app.repositories.sighting_repository import SightingRepository
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
@@ -28,6 +29,7 @@ from app.services.sighting_logic import (
     build_match_rows,
     build_sighting_payload,
     filter_by_threshold,
+    rerank_by_color,
     strip_feature_vector,
 )
 
@@ -66,6 +68,10 @@ class SightingService:
             # POST /sightings/ doesn't have to do CLIP, it just reads
             # the vector out of the cache.
             feature_vector = await self.ai.clip_encode(isolated_image)
+            # Coat colour off the SAME isolated crop (safe: iso is not None here,
+            # so the crop has a black background to strip). None for a near-black
+            # subject → matching falls back to CLIP-only for this sighting.
+            primary_color_hex = self.ai.extract_coat_color_hex(isolated_image)
 
             cache_key = str(image_url)
             AnalyzeCache.set(cache_key, {
@@ -75,6 +81,7 @@ class SightingService:
                 "bbox": bbox,
                 "confidence": confidence,
                 "feature_vector": feature_vector,
+                "primary_color_hex": primary_color_hex,
             })
             # WARNING level so URL drift / worker isolation is easy to spot
             # — pair with the HIT/MISS logs in process_and_save_sighting.
@@ -96,7 +103,8 @@ class SightingService:
             raise
 
     def _insert_sighting_row(
-        self, sighting, *, vector, target_pet_id: str | None
+        self, sighting, *, vector, target_pet_id: str | None,
+        primary_color_hex: str | None = None,
     ) -> dict:
         """
         Build the sighting payload, INSERT it via the repo, and return the saved
@@ -105,9 +113,12 @@ class SightingService:
 
         `vector` is the CLIP embedding for discovery, or None for targeted
         (column left NULL). `target_pet_id` is set only for targeted reports.
+        `primary_color_hex` is the discovery path's auto-extracted coat colour
+        (None → NULL: targeted reports and unreadable/near-black subjects).
         """
         payload = build_sighting_payload(
-            sighting, vector=vector, target_pet_id=target_pet_id
+            sighting, vector=vector, target_pet_id=target_pet_id,
+            primary_color_hex=primary_color_hex,
         )
         sighting_row = self.repo.insert_sighting(payload)
         return strip_feature_vector(sighting_row)
@@ -128,6 +139,7 @@ class SightingService:
             cached = AnalyzeCache.get(image_url)
             if cached is not None:
                 vector = cached["feature_vector"]
+                primary_color_hex = cached.get("primary_color_hex")
                 logger.warning(
                     "Analyze-cache HIT key=%r — reusing CLIP vector",
                     image_url,
@@ -151,9 +163,13 @@ class SightingService:
                     )
                 isolated, _, _, _ = iso
                 vector = await self.ai.clip_encode(isolated)
+                # Re-extract colour too so a cache-miss save is colour-aware,
+                # not silently CLIP-only.
+                primary_color_hex = self.ai.extract_coat_color_hex(isolated)
 
             sighting_row = self._insert_sighting_row(
-                sighting, vector=vector, target_pet_id=None
+                sighting, vector=vector, target_pet_id=None,
+                primary_color_hex=primary_color_hex,
             )
             sighting_id = sighting_row["id"]
             logger.info(
@@ -265,11 +281,27 @@ class SightingService:
             if not sighting.get("sighted_location"):
                 raise ValueError(f"Sighting {sighting_id} has no location")
 
-            matches = self.repo.match_missing_pets(sighting_id, limit)
-            matches = filter_by_threshold(matches, threshold)
+            # Pull a WIDER pool than the client's limit: the SQL side ranks by
+            # CLIP only, so the colour re-rank must see candidates that sit just
+            # outside the CLIP top-N before it reorders/excludes and trims.
+            pool = self.repo.match_missing_pets(
+                sighting_id, settings.MATCH_CANDIDATE_POOL
+            )
+            pool = filter_by_threshold(pool, threshold)
+            matches = rerank_by_color(
+                pool,
+                sighting.get("primary_color_hex"),
+                clip_weight=settings.CLIP_MATCH_WEIGHT,
+                color_weight=settings.COLOR_MATCH_WEIGHT,
+                exclude_distance=settings.COLOR_EXCLUDE_DISTANCE,
+                lightness_weight=settings.COLOR_LIGHTNESS_WEIGHT,
+                limit=limit,
+            )
             logger.info(
-                "Found %d matches for sighting %s (threshold=%s)",
-                len(matches), sighting_id, threshold,
+                "Found %d matches for sighting %s "
+                "(pool=%d, threshold=%s, colour=%s)",
+                len(matches), sighting_id, len(pool), threshold,
+                sighting.get("primary_color_hex"),
             )
             return matches
 

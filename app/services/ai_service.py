@@ -160,6 +160,36 @@ class AIManager:
         vector = await asyncio.to_thread(model.encode, image)
         return vector.tolist()
 
+    # Coat-colour extraction tunables. A mask-isolated crop has a BLACK
+    # background, so foreground = pixels bright enough to not be that black
+    # fill. A near-black subject (or a full-frame fallback with no mask) has
+    # too few foreground pixels to trust → return None and let matching fall
+    # back to CLIP-only rather than reporting the background colour.
+    COLOR_BLACK_THRESHOLD = 15   # max-channel value below which a px is "background"
+    COLOR_MIN_PIXELS = 50        # need at least this many fg px to call a colour
+
+    @classmethod
+    def extract_coat_color_hex(cls, isolated_image: Image.Image) -> str | None:
+        """Median coat colour of a mask-isolated crop as '#RRGGBB', or None.
+
+        Operates on the black-background crop returned by `isolate_subject`:
+        drops near-black background pixels, then takes the per-channel MEDIAN of
+        what's left (median, not mean, so eyes/collar/white patches don't drag
+        the estimate). None when too few foreground pixels survive — which is
+        exactly the near-black-subject / full-frame-fallback case where any
+        colour reading would be the background, not the animal.
+
+        MUST be called only on a genuine isolated crop (iso is not None). On the
+        full-frame fallback the "background" is the real scene, so its pixels
+        are not black and this would happily return the wall colour.
+        """
+        arr = np.asarray(isolated_image.convert("RGB")).reshape(-1, 3)
+        foreground = arr[arr.max(axis=1) > cls.COLOR_BLACK_THRESHOLD]
+        if foreground.shape[0] < cls.COLOR_MIN_PIXELS:
+            return None
+        r, g, b = (int(round(float(c))) for c in np.median(foreground, axis=0))
+        return f"#{r:02X}{g:02X}{b:02X}"
+
     @classmethod
     def warmup_models(cls):
         """

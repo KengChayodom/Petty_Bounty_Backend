@@ -181,6 +181,10 @@ class SightingResponse(BaseModel):
     created_at: str
     distance_meters: Optional[float] = None
     similarity: Optional[float] = None
+    # Coat colour auto-extracted from the sighting photo ('#RRGGBB'); NULL when
+    # unreadable (near-black subject / full-frame fallback). Used server-side to
+    # exclude clearly-wrong-colour matches and to re-rank the rest.
+    primary_color_hex: Optional[str] = None
 
     class Config:
         from_attributes = True
