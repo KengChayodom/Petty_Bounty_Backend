@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
+import asyncio
 import uuid
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
@@ -46,10 +47,19 @@ async def upload_pet_image(
 
         unique_filename = f"{uuid.uuid4()}.{file_extension}"
 
-        response = supabase.storage.from_("pet-images").upload(
+        # supabase-py's storage client is synchronous, so calling it inline
+        # would block the event loop for the ENTIRE upload — the longest
+        # blocking call in the API, and one that scales with the user's file
+        # size and connection. Off to a worker thread it goes.
+        #
+        # The sightings flow no longer comes through here (Flutter uploads
+        # straight to Storage), but the lost-pet-post and profile-photo paths
+        # still do, and they carry the same stall.
+        await asyncio.to_thread(
+            supabase.storage.from_("pet-images").upload,
             path=unique_filename,
             file=file_bytes,
-            file_options={"content-type": file.content_type}
+            file_options={"content-type": file.content_type},
         )
         public_url = supabase.storage.from_("pet-images").get_public_url(unique_filename)
 

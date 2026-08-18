@@ -41,3 +41,21 @@ class ResolveMissingPetRequest(BaseModel):
         None, max_length=255,
         description="Transfer reference number (optional but useful for audit).",
     )
+
+
+class ReviewReportRequest(BaseModel):
+    """
+    Body of PATCH /admin/reports/{report_id} (MD-40).
+
+    `decision` is a plain string rather than a Literal so an unrecognised value
+    comes back as the 400 the spec calls for (raised by
+    `moderation_logic.normalize_flag_decision`) instead of FastAPI's 422, and so
+    the UD-14 wording ("Dismiss Flag" / "Uphold and Ban User") is accepted
+    alongside the enum values.
+    """
+
+    decision: str = Field(
+        ...,
+        description="'Dismissed' or 'Reviewed_Ban' (also accepts 'Reviewed and "
+                    "banned', 'Dismiss Flag', 'Uphold and Ban User').",
+    )

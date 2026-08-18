@@ -237,6 +237,41 @@ def rerank_by_color(
     return ranked[:limit] if limit and limit > 0 else ranked
 
 
+# The owner's verdict on one AI match (`sighting_matches.owner_status`, enum
+# `owner_decision`). 'Pending' is the value a match is born with and is NOT a
+# decision, so it cannot be written back through this path — an owner either
+# says yes or says no.
+OWNER_DECISION_CONFIRMED = "Confirmed"
+OWNER_DECISION_REJECTED = "Rejected"
+OWNER_DECISIONS = (OWNER_DECISION_CONFIRMED, OWNER_DECISION_REJECTED)
+
+_OWNER_DECISION_ALIASES = {
+    "confirmed": OWNER_DECISION_CONFIRMED,
+    "confirm": OWNER_DECISION_CONFIRMED,
+    "yes": OWNER_DECISION_CONFIRMED,
+    "rejected": OWNER_DECISION_REJECTED,
+    "reject": OWNER_DECISION_REJECTED,
+    "no": OWNER_DECISION_REJECTED,
+}
+
+
+def normalize_owner_decision(decision: str | None) -> str:
+    """Map the owner's answer onto the `owner_decision` enum.
+
+    Raises ValueError for anything else — including 'Pending', which is a
+    starting state rather than an answer, so accepting it would let a decision
+    be silently un-made.
+    """
+    key = (decision or "").strip().lower()
+    normalized = _OWNER_DECISION_ALIASES.get(key)
+    if normalized is None:
+        raise ValueError(
+            f"decision must be one of {', '.join(OWNER_DECISIONS)}; "
+            f"got {decision!r}"
+        )
+    return normalized
+
+
 def strip_feature_vector(row: dict) -> dict:
     """Drop the 512-D feature_vector before a row goes to the client (bloat +
     clients never use it). Mutates and returns the same row."""
