@@ -260,3 +260,78 @@ class TestExtractCoatColor:
         arr = np.zeros((20, 20, 3), dtype=np.uint8)
         arr[0, 0:10] = (232, 130, 14)   # only 10 fg px (< COLOR_MIN_PIXELS)
         assert AIManager.extract_coat_color_hex(_img(arr)) is None
+
+
+# --------------------------------------------------------------------------- #
+# Two defensive branches of the colour maths that the 2026-08-13 colour work
+# left unexercised. Both are reachable from real data: a NULL-ish colour comes
+# back as "" from a row that stored an empty string, and a caller could disable
+# the chromatic gate by passing a zero threshold.
+# --------------------------------------------------------------------------- #
+class TestColourEdgeBranches:
+    def test_empty_hex_is_not_a_colour(self):
+        from app.services.sighting_logic import _hex_to_rgb, hex_to_lab
+
+        assert _hex_to_rgb("") is None
+        assert hex_to_lab("") is None
+
+    def test_zero_exclude_threshold_scores_zero_instead_of_dividing_by_it(self):
+        """chromatic_exclude=0 turns the gate off; the similarity term must
+        degrade to 0.0 rather than raising ZeroDivisionError."""
+        from app.services.sighting_logic import EXCLUDE, color_similarity
+
+        score = color_similarity(
+            "#E8820E", "#E8820E",          # identical colours -> dist 0.0
+            neutral_chroma=10.0,
+            neutral_lightness_exclude=45.0,
+            chromatic_exclude=0.0,
+            lightness_weight=0.4,
+        )
+        assert score == 0.0
+        assert score != EXCLUDE
+
+    def test_two_distant_chromatic_colours_are_excluded(self):
+        """The chromatic×chromatic gate itself: ginger vs green is a different
+        coat, not a shade of the same one, so it must be dropped rather than
+        merely ranked low."""
+        from app.services.sighting_logic import EXCLUDE, color_similarity
+
+        score = color_similarity(
+            "#E8820E", "#1E8A3C",          # ginger vs green
+            neutral_chroma=10.0,
+            neutral_lightness_exclude=45.0,
+            chromatic_exclude=42.0,
+            lightness_weight=0.4,
+        )
+        assert score == EXCLUDE
+
+
+# --------------------------------------------------------------------------- #
+# normalize_owner_decision (2026-08-17) — the owner's verdict on one match.
+#
+# Pure, no I/O. The defect it catches: a verdict spelled the way a UI would
+# send it ("confirm", "no") reaching the `owner_decision` enum unnormalised and
+# failing at the cast — a 500 for what should be a clean write or a 400.
+# --------------------------------------------------------------------------- #
+class TestNormalizeOwnerDecision:
+    @pytest.mark.parametrize("supplied,expected", [
+        ("Confirmed", "Confirmed"),
+        ("confirm", "Confirmed"),
+        ("  YES  ", "Confirmed"),
+        ("Rejected", "Rejected"),
+        ("reject", "Rejected"),
+        ("no", "Rejected"),
+    ])
+    def test_maps_onto_the_enum(self, supplied, expected):
+        from app.services.sighting_logic import normalize_owner_decision
+
+        assert normalize_owner_decision(supplied) == expected
+
+    @pytest.mark.parametrize("bad", ["Pending", "Maybe", "", "   ", None])
+    def test_rejects_anything_else(self, bad):
+        """'Pending' is a real enum value but it is the state a match starts
+        in, not a decision — accepting it would let an answer be un-made."""
+        from app.services.sighting_logic import normalize_owner_decision
+
+        with pytest.raises(ValueError):
+            normalize_owner_decision(bad)

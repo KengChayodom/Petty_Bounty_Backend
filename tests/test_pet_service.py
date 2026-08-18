@@ -210,3 +210,200 @@ class TestGetSightingsForPet:
         repo.sightings_for_pet.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(PetService.get_sightings_for_pet(repo, "pet-1"))
+
+
+# --------------------------------------------------------------------------- #
+# UTC-29  get_my_missing_pets (MD-34, SRS-65) — the owner's "My Reports" list.
+#
+# As-built note: the test plan writes this as `PetService(pet_repo)
+# .get_my_missing_pets(owner_id)`, but PetService is a static-method service
+# whose repo is the first argument (as it is for every other method here), so
+# the call is `PetService.get_my_missing_pets(repo, owner_id)`.
+#
+# Owner scoping is STRUCTURAL: the port takes an owner_id, so there is no shape
+# this service could pass that would return another owner's rows. TC-01
+# therefore asserts the owner_id actually forwarded — the defect it catches is
+# a service that reads the id from somewhere other than the verified caller.
+# --------------------------------------------------------------------------- #
+class TestGetMyMissingPets:
+    def test_returns_only_the_callers_reports(self):
+        """UTC-29-TC-01 — the caller's own id is what reaches the repo."""
+        repo = _repo()
+        repo.get_by_owner.side_effect = lambda owner_id: {
+            "u1": [{"id": "pet-1", "owner_id": "u1", "status": "Searching"}],
+            "u2": [{"id": "pet-2", "owner_id": "u2", "status": "Searching"}],
+        }[owner_id]
+        repo.get_sighting_links_for_pets.return_value = []
+
+        out = run(PetService.get_my_missing_pets(repo, "u1"))
+
+        assert [p["id"] for p in out] == ["pet-1"]
+        repo.get_by_owner.assert_called_once_with("u1")
+
+    def test_empty_when_owner_has_none(self):
+        """UTC-29-TC-02 — an owner with no reports gets [], not None, and no
+        count query is fired for an empty list of ids."""
+        repo = _repo()
+        repo.get_by_owner.return_value = []
+
+        assert run(PetService.get_my_missing_pets(repo, "u1")) == []
+        repo.get_sighting_links_for_pets.assert_not_called()
+
+    def test_error_is_reraised(self):
+        """UTC-29-TC-03 — DB failure propagates (API maps it to 500)."""
+        repo = _repo()
+        repo.get_by_owner.side_effect = RuntimeError("db down")
+        with pytest.raises(RuntimeError):
+            run(PetService.get_my_missing_pets(repo, "u1"))
+
+    # --- derived post status (2026-08-17) --------------------------------- #
+    def test_report_with_no_sightings_is_pending(self):
+        repo = _repo()
+        repo.get_by_owner.return_value = [{"id": "p1", "status": "Searching"}]
+        repo.get_sighting_links_for_pets.return_value = []
+
+        out = run(PetService.get_my_missing_pets(repo, "u1"))
+
+        assert out[0]["post_status"] == "Pending"
+        assert out[0]["sighting_count"] == 0
+        repo.get_sighting_links_for_pets.assert_called_once_with(["p1"])
+
+    def test_report_with_sightings_is_spotted_without_anyone_approving_it(self):
+        """The whole point of the new model: a hunter's report alone moves the
+        badge — no admin verification step in between."""
+        repo = _repo()
+        repo.get_by_owner.return_value = [{"id": "p1", "status": "Searching"}]
+        repo.get_sighting_links_for_pets.return_value = [
+            {"pet_id": "p1", "sighting_id": "s1", "owner_status": None},
+            {"pet_id": "p1", "sighting_id": "s2", "owner_status": "Confirmed"},
+        ]
+
+        out = run(PetService.get_my_missing_pets(repo, "u1"))
+
+        assert out[0]["post_status"] == "Spotted"
+        assert out[0]["sighting_count"] == 2
+
+    def test_status_falls_back_when_the_last_sighting_is_removed(self):
+        """The status is derived, so an admin deleting a bogus sighting takes
+        the badge back to Pending on the next read. A stored badge would be
+        stuck on Spotted and keep telling the owner someone had seen their pet."""
+        repo = _repo()
+        repo.get_by_owner.return_value = [{"id": "p1", "status": "Searching"}]
+
+        repo.get_sighting_links_for_pets.return_value = [
+            {"pet_id": "p1", "sighting_id": "s1", "owner_status": None},
+        ]
+        assert run(
+            PetService.get_my_missing_pets(repo, "u1")
+        )[0]["post_status"] == "Spotted"
+
+        repo.get_sighting_links_for_pets.return_value = []   # sighting deleted
+        assert run(
+            PetService.get_my_missing_pets(repo, "u1")
+        )[0]["post_status"] == "Pending"
+
+    def test_closed_search_reads_rescued_even_with_sightings(self):
+        repo = _repo()
+        repo.get_by_owner.return_value = [{"id": "p1", "status": "Found"}]
+        repo.get_sighting_links_for_pets.return_value = [
+            {"pet_id": "p1", "sighting_id": f"s{i}", "owner_status": None}
+            for i in range(4)
+        ]
+
+        out = run(PetService.get_my_missing_pets(repo, "u1"))
+
+        assert out[0]["post_status"] == "Rescued"
+
+    def test_count_failure_propagates(self):
+        repo = _repo()
+        repo.get_by_owner.return_value = [{"id": "p1", "status": "Searching"}]
+        repo.get_sighting_links_for_pets.side_effect = RuntimeError("db down")
+        with pytest.raises(RuntimeError):
+            run(PetService.get_my_missing_pets(repo, "u1"))
+
+
+# --------------------------------------------------------------------------- #
+# UTC-31  list_all_missing_pets (MD-37, SRS-64) — admin browse.
+#
+# The distinction that matters is "no filter" vs "filter on None": passing
+# status=None must mean every status, never `status IS NULL`. Both TC-01 and
+# TC-02 assert the exact argument handed to the port, because that argument IS
+# the filtering behaviour at this layer.
+# --------------------------------------------------------------------------- #
+class TestListAllMissingPets:
+    def test_applies_status_filter_when_given(self):
+        """UTC-31-TC-01 — a supplied status is forwarded verbatim."""
+        repo = _repo()
+        repo.list_all.return_value = [{"id": "pet-1", "status": "Searching"}]
+
+        out = run(PetService.list_all_missing_pets(
+            repo, limit=20, offset=0, status="Searching",
+        ))
+
+        assert out == [{"id": "pet-1", "status": "Searching"}]
+        repo.list_all.assert_called_once_with("Searching", 20, 0)
+
+    def test_no_status_filter_when_none(self):
+        """UTC-31-TC-02 — status=None reaches the repo as None (= no filter)."""
+        repo = _repo()
+        repo.list_all.return_value = [{"id": "pet-1"}, {"id": "pet-2"}]
+
+        out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
+
+        assert len(out) == 2
+        repo.list_all.assert_called_once_with(None, 20, 0)
+
+    def test_error_is_reraised(self):
+        """UTC-31-TC-03 — DB failure propagates (API maps it to 500)."""
+        repo = _repo()
+        repo.list_all.side_effect = RuntimeError("db down")
+        with pytest.raises(RuntimeError):
+            run(PetService.list_all_missing_pets(repo))
+
+    def test_empty_page_returns_empty_list(self):
+        """UTC-31-TC-04 — an empty page is [], not None."""
+        repo = _repo()
+        repo.list_all.return_value = []
+        assert run(PetService.list_all_missing_pets(repo, limit=20, offset=0)) == []
+
+
+# --------------------------------------------------------------------------- #
+# UTC-32  remove_missing_pet (MD-38, SRS-66) — admin removal.
+#
+# UD-14's postcondition is "removed from the database and the search map", so
+# the deletion is real; "no row deleted" is the not-found signal, which the
+# service must turn into a ValueError rather than reporting a phantom success.
+# --------------------------------------------------------------------------- #
+class TestRemoveMissingPet:
+    def test_removes_the_report(self):
+        """UTC-32-TC-01 — the row is deleted and the deleted row returned."""
+        repo = _repo()
+        repo.remove.return_value = {"id": "p1", "pet_name": "Mochi"}
+
+        out = run(PetService.remove_missing_pet(repo, "p1", "a1"))
+
+        assert out == {"id": "p1", "pet_name": "Mochi"}
+        repo.remove.assert_called_once_with("p1")
+
+    def test_not_found_raises_valueerror(self):
+        """UTC-32-TC-02 — nothing deleted => ValueError (API maps it to 404)."""
+        repo = _repo()
+        repo.remove.return_value = None
+        with pytest.raises(ValueError):
+            run(PetService.remove_missing_pet(repo, "ghost", "a1"))
+
+    def test_error_is_reraised(self):
+        """UTC-32-TC-03 — DB failure propagates (API maps it to 500)."""
+        repo = _repo()
+        repo.remove.side_effect = RuntimeError("db down")
+        with pytest.raises(RuntimeError):
+            run(PetService.remove_missing_pet(repo, "p1", "a1"))
+
+    def test_removal_is_audit_logged_with_the_admin(self, caplog):
+        """The moderation action is recorded — MD-38 says the removal is a
+        recorded action, and the log line is where that record lives."""
+        repo = _repo()
+        repo.remove.return_value = {"id": "p1"}
+        with caplog.at_level("WARNING"):
+            run(PetService.remove_missing_pet(repo, "p1", "admin-7"))
+        assert "admin-7" in caplog.text and "p1" in caplog.text

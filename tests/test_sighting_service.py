@@ -767,3 +767,94 @@ class TestGetHunterStats:
         svc = SightingService(repo, ai_manager=None)
         with pytest.raises(RuntimeError):
             run(svc.get_hunter_stats("hunter-1"))
+
+
+# --------------------------------------------------------------------------- #
+# decide_match — the owner's verdict on one AI match (2026-08-17).
+#
+# The reply half of the loop. Before it existed `sighting_matches.owner_status`
+# had no writer at all: the owner could read their timeline but not answer it,
+# so a wrong match kept counting as a real sighting of their pet forever.
+#
+# What each test protects:
+#   * ownership — a stranger must not be able to rule on (or learn about)
+#     someone else's pet, and must not get a different answer than "not found";
+#   * the asymmetry — Confirmed advances the sighting, Rejected does not,
+#     because one photo can match several pets;
+#   * the verdict surviving a failure in the secondary write.
+# --------------------------------------------------------------------------- #
+class TestDecideMatch:
+    @staticmethod
+    def _svc(owner="owner-1", updated={"sighting_id": "s1", "owner_status": "X"}):
+        repo = _repo()
+        repo.get_pet_owners.return_value = {"p1": owner} if owner else {}
+        repo.update_match_owner_status.return_value = updated
+        return SightingService(repo, ai_manager=None), repo
+
+    def test_confirm_writes_both_the_verdict_and_the_sighting_status(self):
+        svc, repo = self._svc()
+
+        out = run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
+
+        repo.update_match_owner_status.assert_called_once_with(
+            "s1", "p1", "Confirmed"
+        )
+        repo.set_sighting_status.assert_called_once_with("s1", "Confirmed")
+        assert out["sighting_status_updated"] is True
+
+    def test_reject_writes_the_verdict_only(self):
+        """A sighting can match several pets. This owner saying "not mine" is
+        no statement about anybody else's pet, so the sighting is untouched."""
+        svc, repo = self._svc()
+
+        out = run(svc.decide_match("p1", "s1", "owner-1", "Rejected"))
+
+        repo.update_match_owner_status.assert_called_once_with(
+            "s1", "p1", "Rejected"
+        )
+        repo.set_sighting_status.assert_not_called()
+        assert out["sighting_status_updated"] is False
+
+    def test_pet_belonging_to_someone_else_is_not_found(self):
+        """404, not 403 — a non-owner must not even learn the pet exists. And
+        nothing may be written on the way to finding that out."""
+        svc, repo = self._svc(owner="someone-else")
+
+        with pytest.raises(LookupError):
+            run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
+
+        repo.update_match_owner_status.assert_not_called()
+        repo.set_sighting_status.assert_not_called()
+
+    def test_unknown_pet_is_not_found(self):
+        svc, repo = self._svc(owner=None)
+        with pytest.raises(LookupError):
+            run(svc.decide_match("ghost", "s1", "owner-1", "Confirmed"))
+        repo.update_match_owner_status.assert_not_called()
+
+    def test_sighting_that_is_not_a_match_for_this_pet_is_not_found(self):
+        svc, repo = self._svc(updated=None)
+        with pytest.raises(LookupError):
+            run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
+        repo.set_sighting_status.assert_not_called()
+
+    @pytest.mark.parametrize("bad", ["Pending", "Maybe", "", None])
+    def test_rejects_a_decision_outside_the_set_before_any_io(self, bad):
+        """'Pending' is the value a match is born with, not an answer — writing
+        it back would silently un-make a decision."""
+        svc, repo = self._svc()
+        with pytest.raises(ValueError):
+            run(svc.decide_match("p1", "s1", "owner-1", bad))
+        repo.get_pet_owners.assert_not_called()
+        repo.update_match_owner_status.assert_not_called()
+
+    def test_verdict_survives_a_failed_sighting_status_write(self):
+        """The owner's answer is recorded; the sighting's own lifecycle column
+        is secondary and must not take the verdict down with it."""
+        svc, repo = self._svc()
+        repo.set_sighting_status.side_effect = RuntimeError("db down")
+
+        out = run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
+
+        assert out["match"]["owner_status"] == "X"
+        assert out["sighting_status_updated"] is False
