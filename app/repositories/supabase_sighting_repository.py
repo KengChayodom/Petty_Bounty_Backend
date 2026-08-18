@@ -45,6 +45,19 @@ class SupabaseSightingRepository:
                        .execute())
         return res.data[0] if res.data else None
 
+    def set_sighting_action_type(
+        self, sighting_id: str, hunter_id: str, action_type: str
+    ) -> dict | None:
+        # Hunter-scoped on purpose: the service already checked ownership on
+        # the read, but scoping the WRITE too means a row that changed hands
+        # (or a bad id) updates nothing instead of somebody else's sighting.
+        res = (self._db.table("sightings")
+                       .update({"action_type": action_type})
+                       .eq("id", sighting_id)
+                       .eq("hunter_id", hunter_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
     # --- owner side of the loop ------------------------------------------ #
     def get_pet_owners(self, pet_ids: list[str]) -> dict[str, str]:
         """pet id -> owner id, for the pets a sighting was matched to.
@@ -84,6 +97,16 @@ class SupabaseSightingRepository:
     def get_sighting(self, sighting_id: str) -> dict | None:
         res = (self._db.table("sightings")
                        .select("*")
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def get_sighting_for_action(self, sighting_id: str) -> dict | None:
+        """Just the columns the action-type confirmation needs to decide
+        404 (not yours / no such row) vs 409 (already reviewed) vs write."""
+        res = (self._db.table("sightings")
+                       .select("id, hunter_id, action_type, "
+                               "verification_status")
                        .eq("id", sighting_id)
                        .execute())
         return res.data[0] if res.data else None

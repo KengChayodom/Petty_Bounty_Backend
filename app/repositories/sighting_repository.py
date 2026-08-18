@@ -28,6 +28,31 @@ class SightingNotSaved(ValueError):
         self.payload = payload
 
 
+class SightingActionLocked(ValueError):
+    """The hunter tried to change `action_type` on a sighting that has already
+    been adjudicated — the API's 409.
+
+    Once an owner or admin has set `verification_status` away from 'Pending',
+    the report has been judged as it stands. Letting the hunter flip 'Spotted'
+    to 'Caught' afterwards would retro-fit a VERIFIED sighting into the one
+    shape the resolve RPC pays a bounty for (Caught + Verified), so the column
+    is frozen at that point.
+
+    Subclasses ValueError like the moderation errors do, so route handlers MUST
+    catch it before their generic `except ValueError` 400 (see
+    tests/test_sighting_action_api.py, which pins that ordering).
+    """
+
+    def __init__(self, sighting_id: str, verification_status: str):
+        super().__init__(
+            f"Sighting {sighting_id} has already been reviewed "
+            f"(verification_status={verification_status}); its action type "
+            f"can no longer be changed"
+        )
+        self.sighting_id = sighting_id
+        self.verification_status = verification_status
+
+
 class SightingRepository(Protocol):
     # --- writes ---------------------------------------------------------- #
     def insert_sighting(self, payload: dict) -> dict: ...
@@ -38,6 +63,9 @@ class SightingRepository(Protocol):
     def update_match_owner_status(
         self, sighting_id: str, pet_id: str, status: str
     ) -> dict | None: ...
+    def set_sighting_action_type(
+        self, sighting_id: str, hunter_id: str, action_type: str
+    ) -> dict | None: ...
 
     # --- owner side of the loop ------------------------------------------ #
     def get_pet_owners(self, pet_ids: list[str]) -> dict[str, str]: ...
@@ -46,6 +74,7 @@ class SightingRepository(Protocol):
     def get_sighting_for_match(self, sighting_id: str) -> dict | None: ...
     def match_missing_pets(self, sighting_id: str, limit: int) -> list[dict]: ...
     def get_sighting(self, sighting_id: str) -> dict | None: ...
+    def get_sighting_for_action(self, sighting_id: str) -> dict | None: ...
 
     # --- hunter activity / stats reads ---------------------------------- #
     def count_sightings_for_hunter(self, hunter_id: str) -> int: ...

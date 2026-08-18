@@ -272,6 +272,60 @@ def normalize_owner_decision(decision: str | None) -> str:
     return normalized
 
 
+# The hunter's own answer about the animal (`sightings.action_type`, enum
+# `action_type`), chosen on the final-review screen AFTER they confirm a match.
+# The UI labels these "JUST SPOTTED" and "RESCUE"; the column only knows
+# 'Spotted' and 'Caught', so the UI wording is mapped here rather than being
+# duplicated as a second vocabulary in the client.
+#
+# This is NOT a lifecycle value: `sighting_status` tracks the report's progress
+# and `verification_status` holds the owner's verdict. `action_type` says what
+# the hunter did with the animal, and 'Caught' is what makes a sighting
+# eligible to be the bounty-paying final sighting (see the resolve RPC in
+# sql-update.txt), which is why it is worth a deliberate confirmation step.
+# `sightings.verification_status` starts here. While it holds this value the
+# report has not been judged by anyone, which is the window in which the hunter
+# may still change their own action_type.
+VERIFICATION_PENDING = "Pending"
+
+ACTION_SPOTTED = "Spotted"
+ACTION_CAUGHT = "Caught"
+ACTION_TYPES = (ACTION_SPOTTED, ACTION_CAUGHT)
+
+_ACTION_TYPE_ALIASES = {
+    "spotted": ACTION_SPOTTED,
+    "spot": ACTION_SPOTTED,
+    "just spotted": ACTION_SPOTTED,
+    "just_spotted": ACTION_SPOTTED,
+    "seen": ACTION_SPOTTED,
+    "caught": ACTION_CAUGHT,
+    "catch": ACTION_CAUGHT,
+    "rescue": ACTION_CAUGHT,
+    "rescued": ACTION_CAUGHT,
+}
+
+
+def normalize_action_type(action_type: str | None) -> str:
+    """Map the hunter's final-review choice onto the `action_type` enum.
+
+    Accepts the UI's own wording ("Rescue") as well as the stored values, so
+    the label on the button and the value in the column can never drift apart
+    into a failed enum cast (a 500 for what should be a clean write).
+
+    Raises ValueError for anything else — including None/'' — so a malformed
+    choice is a 400 rather than a silent no-op on a column that decides who
+    can be paid a bounty.
+    """
+    key = (action_type or "").strip().lower()
+    normalized = _ACTION_TYPE_ALIASES.get(key)
+    if normalized is None:
+        raise ValueError(
+            f"action_type must be one of {', '.join(ACTION_TYPES)}; "
+            f"got {action_type!r}"
+        )
+    return normalized
+
+
 def strip_feature_vector(row: dict) -> dict:
     """Drop the 512-D feature_vector before a row goes to the client (bloat +
     clients never use it). Mutates and returns the same row."""

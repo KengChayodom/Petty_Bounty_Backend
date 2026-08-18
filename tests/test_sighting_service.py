@@ -38,6 +38,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.repositories.sighting_repository import (
+    SightingActionLocked,
     SightingNotSaved,
     SightingRepository,
 )
@@ -858,3 +859,114 @@ class TestDecideMatch:
 
         assert out["match"]["owner_status"] == "X"
         assert out["sighting_status_updated"] is False
+
+
+# --------------------------------------------------------------------------- #
+# confirm_sighting_action (2026-08-19) — the final-review screen, one step
+# after "Confirm Match": JUST SPOTTED or RESCUE.
+#
+# The row already exists (POST /sightings/ wrote it with the 'Spotted'
+# default), so this is a narrow, hunter-scoped update of `action_type`. What
+# the tests pin: the 404-not-403 ownership rule, the freeze once someone has
+# reviewed the sighting (409 — otherwise a Verified sighting could be
+# retro-fitted into the bounty-eligible Caught+Verified shape), and the
+# no-write short circuit when nothing actually changed.
+# --------------------------------------------------------------------------- #
+class TestConfirmSightingAction:
+    @staticmethod
+    def _svc(row={"id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
+                  "verification_status": "Pending"},
+             updated={"id": "s1", "hunter_id": "hunter-1",
+                      "action_type": "Caught", "feature_vector": "[0.1]"}):
+        repo = _repo()
+        repo.get_sighting_for_action.return_value = row
+        repo.set_sighting_action_type.return_value = updated
+        return SightingService(repo, ai_manager=None), repo
+
+    def test_rescue_writes_caught_and_returns_the_row(self):
+        svc, repo = self._svc()
+
+        out = run(svc.confirm_sighting_action("s1", "hunter-1", "Rescue"))
+
+        repo.set_sighting_action_type.assert_called_once_with(
+            "s1", "hunter-1", "Caught"
+        )
+        assert out["action_type"] == "Caught"
+        assert out["changed"] is True
+
+    def test_strips_the_feature_vector_from_the_returned_row(self):
+        """Same contract as every other sighting response — the 512-D vector
+        is bloat the client never reads."""
+        svc, _ = self._svc()
+
+        out = run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+        assert "feature_vector" not in out["sighting"]
+
+    def test_reconfirming_the_stored_value_writes_nothing(self):
+        """'Spotted' is both the UI default and the column default, so the
+        common submit is a no-op. It must still report success."""
+        svc, repo = self._svc()
+
+        out = run(svc.confirm_sighting_action("s1", "hunter-1", "Spotted"))
+
+        repo.set_sighting_action_type.assert_not_called()
+        assert out["changed"] is False
+        assert out["action_type"] == "Spotted"
+
+    def test_sighting_reported_by_someone_else_is_not_found(self):
+        """404, not 403 — a caller must not learn that a sighting id exists.
+        And nothing may be written on the way to finding that out."""
+        svc, repo = self._svc()
+
+        with pytest.raises(LookupError):
+            run(svc.confirm_sighting_action("s1", "another-hunter", "Caught"))
+
+        repo.set_sighting_action_type.assert_not_called()
+
+    def test_unknown_sighting_is_not_found(self):
+        svc, repo = self._svc(row=None)
+        with pytest.raises(LookupError):
+            run(svc.confirm_sighting_action("ghost", "hunter-1", "Caught"))
+        repo.set_sighting_action_type.assert_not_called()
+
+    def test_row_vanishing_between_read_and_write_is_not_found(self):
+        """The read said it was theirs, the scoped write matched nothing — the
+        row went away or changed hands. Same 404, never a silent success."""
+        svc, _ = self._svc(updated=None)
+        with pytest.raises(LookupError):
+            run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+    @pytest.mark.parametrize("reviewed", ["Verified", "Dismissed"])
+    def test_already_reviewed_sighting_is_locked(self, reviewed):
+        """Once an owner/admin has judged the report, flipping it to 'Caught'
+        would retro-fit it into the shape the resolve RPC pays out on."""
+        svc, repo = self._svc(row={
+            "id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
+            "verification_status": reviewed,
+        })
+
+        with pytest.raises(SightingActionLocked):
+            run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+        repo.set_sighting_action_type.assert_not_called()
+
+    def test_missing_verification_status_is_treated_as_pending(self):
+        """The column is NOT NULL DEFAULT 'Pending'; absence means 'not yet
+        judged', so a fresh sighting must not be locked by a partial read."""
+        svc, repo = self._svc(row={
+            "id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
+        })
+
+        out = run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+        repo.set_sighting_action_type.assert_called_once()
+        assert out["changed"] is True
+
+    @pytest.mark.parametrize("bad", ["Found", "Verified", "Maybe", "", None])
+    def test_rejects_an_action_outside_the_enum_before_any_io(self, bad):
+        svc, repo = self._svc()
+        with pytest.raises(ValueError):
+            run(svc.confirm_sighting_action("s1", "hunter-1", bad))
+        repo.get_sighting_for_action.assert_not_called()
+        repo.set_sighting_action_type.assert_not_called()

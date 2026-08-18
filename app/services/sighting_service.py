@@ -38,15 +38,20 @@ import asyncio
 import logging
 
 from app.core.config import settings
-from app.repositories.sighting_repository import SightingRepository
+from app.repositories.sighting_repository import (
+    SightingActionLocked,
+    SightingRepository,
+)
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
 from app.services.sighting_logic import (
     OWNER_DECISION_CONFIRMED,
+    VERIFICATION_PENDING,
     assemble_hunter_activity,
     build_match_rows,
     build_sighting_payload,
     filter_by_threshold,
+    normalize_action_type,
     normalize_owner_decision,
     rerank_by_color,
     strip_feature_vector,
@@ -341,6 +346,87 @@ class SightingService:
         return {
             "match": updated,
             "sighting_status_updated": sighting_status_written,
+        }
+
+    async def confirm_sighting_action(
+        self, sighting_id: str, hunter_id: str, action_type: str,
+    ) -> dict:
+        """The hunter's final-review answer: did you just see it, or rescue it?
+
+        This is the step AFTER "Confirm Match". The sighting itself was already
+        written by `process_and_save_sighting` (with `action_type` defaulted to
+        'Spotted'), and the owner was already pushed — so this endpoint exists
+        only to persist the one choice that screen collects. That choice is not
+        cosmetic: 'Caught' is the value the resolve RPC requires before a
+        sighting can pay a bounty, so it is deliberately a separate,
+        hunter-scoped write rather than a field on the create payload.
+
+        Idempotent by design: re-confirming the value the row already holds —
+        the common case, since 'Spotted' is both the UI default and the stored
+        default — reports success without touching the row.
+
+        Raises:
+            ValueError: `action_type` outside the enum (API -> 400).
+            LookupError: no such sighting, or it belongs to another hunter
+                (API -> 404 for both — a caller who does not own the sighting
+                must not be able to tell the two apart).
+            SightingActionLocked: the sighting has already been reviewed
+                (API -> 409). Subclasses ValueError, so the route must catch it
+                FIRST.
+        """
+        # Raises ValueError (400) before any I/O, so a malformed choice never
+        # costs a thread hop — same shape as decide_match.
+        normalized = normalize_action_type(action_type)
+        return await asyncio.to_thread(
+            self._confirm_sighting_action_sync,
+            sighting_id, hunter_id, normalized,
+        )
+
+    def _confirm_sighting_action_sync(
+        self, sighting_id: str, hunter_id: str, action_type: str,
+    ) -> dict:
+        """DB half of `confirm_sighting_action`; `action_type` is normalised."""
+        row = self.repo.get_sighting_for_action(sighting_id)
+        if row is None or row.get("hunter_id") != hunter_id:
+            # 404-not-403, the same rule the owner-scoped writes use: never
+            # confirm that a sighting exists to someone who did not report it.
+            raise LookupError(
+                f"Sighting {sighting_id} not found or not reported by you"
+            )
+
+        # A row whose verification_status is missing is treated as Pending —
+        # the column is NOT NULL DEFAULT 'Pending', so absence means "not yet
+        # judged", and refusing the write there would lock a fresh sighting.
+        verification = row.get("verification_status") or VERIFICATION_PENDING
+        if verification != VERIFICATION_PENDING:
+            raise SightingActionLocked(sighting_id, verification)
+
+        if row.get("action_type") == action_type:
+            logger.info(
+                "Sighting %s action already %s — no write",
+                sighting_id, action_type,
+            )
+            return {"sighting": row, "action_type": action_type,
+                    "changed": False}
+
+        updated = self.repo.set_sighting_action_type(
+            sighting_id, hunter_id, action_type
+        )
+        if updated is None:
+            # The read said it was theirs and the write matched nothing — the
+            # row went away (or changed hands) in between. Same 404.
+            raise LookupError(
+                f"Sighting {sighting_id} not found or not reported by you"
+            )
+
+        logger.info(
+            "Hunter %s confirmed sighting %s as %s",
+            hunter_id, sighting_id, action_type,
+        )
+        return {
+            "sighting": strip_feature_vector(updated),
+            "action_type": action_type,
+            "changed": True,
         }
 
     def _persist_matches(self, sighting_id: str, matches: list[dict]) -> None:

@@ -6,8 +6,10 @@ from app.repositories.supabase_sighting_repository import (
     SupabaseSightingRepository,
 )
 from app.schemas.common import StandardResponse
+from app.repositories.sighting_repository import SightingActionLocked
 from app.schemas.sightings import (
     AnalyzeRequest,
+    SightingActionUpdate,
     SightingCreate,
     TargetedSightingCreate,
 )
@@ -139,6 +141,52 @@ async def report_targeted_sighting(
         raise HTTPException(
             status_code=500, detail=f"Failed to process targeted sighting: {e}"
         )
+
+
+@router.patch("/{sighting_id}/action", response_model=StandardResponse)
+async def confirm_sighting_action(
+    sighting_id: str,
+    payload: SightingActionUpdate,
+    service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Final-review step — the screen AFTER "Confirm Match".
+
+    The hunter has already picked which missing pet their photo matches; the
+    sighting row and its AI matches were persisted back at POST /sightings/,
+    and the owners were already pushed. All that is left is the one question
+    that screen asks: JUST SPOTTED or RESCUE. This writes that answer to
+    `sightings.action_type` ('Spotted' / 'Caught'), the column the resolve RPC
+    reads before paying a bounty.
+
+    Hunter-scoped from the JWT: a sighting somebody else reported is 404, never
+    403, so this cannot be used to probe which sighting ids exist. A sighting an
+    owner or admin has already reviewed is 409 — by then the report has been
+    judged as it stands, and flipping it to 'Caught' would retro-fit it into
+    the bounty-eligible shape.
+    """
+    try:
+        result = await service.confirm_sighting_action(
+            sighting_id, user_id, payload.action_type,
+        )
+    except LookupError as le:
+        raise HTTPException(status_code=404, detail=str(le))
+    except SightingActionLocked as sal:
+        # MUST precede the ValueError clause below — SightingActionLocked
+        # subclasses ValueError, so the generic 400 would swallow this 409.
+        raise HTTPException(status_code=409, detail=str(sal))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to confirm report status: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message=f"Report status set to {result['action_type']}.",
+        data=result,
+    )
 
 
 @router.get("/me", response_model=StandardResponse)
