@@ -465,8 +465,11 @@ class SightingService:
             return {"sightings": sightings, "total_count": total_count}
 
         except Exception as e:
-            logger.error("Error fetching activity for hunter %s: %s",
-                         hunter_id, e)
+            # exception(), not error(): the useful part of a transport-level
+            # failure (e.g. httpx.ReadError) is the traceback, and the route
+            # turns this into an opaque 500 for the caller.
+            logger.exception("Error fetching activity for hunter %s: %s",
+                             hunter_id, e)
             raise
 
     async def get_hunter_stats(self, hunter_id: str) -> dict:
@@ -488,6 +491,6 @@ class SightingService:
                     self.repo.count_contributions_for_hunter(hunter_id),
             }
         except Exception as e:
-            logger.error("Error fetching stats for hunter %s: %s",
-                         hunter_id, e)
+            logger.exception("Error fetching stats for hunter %s: %s",
+                             hunter_id, e)
             raise
