@@ -20,5 +20,20 @@ numpy>=1.26
 cachetools>=5.3
 
 # FCM push notifications (SRS-FR-12) — server-side Firebase Admin SDK
-firebase-admin>=6.5
+#
+# Upper bound is deliberate. 7.x deprecates `MulticastMessage(tokens=...)` in
+# favour of `fids=`, but those are NOT interchangeable: `fids` are Firebase
+# Installation IDs and `device_tokens.fcm_token` holds FCM registration tokens
+# (what `getToken()` returns on the client). Verified by dry-run against the
+# live project — the same strings deliver 2/4 as `tokens=` and 0/4 as `fids=`.
+# `tokens=` still works in 7.x, so this pin only guards against 8.x removing it.
+# Migrating to FIDs is a client-side change, not a keyword rename.
+firebase-admin>=6.5,<8
+
+# Pinned to the one range that satisfies BOTH firebase-admin's transitive
+# google-api-core (protobuf>=6.33.5,<8) and streamlit (protobuf>=3.20,<7),
+# which share this machine's anaconda env. Without the upper bound, installing
+# firebase-admin pulls protobuf 7.x and breaks streamlit. Note streamlit is not
+# a dependency of this project — see the note in CLAUDE.md about using a venv.
+protobuf>=6.33.5,<7
 

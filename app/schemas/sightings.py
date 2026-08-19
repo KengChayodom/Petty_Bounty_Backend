@@ -10,9 +10,11 @@ able to override YOLO's species guess):
     POST /sightings/         →  client sends user-CONFIRMED species; server
                                   pulls the cached vector and saves
 """
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.services.sighting_logic import ACTION_SPOTTED, normalize_action_type
 
 
 class AnalyzeRequest(BaseModel):
@@ -61,11 +63,12 @@ class SightingCreate(BaseModel):
         description="User-confirmed species (Cat / Dog / Bird / Other). "
                     "Validator normalises to title-case.",
     )
-    action_type: Literal["Spotted", "Caught"] = Field(
-        "Spotted",
+    action_type: str = Field(
+        ACTION_SPOTTED,
         description="Whether the hunter only spotted the pet or actually "
                     "caught/returned it. 'Caught' is the action that makes a "
-                    "sighting eligible to be the bounty-paying final sighting.",
+                    "sighting eligible to be the bounty-paying final sighting. "
+                    "The UI wording 'Rescue' is accepted and normalised.",
     )
     notes: Optional[str] = Field(
         None, max_length=500,
@@ -80,6 +83,20 @@ class SightingCreate(BaseModel):
         if normalized not in valid_species:
             raise ValueError(f"Species must be one of {valid_species}")
         return normalized
+
+    @field_validator("action_type")
+    @classmethod
+    def action_type_must_be_valid(cls, v: str) -> str:
+        """Route the create paths through the same vocabulary as the PATCH.
+
+        `sighting_logic.normalize_action_type` is the single definition of the
+        `action_type` enum plus the UI's own wording. A `Literal` here was a
+        second copy of that vocabulary that 422'd on the exact word the
+        final-review button says ("RESCUE") — accepted by
+        PATCH /sightings/{id}/action and rejected by this endpoint, for the
+        same field. Normalising here gives all three write paths one answer.
+        """
+        return normalize_action_type(v)
 
     class Config:
         json_schema_extra = {
@@ -134,10 +151,11 @@ class TargetedSightingCreate(BaseModel):
         description="UUID of the missing-pet listing being reported against. "
                     "Required — the targeted flow always has a chosen pet.",
     )
-    action_type: Literal["Spotted", "Caught"] = Field(
-        "Spotted",
+    action_type: str = Field(
+        ACTION_SPOTTED,
         description="Whether the hunter only spotted the pet or actually "
-                    "caught/returned it.",
+                    "caught/returned it. The UI wording 'Rescue' is accepted "
+                    "and normalised.",
     )
     notes: Optional[str] = Field(
         None, max_length=500,
@@ -152,6 +170,20 @@ class TargetedSightingCreate(BaseModel):
         if normalized not in valid_species:
             raise ValueError(f"Species must be one of {valid_species}")
         return normalized
+
+    @field_validator("action_type")
+    @classmethod
+    def action_type_must_be_valid(cls, v: str) -> str:
+        """Route the create paths through the same vocabulary as the PATCH.
+
+        `sighting_logic.normalize_action_type` is the single definition of the
+        `action_type` enum plus the UI's own wording. A `Literal` here was a
+        second copy of that vocabulary that 422'd on the exact word the
+        final-review button says ("RESCUE") — accepted by
+        PATCH /sightings/{id}/action and rejected by this endpoint, for the
+        same field. Normalising here gives all three write paths one answer.
+        """
+        return normalize_action_type(v)
 
     class Config:
         json_schema_extra = {
