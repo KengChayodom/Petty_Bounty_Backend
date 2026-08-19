@@ -3,8 +3,9 @@ Unit tests for the Pydantic request-schema validators — the normalize/reject
 branches the service tests never exercise (they only ever build valid payloads).
 
 Covered: species normalization + rejection (missing-pet + both sighting flows),
-empty-characteristics rejection, hex-colour and pattern-id validation, and the
-missing-pet status validator.
+empty-characteristics rejection, hex-colour and pattern-id validation, the
+missing-pet status validator, and the action_type validator that routes both
+create flows through `sighting_logic.normalize_action_type`.
 """
 from datetime import datetime
 
@@ -102,3 +103,36 @@ class TestSightingSpeciesValidators:
             TargetedSightingCreate(
                 **_sighting(detected_species="dragon", target_pet_id="p1")
             )
+
+
+# The create flows used to declare action_type as Literal["Spotted", "Caught"] —
+# a second copy of the enum vocabulary that 422'd on "Rescue", the exact word
+# the final-review button says and the exact word PATCH /sightings/{id}/action
+# accepts. Both flows now defer to sighting_logic.normalize_action_type, so the
+# three write paths answer the same way.
+class TestSightingActionTypeValidators:
+    def test_discovery_accepts_ui_wording(self):
+        assert SightingCreate(**_sighting(action_type="Rescue")).action_type == "Caught"
+
+    def test_discovery_is_case_insensitive(self):
+        assert SightingCreate(**_sighting(action_type="RESCUE")).action_type == "Caught"
+
+    def test_discovery_stored_value_passes_through(self):
+        assert SightingCreate(**_sighting(action_type="caught")).action_type == "Caught"
+
+    def test_discovery_defaults_to_spotted(self):
+        data = _sighting()
+        del data["action_type"]
+        assert SightingCreate(**data).action_type == "Spotted"
+
+    def test_discovery_rejects_nonsense(self):
+        with pytest.raises(ValidationError):
+            SightingCreate(**_sighting(action_type="banana"))
+
+    def test_targeted_accepts_ui_wording(self):
+        s = TargetedSightingCreate(**_sighting(action_type="Rescue", target_pet_id="p1"))
+        assert s.action_type == "Caught"
+
+    def test_targeted_rejects_nonsense(self):
+        with pytest.raises(ValidationError):
+            TargetedSightingCreate(**_sighting(action_type="banana", target_pet_id="p1"))
