@@ -335,3 +335,39 @@ class TestNormalizeOwnerDecision:
 
         with pytest.raises(ValueError):
             normalize_owner_decision(bad)
+
+
+# --------------------------------------------------------------------------- #
+# normalize_action_type (2026-08-19) — the hunter's own answer on the
+# final-review screen (the step after "Confirm Match"): JUST SPOTTED or RESCUE.
+#
+# Pure, no I/O. The defect it catches: the button label the user actually
+# pressed ("Rescue") reaching the `action_type` enum unnormalised and failing
+# at the cast — a 500 for what should be a clean write. 'Caught' is the value
+# the resolve RPC pays a bounty on, so a silent no-op here costs real money.
+# --------------------------------------------------------------------------- #
+class TestNormalizeActionType:
+    @pytest.mark.parametrize("supplied,expected", [
+        ("Spotted", "Spotted"),
+        ("spotted", "Spotted"),
+        ("  JUST SPOTTED  ", "Spotted"),
+        ("just_spotted", "Spotted"),
+        ("Caught", "Caught"),
+        ("caught", "Caught"),
+        ("Rescue", "Caught"),
+        ("rescued", "Caught"),
+    ])
+    def test_maps_ui_wording_onto_the_enum(self, supplied, expected):
+        from app.services.sighting_logic import normalize_action_type
+
+        assert normalize_action_type(supplied) == expected
+
+    @pytest.mark.parametrize("bad", ["Found", "Verified", "Maybe", "", "   ", None])
+    def test_rejects_anything_else(self, bad):
+        """`action_type` shares vocabulary with the pet/verification lifecycles
+        ('Found', 'Verified'); accepting one of those would write a value the
+        enum has no member for."""
+        from app.services.sighting_logic import normalize_action_type
+
+        with pytest.raises(ValueError):
+            normalize_action_type(bad)

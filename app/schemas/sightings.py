@@ -168,6 +168,32 @@ class TargetedSightingCreate(BaseModel):
         }
 
 
+class SightingActionUpdate(BaseModel):
+    """Request schema for PATCH /sightings/{sighting_id}/action.
+
+    The final-review screen (the step AFTER "Confirm Match") asks the hunter
+    one question: did you just see the animal, or did you rescue it? The
+    sighting row already exists by then — it was written by POST /sightings/
+    with the default 'Spotted' — so this endpoint updates that single column.
+
+    Deliberately a plain `str`, not a Literal: the UI's own button label is
+    "RESCUE", and the server normalises that (plus 'caught', 'just spotted', …)
+    onto the enum. A Literal would 422 on the exact word the user pressed;
+    normalisation gives a clean 400 for genuine nonsense and accepts the rest.
+    """
+
+    action_type: str = Field(
+        ...,
+        description="'Spotted' (only saw the animal) or 'Caught' (rescued / "
+                    "secured it). The UI wording 'Rescue' is accepted and "
+                    "normalised to 'Caught'. 'Caught' is what makes a sighting "
+                    "eligible to be the bounty-paying final sighting.",
+    )
+
+    class Config:
+        json_schema_extra = {"example": {"action_type": "Caught"}}
+
+
 class SightingResponse(BaseModel):
     """Typed view of a stored sighting (feature_vector intentionally omitted)."""
 
