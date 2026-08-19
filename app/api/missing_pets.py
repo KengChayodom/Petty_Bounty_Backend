@@ -1,17 +1,34 @@
 # app/api/missing_pets.py
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
+from pydantic import BaseModel, Field
+
 from app.schemas.missing_pets import MissingPetCreate, MissingPetUpdate
 from app.schemas.common import StandardResponse
+from app.services.ai_service import AIManager
 from app.services.pet_service import PetService
+from app.services.sighting_service import SightingService
 from app.repositories.supabase_missing_pet_repository import (
     SupabaseMissingPetRepository,
+)
+from app.repositories.supabase_sighting_repository import (
+    SupabaseSightingRepository,
 )
 from app.services.notification_service import notify_nearby_hunters
 from app.core.auth import get_current_user_id
 from app.core.config import settings
 from app.core.database import get_supabase_client
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
+
+# Statuses an owner can PATCH that mean "the search is over". `Resolved` is not
+# here because the schema does not let an owner write it — it is set by the
+# resolve RPC, whose sightings are therefore NOT closed by this route (a known
+# gap; closing them would mean changing that function).
+CLOSED_PET_STATUSES = frozenset({"Found"})
 
 @router.post("/", response_model=StandardResponse)
 async def create_missing_pet(
@@ -74,6 +91,36 @@ async def get_nearby_missing_pets(
         raise HTTPException(status_code=500, detail=f"Failed to find nearby pets: {str(e)}")
 
 
+@router.get("/me", response_model=StandardResponse)
+async def get_my_missing_pets(
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    MD-34 / SRS-65 — the owner's "My Reports" list, newest first.
+
+    ⚠️  Declared BEFORE `/{pet_id}`: FastAPI matches routes in declaration
+    order, so with the parameterised route first, "me" would be captured as a
+    pet id and this endpoint would never run.
+
+    Owner identity comes from the JWT, never from a query parameter, so one
+    owner cannot list another's reports.
+    """
+    try:
+        pets = await PetService.get_my_missing_pets(
+            SupabaseMissingPetRepository(supabase), user_id
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(pets)} reports.",
+            data=pets,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch your reports: {str(e)}"
+        )
+
+
 @router.get("/{pet_id}/sightings", response_model=StandardResponse)
 async def get_sightings_for_pet(
     pet_id: str,
@@ -106,6 +153,61 @@ async def get_sightings_for_pet(
             status_code=500,
             detail=f"Failed to fetch sightings for pet: {str(e)}",
         )
+
+
+class MatchDecisionRequest(BaseModel):
+    """Body of PATCH /missing-pets/{pet_id}/sightings/{sighting_id}.
+
+    `decision` is a plain string rather than a Literal so an unrecognised value
+    comes back as the documented 400 (raised by
+    `sighting_logic.normalize_owner_decision`, which names the permitted set)
+    instead of FastAPI's 422.
+    """
+
+    decision: str = Field(
+        ...,
+        description="'Confirmed' (that is my pet) or 'Rejected' (it isn't).",
+    )
+
+
+@router.patch(
+    "/{pet_id}/sightings/{sighting_id}", response_model=StandardResponse
+)
+async def decide_sighting_match(
+    pet_id: str,
+    sighting_id: str,
+    payload: MatchDecisionRequest,
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    The owner's verdict on one sighting matched to their pet.
+
+    The pet id leads the path because that is what the ownership check is
+    against: an owner is ruling on an entry in their own pet's timeline. A pet
+    the caller does not own answers 404, exactly as the owner-scoped PATCH
+    above does, so the endpoint never reveals that someone else's pet exists.
+    """
+    service = SightingService(
+        repo=SupabaseSightingRepository(supabase), ai_manager=AIManager
+    )
+    try:
+        result = await service.decide_match(
+            pet_id, sighting_id, user_id, payload.decision,
+        )
+    except LookupError as le:
+        raise HTTPException(status_code=404, detail=str(le))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to record decision: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message="Decision recorded.",
+        data=result,
+    )
 
 
 @router.get("/{pet_id}", response_model=StandardResponse)
@@ -157,15 +259,32 @@ async def update_missing_pet(
         # Owner-scoped: the update only matches a row the caller owns. A pet
         # that doesn't exist OR isn't theirs both yield no rows -> 404 (we don't
         # leak existence of other owners' reports).
-        updated = SupabaseMissingPetRepository(supabase).update_missing_pet_owned(
-            pet_id, user_id, payload
-        )
+        repo = SupabaseMissingPetRepository(supabase)
+        updated = repo.update_missing_pet_owned(pet_id, user_id, payload)
 
         if not updated:
             raise HTTPException(
                 status_code=404,
                 detail=f"Missing pet {pet_id} not found or not owned by you",
             )
+
+        # Ending the search ends its sightings too: they stop being live leads
+        # the moment the pet is home. Isolated in its own try/except — the
+        # owner's report IS already updated, so failing the request here would
+        # report a failure that did not happen (same reasoning as
+        # SightingService._persist_matches).
+        if payload.get("status") in CLOSED_PET_STATUSES:
+            try:
+                closed = repo.close_sightings_for_pet(pet_id)
+                logger.info(
+                    "Pet %s closed by owner — %d sighting(s) marked Closed.",
+                    pet_id, closed,
+                )
+            except Exception as e:
+                logger.error(
+                    "Pet %s closed but its sightings could NOT be closed: %s",
+                    pet_id, e, exc_info=True,
+                )
 
         return StandardResponse(
             status="success",

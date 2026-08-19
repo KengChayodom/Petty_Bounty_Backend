@@ -17,7 +17,24 @@ full pipeline transparently.
 All DB access goes through a SightingRepository port (app/repositories/); this
 service holds zero supabase-py calls. Pure logic (payload build, threshold
 filter, row mapping, activity assembly) lives in sighting_logic.py.
+
+Threading note — why the `_*_sync` split
+----------------------------------------
+supabase-py is synchronous: every `.execute()` is a blocking HTTP round-trip
+(~50 ms against the live project). Called straight from an `async def`, that
+blocks the whole event loop, so concurrent requests serialise behind each other
+instead of overlapping. The public methods here therefore stay `async def` but
+delegate their DB work to a `_*_sync` counterpart run via `asyncio.to_thread`.
+
+The split is per-METHOD, not per-query, on purpose: `get_hunter_stats` makes
+four round-trips, and wrapping each one separately would pay four thread hops
+and four event-loop re-entries to no benefit. One hop per logical operation
+keeps the loop free for the same total time at a fraction of the overhead.
+
+Methods that genuinely await (the AI pipeline) keep their awaits inline and
+wrap only their DB steps.
 """
+import asyncio
 import logging
 
 from app.core.config import settings
@@ -25,10 +42,12 @@ from app.repositories.sighting_repository import SightingRepository
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
 from app.services.sighting_logic import (
+    OWNER_DECISION_CONFIRMED,
     assemble_hunter_activity,
     build_match_rows,
     build_sighting_payload,
     filter_by_threshold,
+    normalize_owner_decision,
     rerank_by_color,
     strip_feature_vector,
 )
@@ -167,7 +186,8 @@ class SightingService:
                 # not silently CLIP-only.
                 primary_color_hex = self.ai.extract_coat_color_hex(isolated)
 
-            sighting_row = self._insert_sighting_row(
+            sighting_row = await asyncio.to_thread(
+                self._insert_sighting_row,
                 sighting, vector=vector, target_pet_id=None,
                 primary_color_hex=primary_color_hex,
             )
@@ -199,7 +219,9 @@ class SightingService:
             # remains saved.
             if matches:
                 try:
-                    self._persist_matches(sighting_id, matches)
+                    await asyncio.to_thread(
+                        self._persist_matches, sighting_id, matches
+                    )
                 except Exception as e:
                     # Swallow so we don't clobber the matches already fetched
                     # for the verify screen — but log at ERROR, not WARNING.
@@ -236,8 +258,9 @@ class SightingService:
         endpoint so the client parses both responses identically.
         """
         try:
-            sighting_row = self._insert_sighting_row(
-                sighting, vector=None, target_pet_id=sighting.target_pet_id
+            sighting_row = await asyncio.to_thread(
+                self._insert_sighting_row,
+                sighting, vector=None, target_pet_id=sighting.target_pet_id,
             )
             logger.info(
                 "Sighting %s saved (species=%s, targeted → pet %s)",
@@ -251,6 +274,74 @@ class SightingService:
         except Exception as e:
             logger.error("Error in save_targeted_sighting: %s", e)
             raise
+
+    async def decide_match(
+        self, pet_id: str, sighting_id: str, owner_id: str, decision: str,
+    ) -> dict:
+        """The owner's verdict on one AI match: "that is my pet" or "that isn't".
+
+        This is the reply half of the loop. Until it existed the owner could
+        read their timeline but say nothing back, so `owner_status` sat at
+        Pending on every row and a wrong match kept counting as a real sighting
+        of the pet.
+
+        A Confirmed verdict also advances the sighting to `Confirmed`. A
+        Rejected one deliberately does NOT touch the sighting: one photo can
+        match several pets, and this owner saying "not mine" is no statement
+        about anybody else's pet.
+
+        Raises:
+            ValueError: decision outside {Confirmed, Rejected} (API -> 400).
+            LookupError: the pet is not the caller's, or the match does not
+                exist (API -> 404 for both — a caller who does not own the pet
+                must not be able to tell the two apart).
+        """
+        # Raises ValueError (400) before any I/O — cheap, so it stays on the
+        # loop and a bad decision string never costs a thread hop.
+        status = normalize_owner_decision(decision)
+        return await asyncio.to_thread(
+            self._decide_match_sync, pet_id, sighting_id, owner_id, status
+        )
+
+    def _decide_match_sync(
+        self, pet_id: str, sighting_id: str, owner_id: str, status: str,
+    ) -> dict:
+        """DB half of `decide_match`; `status` is already normalised."""
+        owners = self.repo.get_pet_owners([pet_id])
+        if owners.get(pet_id) != owner_id:
+            # Same 404-not-403 rule the owner-scoped PATCH uses: never confirm
+            # that a pet exists to someone who does not own it.
+            raise LookupError(f"Missing pet {pet_id} not found or not owned by you")
+
+        updated = self.repo.update_match_owner_status(
+            sighting_id, pet_id, status
+        )
+        if not updated:
+            raise LookupError(
+                f"Sighting {sighting_id} is not a match for pet {pet_id}"
+            )
+
+        sighting_status_written = False
+        if status == OWNER_DECISION_CONFIRMED:
+            try:
+                self.repo.set_sighting_status(sighting_id, "Confirmed")
+                sighting_status_written = True
+            except Exception as e:
+                # The owner's verdict IS recorded; the sighting's own lifecycle
+                # column is secondary, so a failure here must not lose it.
+                logger.error(
+                    "Match %s/%s confirmed but sighting status write FAILED: %s",
+                    sighting_id, pet_id, e,
+                )
+
+        logger.info(
+            "Owner %s marked sighting %s as %s for pet %s",
+            owner_id, sighting_id, status, pet_id,
+        )
+        return {
+            "match": updated,
+            "sighting_status_updated": sighting_status_written,
+        }
 
     def _persist_matches(self, sighting_id: str, matches: list[dict]) -> None:
         """
@@ -270,6 +361,13 @@ class SightingService:
         threshold: float = 0.0,
     ) -> list[dict]:
         """Find matching missing pets via the match_missing_pets RPC."""
+        return await asyncio.to_thread(
+            self._get_matches_sync, sighting_id, limit, threshold
+        )
+
+    def _get_matches_sync(
+        self, sighting_id: str, limit: int, threshold: float,
+    ) -> list[dict]:
         try:
             sighting = self.repo.get_sighting_for_match(sighting_id)
             if not sighting:
@@ -314,6 +412,9 @@ class SightingService:
             raise Exception(f"Failed to find matches: {e}")
 
     async def get_sighting_by_id(self, sighting_id: str) -> dict | None:
+        return await asyncio.to_thread(self._get_sighting_by_id_sync, sighting_id)
+
+    def _get_sighting_by_id_sync(self, sighting_id: str) -> dict | None:
         try:
             row = self.repo.get_sighting(sighting_id)
             if row is None:
@@ -336,6 +437,13 @@ class SightingService:
         embedded-resource join that also covers the score_awards
         UNIQUE(pet, user) relation (which is not a FK to sightings).
         """
+        return await asyncio.to_thread(
+            self._get_hunter_activity_sync, hunter_id, limit, offset
+        )
+
+    def _get_hunter_activity_sync(
+        self, hunter_id: str, limit: int, offset: int,
+    ) -> dict:
         try:
             total_count = self.repo.count_sightings_for_hunter(hunter_id)
 
@@ -357,12 +465,18 @@ class SightingService:
             return {"sightings": sightings, "total_count": total_count}
 
         except Exception as e:
-            logger.error("Error fetching activity for hunter %s: %s",
-                         hunter_id, e)
+            # exception(), not error(): the useful part of a transport-level
+            # failure (e.g. httpx.ReadError) is the traceback, and the route
+            # turns this into an opaque 500 for the caller.
+            logger.exception("Error fetching activity for hunter %s: %s",
+                             hunter_id, e)
             raise
 
     async def get_hunter_stats(self, hunter_id: str) -> dict:
         """Cumulative stats card for the hunter profile screen."""
+        return await asyncio.to_thread(self._get_hunter_stats_sync, hunter_id)
+
+    def _get_hunter_stats_sync(self, hunter_id: str) -> dict:
         try:
             user = self.repo.get_user(hunter_id)
             total_score = user["total_score"] if user else 0
@@ -377,6 +491,6 @@ class SightingService:
                     self.repo.count_contributions_for_hunter(hunter_id),
             }
         except Exception as e:
-            logger.error("Error fetching stats for hunter %s: %s",
-                         hunter_id, e)
+            logger.exception("Error fetching stats for hunter %s: %s",
+                             hunter_id, e)
             raise

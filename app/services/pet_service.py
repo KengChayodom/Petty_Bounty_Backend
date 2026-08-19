@@ -9,13 +9,22 @@ This service handles:
 All DB access goes through a MissingPetRepository port (app/repositories/);
 this service holds zero supabase-py calls. Payload construction lives in
 pet_logic.py.
+
+supabase-py is blocking, so every method here runs its repository work through
+`asyncio.to_thread` rather than calling it inline from `async def` — see the
+threading note in sighting_service.py for the full rationale.
 """
+import asyncio
 import logging
 
 from app.repositories.missing_pet_repository import MissingPetRepository
 from app.schemas.missing_pets import MissingPetCreate
 from app.services.ai_service import AIManager
-from app.services.pet_logic import build_missing_pet_payload
+from app.services.pet_logic import (
+    attach_sighting_counts,
+    build_missing_pet_payload,
+    count_sightings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +78,7 @@ class PetService:
 
             # Step 4: Insert via the repository
             logger.info(f"Registering missing pet: {pet.pet_name}")
-            created = repo.insert_missing_pet(data)
+            created = await asyncio.to_thread(repo.insert_missing_pet, data)
             logger.info(f"Missing pet registered successfully: {created['id']}")
             return created
 
@@ -94,10 +103,101 @@ class PetService:
         lat/lng entirely and break clients that expect numeric coordinates.
         """
         try:
-            return repo.get_missing_pet_by_id(pet_id)
+            return await asyncio.to_thread(repo.get_missing_pet_by_id, pet_id)
         except Exception as e:
             logger.error(f"Error fetching missing pet {pet_id}: {e}")
             raise
+
+    @staticmethod
+    async def get_my_missing_pets(
+        repo: MissingPetRepository, owner_id: str
+    ) -> list[dict]:
+        """
+        MD-34 / SRS-65 — the owner's "My Reports" list.
+
+        Scoping is structural: the port takes an owner_id, so there is no query
+        shape here that could return another owner's reports. Newest-first
+        ordering is the repository's (SQL) job.
+
+        Each report comes back with `sighting_count` and the derived
+        `post_status` (Pending / Spotted / Rescued) attached, so the card can
+        render its badge without a second round trip and without the client
+        reimplementing the rule.
+        """
+        try:
+            # Both round-trips as ONE thread hop — the second query's input is
+            # the first's output, so they cannot overlap anyway and splitting
+            # them would only pay the hand-off twice.
+            return await asyncio.to_thread(
+                PetService._get_my_missing_pets_sync, repo, owner_id
+            )
+        except Exception as e:
+            logger.error("Error listing reports for owner %s: %s", owner_id, e)
+            raise
+
+    @staticmethod
+    def _get_my_missing_pets_sync(
+        repo: MissingPetRepository, owner_id: str
+    ) -> list[dict]:
+        pets = repo.get_by_owner(owner_id)
+        if not pets:
+            # No pets means nothing to count — skip the round trip rather
+            # than asking the database about an empty list of ids.
+            return []
+        links = repo.get_sighting_links_for_pets(
+            [p["id"] for p in pets if p.get("id")]
+        )
+        return attach_sighting_counts(pets, count_sightings(links))
+
+    @staticmethod
+    async def list_all_missing_pets(
+        repo: MissingPetRepository,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> list[dict]:
+        """
+        MD-37 / SRS-64 — platform-wide browse for moderation.
+
+        `status=None` means "every status", not "status IS NULL"; the filter is
+        applied by the repository only when one was supplied. The admin gate
+        itself lives in require_admin (MD-04), not here.
+        """
+        try:
+            return await asyncio.to_thread(
+                repo.list_all, status, limit, offset
+            )
+        except Exception as e:
+            logger.error("Error listing all missing pets: %s", e)
+            raise
+
+    @staticmethod
+    async def remove_missing_pet(
+        repo: MissingPetRepository, pet_id: str, admin_id: str
+    ) -> dict:
+        """
+        MD-38 / SRS-66 — remove a report that violates the guidelines.
+
+        UD-14's postcondition is "removed from the database and the search map",
+        so this is a hard delete rather than a hidden flag. The moderation
+        action is recorded in the log at WARNING level — the same audit
+        convention verify_sighting uses.
+
+        Raises:
+            ValueError: when no such report exists (the API layer maps it to 404).
+        """
+        try:
+            removed = await asyncio.to_thread(repo.remove, pet_id)
+        except Exception as e:
+            logger.error("Error removing missing pet %s: %s", pet_id, e)
+            raise
+        if not removed:
+            raise ValueError(f"Missing pet {pet_id} not found")
+        logger.warning(
+            "Admin %s removed missing pet %s (guideline violation)",
+            admin_id, pet_id,
+        )
+        return removed
 
     @staticmethod
     async def get_sightings_for_pet(
@@ -115,8 +215,9 @@ class PetService:
         """
         try:
             # owner never sees Dismissed reports -> include_dismissed=False
-            return repo.sightings_for_pet(
-                pet_id, limit, offset, include_dismissed=False
+            return await asyncio.to_thread(
+                repo.sightings_for_pet,
+                pet_id, limit, offset, include_dismissed=False,
             )
         except Exception as e:
             logger.error("Error fetching sightings for pet %s: %s", pet_id, e)
@@ -139,8 +240,9 @@ class PetService:
             center_point_wkt = f"POINT({longitude} {latitude})"
             radius_meters = radius_km * 1000.0
 
-            return repo.get_nearby_missing_pets(
-                center_point_wkt, radius_meters, limit
+            return await asyncio.to_thread(
+                repo.get_nearby_missing_pets,
+                center_point_wkt, radius_meters, limit,
             )
 
         except Exception as e:

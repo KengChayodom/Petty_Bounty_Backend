@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
@@ -12,6 +12,7 @@ from app.schemas.sightings import (
     TargetedSightingCreate,
 )
 from app.services.ai_service import AIManager
+from app.services.notification_service import notify_pet_owners
 from app.services.sighting_service import SightingService
 
 router = APIRouter(prefix="/sightings", tags=["Sightings"])
@@ -52,6 +53,8 @@ async def analyze_image(
 @router.post("/", response_model=StandardResponse)
 async def report_sighting(
     sighting: SightingCreate,
+    background_tasks: BackgroundTasks,
+    supabase=Depends(get_supabase_client),
     service: SightingService = Depends(get_sighting_service),
     user_id: str = Depends(get_current_user_id),
 ):
@@ -68,6 +71,20 @@ async def report_sighting(
     sighting.hunter_id = user_id
     try:
         result = await service.process_and_save_sighting(sighting)
+
+        # Tell the owners of the matched pets, after responding — the hunter
+        # waits for their match list, not for someone else's push. A sighting
+        # that matched nothing has nobody to tell.
+        matched_pet_ids = [m["id"] for m in result["matches"] if m.get("id")]
+        if matched_pet_ids:
+            background_tasks.add_task(
+                notify_pet_owners,
+                supabase,
+                result["sighting"]["id"],
+                matched_pet_ids,
+                user_id,
+            )
+
         return StandardResponse(
             status="success",
             message=f"Sighting saved with {len(result['matches'])} matches.",
@@ -82,6 +99,8 @@ async def report_sighting(
 @router.post("/targeted", response_model=StandardResponse)
 async def report_targeted_sighting(
     sighting: TargetedSightingCreate,
+    background_tasks: BackgroundTasks,
+    supabase=Depends(get_supabase_client),
     service: SightingService = Depends(get_sighting_service),
     user_id: str = Depends(get_current_user_id),
 ):
@@ -97,6 +116,18 @@ async def report_targeted_sighting(
     sighting.hunter_id = user_id
     try:
         result = await service.save_targeted_sighting(sighting)
+
+        # "Sent to the owner" is what this endpoint has always claimed in its
+        # response; until now nothing was actually sent. This is the push that
+        # makes the message true.
+        background_tasks.add_task(
+            notify_pet_owners,
+            supabase,
+            result["sighting"]["id"],
+            [sighting.target_pet_id],
+            user_id,
+        )
+
         return StandardResponse(
             status="success",
             message="Targeted sighting sent to the owner.",

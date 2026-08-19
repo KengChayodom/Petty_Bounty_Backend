@@ -26,6 +26,45 @@ class SupabaseSightingRepository:
                  .upsert(rows, on_conflict="sighting_id,missing_pet_id")
                  .execute())
 
+    def set_sighting_status(self, sighting_id: str, status: str) -> dict | None:
+        res = (self._db.table("sightings")
+                       .update({"sighting_status": status})
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def update_match_owner_status(
+        self, sighting_id: str, pet_id: str, status: str
+    ) -> dict | None:
+        # Scoped to the ONE (sighting, pet) pair: a sighting can match several
+        # pets, and each owner decides only about their own.
+        res = (self._db.table("sighting_matches")
+                       .update({"owner_status": status})
+                       .eq("sighting_id", sighting_id)
+                       .eq("missing_pet_id", pet_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    # --- owner side of the loop ------------------------------------------ #
+    def get_pet_owners(self, pet_ids: list[str]) -> dict[str, str]:
+        """pet id -> owner id, for the pets a sighting was matched to.
+
+        A separate read because the `match_missing_pets` RPC does not return
+        `owner_id` — reading it here keeps the push fan-out working without a
+        migration to change that function's return type.
+        """
+        if not pet_ids:
+            return {}
+        res = (self._db.table("missing_pets")
+                       .select("id, owner_id")
+                       .in_("id", pet_ids)
+                       .execute())
+        return {
+            row["id"]: row["owner_id"]
+            for row in (res.data or [])
+            if row.get("id") and row.get("owner_id")
+        }
+
     # --- discovery / match reads ---------------------------------------- #
     def get_sighting_for_match(self, sighting_id: str) -> dict | None:
         res = (self._db.table("sightings")
