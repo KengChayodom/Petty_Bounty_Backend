@@ -72,6 +72,32 @@ class TestMissingPetUpdateValidators:
         with pytest.raises(ValidationError):
             MissingPetUpdate(status="lost")
 
+    def test_reopening_a_search_is_allowed(self):
+        assert MissingPetUpdate(status="Searching").status == "Searching"
+
+    def test_spotted_is_refused_even_though_the_enum_has_it(self):
+        """`pet_status` still carries 'Spotted' from the old model, but the
+        column is the MATCHING FILTER — match_missing_pets and
+        get_nearby_missing_pets both select `status = 'Searching'` — so writing
+        it here would pull a still-lost pet out of matching and off the map.
+        "Someone has seen your pet" is the derived `post_status`, never stored.
+        """
+        with pytest.raises(ValidationError):
+            MissingPetUpdate(status="Spotted")
+
+    def test_resolved_is_refused_because_only_the_settlement_writes_it(self):
+        """'Resolved' means the bounty has been paid — the administrator's
+        resolve_missing_pet writes it, and only after the search is 'Found'."""
+        with pytest.raises(ValidationError):
+            MissingPetUpdate(status="Resolved")
+
+    def test_the_rejection_names_the_values_in_a_stable_order(self):
+        """A set would render the permitted values in whatever order it
+        iterated, so the message an API client sees would change run to run."""
+        with pytest.raises(ValidationError) as ei:
+            MissingPetUpdate(status="Spotted")
+        assert "Status must be one of Searching, Found" in str(ei.value)
+
 
 def _sighting(**over):
     data = dict(

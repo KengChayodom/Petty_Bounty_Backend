@@ -105,12 +105,32 @@ class PetService:
         (ST_Y/ST_X) and returns the SAME shape as get_nearby_missing_pets —
         honouring the MissingPetResponse contract. A raw select would omit
         lat/lng entirely and break clients that expect numeric coordinates.
+
+        Carries the same derived `sighting_count` + `post_status` that the list
+        endpoint attaches. The Status Tracker reads ONE pet, and without these
+        it had to re-derive the badge from the raw `status` column — which it
+        did with a different word list and a different closed-search test, so a
+        pet at 'Resolved' read as still-searching in the app. One rule, one
+        vocabulary, computed here.
         """
         try:
-            return await asyncio.to_thread(repo.get_missing_pet_by_id, pet_id)
+            return await asyncio.to_thread(
+                PetService._get_missing_pet_by_id_sync, repo, pet_id
+            )
         except Exception as e:
             logger.error(f"Error fetching missing pet {pet_id}: {e}")
             raise
+
+    @staticmethod
+    def _get_missing_pet_by_id_sync(
+        repo: MissingPetRepository, pet_id: str
+    ) -> dict | None:
+        pet = repo.get_missing_pet_by_id(pet_id)
+        if not pet:
+            # Not found is not an error and must not cost a second query.
+            return None
+        links = repo.get_sighting_links_for_pets([pet_id])
+        return attach_sighting_counts([pet], count_sightings(links))[0]
 
     @staticmethod
     async def get_my_missing_pets(

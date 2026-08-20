@@ -173,15 +173,65 @@ class TestRegisterMissingPet:
 
 
 # --------------------------------------------------------------------------- #
-# get_missing_pet_by_id — thin delegate; a repo error must propagate.
+# get_missing_pet_by_id — the row PLUS the derived badge the list endpoint
+# already attaches, so the Status Tracker reads the rule instead of owning a
+# second copy of it. A repo error must still propagate.
 # --------------------------------------------------------------------------- #
 class TestGetMissingPetById:
-    def test_returns_repo_row(self):
+    def test_returns_repo_row_with_the_derived_badge(self):
         repo = _repo()
-        repo.get_missing_pet_by_id.return_value = {"id": "pet-1", "latitude": 13.7}
-        assert run(PetService.get_missing_pet_by_id(repo, "pet-1")) == {
-            "id": "pet-1", "latitude": 13.7,
+        repo.get_missing_pet_by_id.return_value = {
+            "id": "pet-1", "latitude": 13.7, "status": "Searching",
         }
+        repo.get_sighting_links_for_pets.return_value = []
+
+        assert run(PetService.get_missing_pet_by_id(repo, "pet-1")) == {
+            "id": "pet-1",
+            "latitude": 13.7,
+            "status": "Searching",
+            "sighting_count": 0,
+            "post_status": "Pending",
+        }
+        repo.get_sighting_links_for_pets.assert_called_once_with(["pet-1"])
+
+    def test_badge_counts_the_pets_sightings(self):
+        """The count is the product rule (de-duplicated, rejected matches
+        dropped), not len(rows) — one sighting reaching the pet from BOTH
+        sources is one sighting."""
+        repo = _repo()
+        repo.get_missing_pet_by_id.return_value = {
+            "id": "pet-1", "status": "Searching",
+        }
+        repo.get_sighting_links_for_pets.return_value = [
+            {"pet_id": "pet-1", "sighting_id": "s1", "owner_status": "Pending"},
+            {"pet_id": "pet-1", "sighting_id": "s1", "owner_status": None},
+            {"pet_id": "pet-1", "sighting_id": "s2", "owner_status": "Rejected"},
+        ]
+
+        out = run(PetService.get_missing_pet_by_id(repo, "pet-1"))
+        assert out["sighting_count"] == 1
+        assert out["post_status"] == "Spotted"
+
+    def test_a_settled_case_reads_rescued(self):
+        """'Resolved' (the bounty was paid) closes a search exactly as 'Found'
+        does. The client used to test for 'Found' alone and reopened the case
+        on screen the moment the money moved."""
+        repo = _repo()
+        repo.get_missing_pet_by_id.return_value = {
+            "id": "pet-1", "status": "Resolved",
+        }
+        repo.get_sighting_links_for_pets.return_value = []
+
+        assert run(
+            PetService.get_missing_pet_by_id(repo, "pet-1")
+        )["post_status"] == "Rescued"
+
+    def test_missing_pet_returns_none_without_a_second_query(self):
+        repo = _repo()
+        repo.get_missing_pet_by_id.return_value = None
+
+        assert run(PetService.get_missing_pet_by_id(repo, "nope")) is None
+        repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
         repo = _repo()
