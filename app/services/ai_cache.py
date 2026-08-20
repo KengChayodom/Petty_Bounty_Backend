@@ -14,6 +14,19 @@ Why cachetools.TTLCache, not functools.lru_cache: lru_cache has no TTL,
 no eviction on memory pressure, and can't safely hold large numpy/PIL
 values across processes. TTLCache evicts on time AND on size, so memory
 stays bounded under a flood of unique URLs.
+
+WHAT IS DELIBERATELY *NOT* CACHED
+---------------------------------
+The full decoded source image. It used to be kept here as `pil_image` "for
+debugging", but nothing on the save path ever read it, and a decoded RGB
+frame costs width x height x 3 bytes -- ~9.4 MB for the 2048x1536 photos the
+app uploads. At the old maxsize of 256 that was a ceiling of roughly 2.8 GB
+of live objects, none of it load-bearing. Once the host starts swapping,
+EVERY endpoint slows down, not just this one, so the cheapest fix is to not
+hold the bytes at all.
+
+What remains is the small stuff: the 512-D vector (the artefact that is
+genuinely expensive to recompute), the mask-isolated crop, and three scalars.
 """
 from threading import Lock
 from typing import Optional, TypedDict
@@ -23,7 +36,6 @@ from PIL import Image
 
 
 class AnalyzePayload(TypedDict):
-    pil_image: Image.Image       # full decoded RGB image (kept for debugging)
     isolated_image: Image.Image  # YOLO-masked + tight-cropped subject
     species: str                 # YOLO's guess ('Cat' | 'Dog' | 'Bird')
     bbox: list[float]            # [x1, y1, x2, y2] in original image coords
@@ -35,7 +47,10 @@ class AnalyzePayload(TypedDict):
 class AnalyzeCache:
     """Thread-safe TTL cache. Class-level so it survives across requests."""
 
-    _store: TTLCache = TTLCache(maxsize=256, ttl=600)  # 10 minutes
+    # 64, not 256: an entry only has to survive the seconds between /analyze
+    # and the user confirming on the verify screen, so the size cap is really
+    # "how many people are mid-report at once", not a throughput figure.
+    _store: TTLCache = TTLCache(maxsize=64, ttl=600)  # 10 minutes
     _lock = Lock()
 
     @classmethod

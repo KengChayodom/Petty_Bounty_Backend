@@ -386,7 +386,9 @@ class TestSaveTargetedSighting:
 # --------------------------------------------------------------------------- #
 # process_and_save_sighting — the cache-MISS branch (TTL expiry / worker restart)
 # must transparently re-run the heavy pipeline. download_image / run_yolo_seg /
-# clip_encode are awaited (AsyncMock); isolate_subject is synchronous (MagicMock).
+# clip_encode are awaited (AsyncMock); isolate_subject stays a plain MagicMock
+# because the service dispatches it through asyncio.to_thread, which calls it
+# synchronously on a worker thread — an AsyncMock here would NOT be awaited.
 # --------------------------------------------------------------------------- #
 class TestProcessAndSaveCacheMiss:
     @staticmethod
@@ -395,7 +397,7 @@ class TestProcessAndSaveCacheMiss:
         ai = MagicMock()
         ai.download_image = AsyncMock(return_value=image)
         ai.run_yolo_seg = AsyncMock(return_value=results)
-        ai.isolate_subject = MagicMock(return_value=isolate_return)  # sync, not awaited
+        ai.isolate_subject = MagicMock(return_value=isolate_return)  # run via to_thread
         ai.clip_encode = AsyncMock(return_value=recomputed_vector)
         return ai
 
@@ -591,7 +593,7 @@ class TestAnalyzeSightingImage:
         else:
             ai.download_image = AsyncMock(return_value=image)
         ai.run_yolo_seg = AsyncMock(return_value=results)
-        ai.isolate_subject = MagicMock(return_value=isolate_return)  # sync
+        ai.isolate_subject = MagicMock(return_value=isolate_return)  # run via to_thread
         ai.clip_encode = AsyncMock(return_value=vector)
         return ai
 
@@ -616,8 +618,11 @@ class TestAnalyzeSightingImage:
         assert cached["feature_vector"] == [0.11, 0.22]
         assert cached["confidence"] == 0.8825          # raw, not the percentage
         assert cached["species"] == "Dog"
-        assert cached["pil_image"] == "PIL_IMAGE"
         assert cached["isolated_image"] == "ISOLATED_IMG"
+        # The full decoded source frame is deliberately NOT retained: nothing
+        # reads it back, and at ~9.4 MB a photo it was the whole memory
+        # footprint of this cache. See the ai_cache module docstring.
+        assert "pil_image" not in cached
 
     def test_no_target_animal_returns_not_found_without_caching(self):
         url = "https://img.example/empty-scene.jpg"

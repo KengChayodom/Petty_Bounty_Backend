@@ -79,7 +79,11 @@ class SightingService:
         try:
             image = await self.ai.download_image(str(image_url))
             results = await self.ai.run_yolo_seg(image, conf=conf)
-            iso = self.ai.isolate_subject(image, results)
+            # Off-thread like run_yolo_seg / clip_encode above it: this is a
+            # full-frame numpy pass (mask resize, background blackout, np.where
+            # over every pixel), and on the event loop it stalls every other
+            # request in the process, not just this one.
+            iso = await asyncio.to_thread(self.ai.isolate_subject, image, results)
             if iso is None:
                 return {
                     "status": "not_found",
@@ -95,11 +99,13 @@ class SightingService:
             # Coat colour off the SAME isolated crop (safe: iso is not None here,
             # so the crop has a black background to strip). None for a near-black
             # subject → matching falls back to CLIP-only for this sighting.
-            primary_color_hex = self.ai.extract_coat_color_hex(isolated_image)
+            # np.median sorts, so this is the pricier of the two numpy passes.
+            primary_color_hex = await asyncio.to_thread(
+                self.ai.extract_coat_color_hex, isolated_image
+            )
 
             cache_key = str(image_url)
             AnalyzeCache.set(cache_key, {
-                "pil_image": image,
                 "isolated_image": isolated_image,
                 "species": species,
                 "bbox": bbox,
@@ -180,7 +186,9 @@ class SightingService:
                 # still represent whatever animal pixels YOLO actually finds
                 # in the photo. The user's species choice is honoured at the
                 # INSERT step regardless.
-                iso = self.ai.isolate_subject(image, results)
+                iso = await asyncio.to_thread(
+                    self.ai.isolate_subject, image, results
+                )
                 if iso is None:
                     raise ValueError(
                         "No target animal detected in image during re-run."
@@ -189,7 +197,9 @@ class SightingService:
                 vector = await self.ai.clip_encode(isolated)
                 # Re-extract colour too so a cache-miss save is colour-aware,
                 # not silently CLIP-only.
-                primary_color_hex = self.ai.extract_coat_color_hex(isolated)
+                primary_color_hex = await asyncio.to_thread(
+                    self.ai.extract_coat_color_hex, isolated
+                )
 
             sighting_row = await asyncio.to_thread(
                 self._insert_sighting_row,
