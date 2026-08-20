@@ -12,6 +12,7 @@ from app.services.sighting_service import SightingService
 from app.repositories.supabase_missing_pet_repository import (
     SupabaseMissingPetRepository,
 )
+from app.repositories.sighting_repository import OwnerDecisionRefused
 from app.repositories.supabase_sighting_repository import (
     SupabaseSightingRepository,
 )
@@ -25,9 +26,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
 
 # Statuses an owner can PATCH that mean "the search is over". `Resolved` is not
-# here because the schema does not let an owner write it — it is set by the
-# resolve RPC, whose sightings are therefore NOT closed by this route (a known
-# gap; closing them would mean changing that function).
+# here because the schema does not let an owner write it: it means "the bounty
+# has been paid", which only the administrator's settlement writes, and by then
+# the search is already Found and its sightings already closed — either by this
+# route (the owner ended the search themselves) or by owner_decide_sighting
+# (the owner confirmed a rescue).
 CLOSED_PET_STATUSES = frozenset({"Found"})
 
 @router.post("/", response_model=StandardResponse)
@@ -187,6 +190,17 @@ async def decide_sighting_match(
     against: an owner is ruling on an entry in their own pet's timeline. A pet
     the caller does not own answers 404, exactly as the owner-scoped PATCH
     above does, so the endpoint never reveals that someone else's pet exists.
+
+    Confirming a sighting whose `action_type` is 'Caught' does considerably
+    more than record a verdict: it ends the search and distributes every clue
+    score for the pet (see `SightingService.decide_match`). The response says
+    which happened — `search_closed` and `awards` — so the client can react
+    without a second round-trip.
+
+    The queue is ordered, so this can also fail as a **409**: the card was
+    already decided, an older card is still undecided, or the search is over.
+    Those handlers must precede the generic ValueError -> 400, because they
+    subclass it.
     """
     service = SightingService(
         repo=SupabaseSightingRepository(supabase), ai_manager=AIManager
@@ -197,6 +211,8 @@ async def decide_sighting_match(
         )
     except LookupError as le:
         raise HTTPException(status_code=404, detail=str(le))
+    except OwnerDecisionRefused as ode:
+        raise HTTPException(status_code=409, detail=str(ode))
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
@@ -205,7 +221,10 @@ async def decide_sighting_match(
         )
     return StandardResponse(
         status="success",
-        message="Decision recorded.",
+        message=(
+            "Search closed; scores awarded."
+            if result.get("search_closed") else "Decision recorded."
+        ),
         data=result,
     )
 

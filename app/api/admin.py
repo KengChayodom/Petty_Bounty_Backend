@@ -47,7 +47,14 @@ async def verify_sighting(
     service: AdminService = Depends(get_admin_service),
     admin_id: str = Depends(require_admin),
 ):
-    """Admin sets a sighting's verification_status to 'Verified' or 'Dismissed'."""
+    """Admin sets a sighting's verification_status to 'Verified' or 'Dismissed'.
+
+    'Dismissed' is the live half: it withdraws a sighting from every owner
+    timeline and from scoring, and it is what upholding a flag writes. 'Verified'
+    no longer gates anything — the owner's confirmation took over both the
+    scoring (2026-08-21) and the bounty eligibility — and is kept only so an
+    administrator can undo a dismissal.
+    """
     try:
         row = await service.verify_sighting(
             sighting_id, payload.verification_status,
@@ -232,10 +239,18 @@ async def resolve_missing_pet(
     admin_id: str = Depends(require_admin),
 ):
     """
-    Atomic resolution: pays the full bounty to the final hunter and
-    distributes F1 ranking points (25/15/10/5/5/…) to every other hunter
-    who submitted a Verified sighting for this pet. Sets pet.status =
-    'Resolved'. Idempotent — second call returns 400.
+    Settle the bounty on a case the OWNER has already closed.
+
+    Records the transfer against the sighting the owner confirmed as the catch
+    and moves the report from 'Found' to 'Resolved'. Since 2026-08-21 it does
+    NOT award any points: the clue scores were distributed when the owner
+    confirmed the rescue, possibly days earlier (see
+    `SightingService.decide_match`), and awarding here as well would pay every
+    hunter twice.
+
+    400 when the pet was never recovered ('Found' is the precondition), when
+    the nominated sighting is not the owner-confirmed catch, or when the bounty
+    was already settled.
     """
     try:
         result = await service.resolve_missing_pet(

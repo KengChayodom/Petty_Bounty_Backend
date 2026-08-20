@@ -13,17 +13,26 @@ resolution; flag review additionally needs the queue itself (`ReportRepository`)
 which is an optional constructor argument so the rest of this service keeps its
 one-argument construction.
 
-**Scope of admin power (decided 2026-08-17, extended 2026-08-20).** An
-administrator moderates by REMOVING things — dismissing a flagged sighting,
-deleting a report that breaks the guidelines — and, since 2026-08-20, by
-DEDUCTING SCORE from the hunter behind an upheld flag. There is still
-deliberately no ban, no account suspension, and no account dashboard: an earlier
-design had all three, and they were withdrawn because moderation that touches
-accounts needs a review process the project does not have. The deduction is the
-replacement sanction, and it was chosen because it stays inside the scoring
-tables — banning would need an account-state column plus a per-request check of
-it, since an already-issued JWT keeps working. Admins are also no longer
-expected to verify every sighting; they look at what users flag.
+**Scope of admin power (decided 2026-08-17, extended 2026-08-20, narrowed
+2026-08-21).** An administrator moderates by REMOVING things — dismissing a
+flagged sighting, deleting a report that breaks the guidelines — and, since
+2026-08-20, by DEDUCTING SCORE from the hunter behind an upheld flag. There is
+still deliberately no ban, no account suspension, and no account dashboard: an
+earlier design had all three, and they were withdrawn because moderation that
+touches accounts needs a review process the project does not have. The deduction
+is the replacement sanction, and it was chosen because it stays inside the
+scoring tables — banning would need an account-state column plus a per-request
+check of it, since an already-issued JWT keeps working.
+
+Since 2026-08-21 an administrator does not adjudicate sightings at all. Whether
+a photograph shows a particular animal is a question only its owner can answer,
+so the owner now decides every sighting and closes their own case, and
+confirming the rescue is what distributes the clue scores (see
+`SightingService.decide_match`). What is left here is moderation and MONEY:
+`resolve_missing_pet` records the bounty transfer against a case the owner has
+already closed. `verify_sighting` survives for the moderation half of the same
+column — an upheld flag writes 'Dismissed' — and nothing writes 'Verified' any
+more.
 """
 import asyncio
 import logging
@@ -151,9 +160,13 @@ class AdminService:
         except Exception as e:
             msg = str(e)
             # The DB function raises with these prefixes — translate to a
-            # client-friendly 400 instead of a 500.
+            # client-friendly 400 instead of a 500. "has not been recovered
+            # yet" is the 2026-08-21 addition: the bounty follows the owner's
+            # resolution, so paying before they have closed the search is a
+            # sequencing mistake by the caller, not a server fault.
             if ("already resolved" in msg
-                    or "not a verified Caught sighting" in msg
+                    or "not a confirmed Caught sighting" in msg
+                    or "has not been recovered yet" in msg
                     or "not found" in msg):
                 raise ValueError(msg) from e
             logger.error("Error resolving pet %s: %s", pet_id, e)
