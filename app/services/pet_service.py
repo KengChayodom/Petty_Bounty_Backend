@@ -60,8 +60,12 @@ class PetService:
             logger.info(f"Extracting features from pet image: {pet.image_url}")
             image = await AIManager.download_image(str(pet.image_url))
             results = await AIManager.run_yolo_seg(image)
-            iso = AIManager.isolate_subject(
-                image, results, expected_species=pet.species
+            # Off-thread for the same reason sighting_service does it: a
+            # full-frame numpy pass on the event loop stalls every concurrent
+            # request in the process.
+            iso = await asyncio.to_thread(
+                AIManager.isolate_subject,
+                image, results, expected_species=pet.species,
             )
             if iso is None:
                 logger.warning(
