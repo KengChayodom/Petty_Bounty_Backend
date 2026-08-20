@@ -91,3 +91,56 @@ def test_pagination_orders_by_created_at_desc(conn, seed):
 
     assert [r[0] for r in page1] == [newest, middle]  # DESC
     assert [r[0] for r in page2] == [oldest]
+
+
+# --------------------------------------------------------------------------- #
+# owner_status — added 2026-08-21, and the reason match_source needed defending
+# --------------------------------------------------------------------------- #
+def _queue(conn, pet_id, *, include_dismissed=False):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, owner_status, match_source, similarity_score "
+            "FROM sightings_for_pet(%s, 50, 0, %s)",
+            (pet_id, include_dismissed),
+        )
+        return {r[0]: r[1:] for r in cur.fetchall()}
+
+
+def test_returns_the_owners_own_verdict(conn, seed):
+    """Without this column no screen can draw the queue: which card is decided,
+    which is next, which is still locked. It was the one thing the owner's own
+    timeline did not return."""
+    owner, hunter = seed.user(), seed.user()
+    pet = seed.missing_pet(owner_id=owner)
+    undecided = seed.sighting(hunter_id=hunter)
+    seed.sighting_match(sighting_id=undecided, missing_pet_id=pet)
+    confirmed = seed.sighting(hunter_id=hunter)
+    seed.sighting_match(sighting_id=confirmed, missing_pet_id=pet,
+                        owner_status="Confirmed")
+    rejected = seed.sighting(hunter_id=hunter)
+    seed.sighting_match(sighting_id=rejected, missing_pet_id=pet,
+                        owner_status="Rejected")
+
+    rows = _queue(conn, pet)
+
+    assert rows[undecided][0] == "Pending"
+    assert rows[confirmed][0] == "Confirmed"
+    assert rows[rejected][0] == "Rejected"
+
+
+def test_a_targeted_report_is_still_targeted_once_it_has_a_queue_row(conn, seed):
+    """Targeted reports gained a sighting_matches row on 2026-08-21 so their
+    owner could rule on them. A queue row is not an AI match, and NULL
+    similarity is what separates the two — without that distinction every
+    targeted report would start reporting itself as 'both'."""
+    owner, hunter = seed.user(), seed.user()
+    pet = seed.missing_pet(owner_id=owner)
+    targeted = seed.sighting(hunter_id=hunter, initial_target_pet_id=pet)
+    seed.sighting_match(sighting_id=targeted, missing_pet_id=pet,
+                        similarity=None)
+
+    rows = _queue(conn, pet)
+
+    assert rows[targeted][1] == "targeted"
+    assert rows[targeted][2] is None
+    assert rows[targeted][0] == "Pending"
