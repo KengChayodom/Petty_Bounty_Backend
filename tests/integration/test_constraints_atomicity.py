@@ -3,17 +3,17 @@ Integration tests for resolve_missing_pet + the sighting_matches UNIQUE
 constraint — the transactional, schema-enforced behaviours that only a real
 Postgres can verify.
 
-resolve_missing_pet is a single-transaction payout: it pays the bounty to the
-final (Caught+Verified) hunter, distributes F1 clue points 25/15/10/5/5/… to
-every OTHER distinct hunter with a verified sighting, and marks the pet
-Resolved — all or nothing.
+resolve_missing_pet settles the MONEY on a case its owner has already closed:
+one bounty transaction against the sighting the owner confirmed as the catch,
+and the pet from 'Found' to 'Resolved' — all or nothing.
 
-NOTE on F1 ranks: the function assigns rank in hunter_id (UUID) order, so WHICH
-hunter gets 25 vs 15 is non-deterministic. We therefore assert the MULTISET of
-points/ranks, never a per-hunter mapping.
+It used to distribute the F1 clue scores as well. Since 2026-08-21 it does not:
+the owner distributes them when they confirm the rescue, days before the
+transfer, so awarding here too would pay every hunter twice. The scoring tests
+that used to live here therefore moved to test_owner_decide_sighting.py, next to
+the function that now does the work. What is left here is the failure and
+atomicity behaviour of the payment itself.
 """
-from datetime import datetime, timedelta, timezone
-
 import psycopg
 import pytest
 from pytest import approx
@@ -21,8 +21,6 @@ from pytest import approx
 from _query import pet_status, row_count, total_score
 
 pytestmark = pytest.mark.integration
-
-_BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def _resolve(conn, pet_id, final_sighting_id, verified_by,
@@ -45,28 +43,37 @@ def _awards(conn, pet_id):
         return cur.fetchall()
 
 
-# --------------------------------------------------------------------------- #
-# resolve_missing_pet — happy path
-# --------------------------------------------------------------------------- #
-def test_resolve_pays_bounty_marks_resolved_and_distributes_f1(conn, seed):
-    owner = seed.user()
-    admin = seed.user(role="admin")
-    pet = seed.missing_pet(owner_id=owner, bounty=5000)
+def _rescued_case(seed, *, bounty=5000, action="Caught",
+                  owner_status="Confirmed"):
+    """A case its owner has already closed — the only shape the payment accepts.
 
-    final_hunter = seed.user()
-    final_sighting = seed.sighting(hunter_id=final_hunter, initial_target_pet_id=pet,
-                                   action="Caught", verification="Verified")
-    clue_hunters = [seed.user() for _ in range(4)]
-    for h in clue_hunters:
-        seed.sighting(hunter_id=h, initial_target_pet_id=pet,
-                      action="Spotted", verification="Verified")
+    'Found' means the animal is home and the scores are already distributed;
+    the payment is the administrator catching the money up with a decision that
+    was made days earlier. Seeded directly rather than by driving
+    owner_decide_sighting, so a failure here points at the payment function and
+    not at the one before it.
+    """
+    owner = seed.user()
+    hunter = seed.user()
+    pet = seed.missing_pet(owner_id=owner, bounty=bounty, status="Found")
+    sighting = seed.sighting(hunter_id=hunter, initial_target_pet_id=pet,
+                             action=action)
+    seed.sighting_match(sighting_id=sighting, missing_pet_id=pet,
+                        similarity=None, owner_status=owner_status)
+    return owner, hunter, pet, sighting
+
+
+# --------------------------------------------------------------------------- #
+# resolve_missing_pet — happy path (money only)
+# --------------------------------------------------------------------------- #
+def test_resolve_pays_the_bounty_marks_resolved_and_awards_nothing(conn, seed):
+    admin = seed.user(role="admin")
+    owner, hunter, pet, final_sighting = _rescued_case(seed, bounty=5000)
 
     result = _resolve(conn, pet, final_sighting, admin)
 
-    # 1. pet marked Resolved
     assert pet_status(conn, pet) == "Resolved"
 
-    # 2. exactly one bounty transaction, to the owner, for the bounty amount
     with conn.cursor() as cur:
         cur.execute(
             "SELECT amount, status, owner_id, sighting_id "
@@ -78,106 +85,90 @@ def test_resolve_pays_bounty_marks_resolved_and_distributes_f1(conn, seed):
     assert bounty[0][2] == owner
     assert bounty[0][3] == final_sighting
 
-    # 3. F1: one award per OTHER distinct hunter, points multiset {25,15,10,5}
-    awards = _awards(conn, pet)
-    assert len(awards) == 4
-    assert sorted(a[2] for a in awards) == [5, 10, 15, 25]
-    assert sorted(a[3] for a in awards) == [1, 2, 3, 4]
-    assert final_hunter not in {a[0] for a in awards}  # final hunter excluded
+    # The scoring is owner_decide_sighting's, and it already ran. Not one point
+    # moves here — the catcher's balance included.
+    assert _awards(conn, pet) == []
+    assert result["awards"] == []
+    assert total_score(conn, hunter) == 0
 
-    # 4. each clue hunter's total_score == the points they were awarded
-    assert sorted(total_score(conn, h) for h in clue_hunters) == [5, 10, 15, 25]
-
-    # 5. returned JSON summary
-    assert result["final_hunter_id"] == str(final_hunter)
+    assert result["final_hunter_id"] == str(hunter)
     assert float(result["bounty_amount"]) == approx(5000)
-    assert len(result["awards"]) == 4
 
 
-# --------------------------------------------------------------------------- #
-# resolve_missing_pet — F1 spam protection
-# --------------------------------------------------------------------------- #
-def test_f1_awards_each_hunter_once_for_earliest_verified_sighting(conn, seed):
-    owner = seed.user()
+def test_a_search_that_is_still_open_cannot_be_paid(conn, seed):
+    """The bounty follows the owner's resolution. A pet still 'Searching' has
+    not been recovered, whatever an administrator believes."""
     admin = seed.user(role="admin")
-    pet = seed.missing_pet(owner_id=owner, bounty=1000)
+    owner, hunter = seed.user(), seed.user()
+    pet = seed.missing_pet(owner_id=owner, status="Searching")
+    sighting = seed.sighting(hunter_id=hunter, initial_target_pet_id=pet,
+                             action="Caught")
+    seed.sighting_match(sighting_id=sighting, missing_pet_id=pet,
+                        similarity=None, owner_status="Confirmed")
 
-    final_hunter = seed.user()
-    final_sighting = seed.sighting(hunter_id=final_hunter, initial_target_pet_id=pet,
-                                   action="Caught", verification="Verified")
+    with pytest.raises(psycopg.errors.RaiseException,
+                       match="has not been recovered yet"):
+        with conn.transaction():
+            _resolve(conn, pet, sighting, admin)
 
-    # ONE clue hunter with TWO verified sightings for this pet.
-    spammer = seed.user()
-    earliest = seed.sighting(hunter_id=spammer, initial_target_pet_id=pet,
-                             verification="Verified", created_at=_BASE)
-    seed.sighting(hunter_id=spammer, initial_target_pet_id=pet,
-                  verification="Verified", created_at=_BASE + timedelta(days=1))
+    assert row_count(conn, "bounty_transactions", "missing_pet_id", pet) == 0
 
-    _resolve(conn, pet, final_sighting, admin)
 
-    awards = [a for a in _awards(conn, pet) if a[0] == spammer]
-    assert len(awards) == 1                 # awarded once despite two sightings
-    assert awards[0][1] == earliest         # credited to the earliest verified one
-    assert awards[0][2] == 25               # sole clue hunter -> rank 1 -> 25 pts
-    assert total_score(conn, spammer) == 25
+def test_a_sighting_the_owner_never_confirmed_cannot_be_paid(conn, seed):
+    """Eligibility is the OWNER's confirmation. Nothing writes 'Verified' any
+    more, so a check against that column would pay nobody, ever."""
+    admin = seed.user(role="admin")
+    _, _, pet, sighting = _rescued_case(seed, owner_status="Pending")
+
+    with pytest.raises(psycopg.errors.RaiseException,
+                       match="not a confirmed Caught sighting"):
+        with conn.transaction():
+            _resolve(conn, pet, sighting, admin)
+
+    assert row_count(conn, "bounty_transactions", "missing_pet_id", pet) == 0
 
 
 # --------------------------------------------------------------------------- #
 # resolve_missing_pet — atomicity / failure paths
 # --------------------------------------------------------------------------- #
 def test_rollback_when_final_sighting_wrong_action_type(conn, seed):
-    # Spec example: a non-Caught final sighting must abort with NO residue.
-    owner = seed.user()
+    # Spec example: a non-Caught final sighting must abort with NO residue. The
+    # owner confirmed it, but confirming a Spotted card says "yes that is my
+    # cat", not "this person brought it home".
     admin = seed.user(role="admin")
-    pet = seed.missing_pet(owner_id=owner, bounty=1000)
-    final_hunter = seed.user()
-    bad_final = seed.sighting(hunter_id=final_hunter, initial_target_pet_id=pet,
-                              action="Spotted", verification="Verified")  # not Caught
-    clue = seed.user()
-    seed.sighting(hunter_id=clue, initial_target_pet_id=pet, verification="Verified")
+    _, hunter, pet, bad_final = _rescued_case(seed, bounty=1000,
+                                              action="Spotted")
 
     with pytest.raises(psycopg.errors.RaiseException):
         with conn.transaction():
             _resolve(conn, pet, bad_final, admin)
 
-    assert pet_status(conn, pet) == "Searching"
+    assert pet_status(conn, pet) == "Found"
     assert row_count(conn, "bounty_transactions", "missing_pet_id", pet) == 0
-    assert row_count(conn, "score_awards", "missing_pet_id", pet) == 0
-    assert total_score(conn, clue) == 0
+    assert total_score(conn, hunter) == 0
 
 
 def test_rollback_during_write_phase_leaves_no_residue(conn, seed):
     # Failure AFTER the final-hunter check passes: an invalid verified_by makes
     # the bounty INSERT (the first write) hit an FK violation. The whole
-    # function must roll back — proving the write phase is atomic.
-    owner = seed.user()
-    pet = seed.missing_pet(owner_id=owner, bounty=1000)
-    final_hunter = seed.user()
-    final_sighting = seed.sighting(hunter_id=final_hunter, initial_target_pet_id=pet,
-                                   action="Caught", verification="Verified")
-    clue = seed.user()
-    seed.sighting(hunter_id=clue, initial_target_pet_id=pet, verification="Verified")
-
+    # function must roll back — proving the write phase is atomic, and in
+    # particular that the pet is not left 'Resolved' with no transaction behind
+    # it, which would read as a paid case forever.
     import uuid
+    _, _, pet, final_sighting = _rescued_case(seed, bounty=1000)
     bogus_admin = uuid.uuid4()  # not a real users.id -> verified_by FK violation
 
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         with conn.transaction():
             _resolve(conn, pet, final_sighting, bogus_admin)
 
-    assert pet_status(conn, pet) == "Searching"
+    assert pet_status(conn, pet) == "Found"
     assert row_count(conn, "bounty_transactions", "missing_pet_id", pet) == 0
-    assert row_count(conn, "score_awards", "missing_pet_id", pet) == 0
-    assert total_score(conn, clue) == 0
 
 
 def test_resolving_an_already_resolved_pet_raises_and_does_not_double_pay(conn, seed):
-    owner = seed.user()
     admin = seed.user(role="admin")
-    pet = seed.missing_pet(owner_id=owner, bounty=1000)
-    final_hunter = seed.user()
-    final_sighting = seed.sighting(hunter_id=final_hunter, initial_target_pet_id=pet,
-                                   action="Caught", verification="Verified")
+    _, _, pet, final_sighting = _rescued_case(seed, bounty=1000)
 
     _resolve(conn, pet, final_sighting, admin)            # first resolve succeeds
     assert pet_status(conn, pet) == "Resolved"

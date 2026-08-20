@@ -8,7 +8,7 @@ This module provides request and response models for:
 - Updating missing pet information
 - Missing pet responses
 """
-from typing import Optional
+from typing import ClassVar, Optional
 from datetime import datetime
 import re
 from pydantic import BaseModel, Field, field_validator
@@ -150,7 +150,9 @@ class MissingPetUpdate(BaseModel):
     )
     status: Optional[str] = Field(
         None,
-        description="Updated status (Searching, Spotted, Found)"
+        description="Updated status: 'Found' ends the search, 'Searching' "
+                    "re-opens it. 'Spotted' and 'Resolved' are not writable "
+                    "here — see OWNER_WRITABLE_STATUSES."
     )
     bounty_amount: Optional[float] = Field(
         None,
@@ -170,22 +172,42 @@ class MissingPetUpdate(BaseModel):
         description="Updated coat pattern identifier"
     )
 
+    # The only two `pet_status` values an OWNER may write through this route.
+    #
+    # 'Spotted' is deliberately absent even though the enum still carries it.
+    # The column is the matching filter — `match_missing_pets` and
+    # `get_nearby_missing_pets` both select `status = 'Searching'` — so writing
+    # 'Spotted' would silently pull a still-lost pet out of matching and off the
+    # map. "Someone has seen your pet" is a DERIVED badge (`post_status`, see
+    # pet_logic.derive_post_status), never a stored state; no code path writes
+    # 'Spotted' and no row in production carries it.
+    #
+    # 'Resolved' is absent for the opposite reason: it means "the bounty has
+    # been paid", which only the administrator's settlement (resolve_missing_pet)
+    # may write, and it requires 'Found' first.
+    #
+    # A tuple, not a set, so the rejection message names the values in a stable
+    # order instead of whatever the set happens to iterate as.
+    OWNER_WRITABLE_STATUSES: ClassVar[tuple[str, ...]] = ('Searching', 'Found')
+
     @field_validator('status')
     @classmethod
     def status_must_be_valid(cls, v: Optional[str]) -> Optional[str]:
-        """Validate that status is one of the allowed values."""
+        """Validate that status is one an owner is allowed to set."""
         if v is None:
             return v
-        valid_statuses = {'Searching', 'Spotted', 'Found'}
         normalized = v.capitalize()
-        if normalized not in valid_statuses:
-            raise ValueError(f"Status must be one of {valid_statuses}")
+        if normalized not in MissingPetUpdate.OWNER_WRITABLE_STATUSES:
+            raise ValueError(
+                "Status must be one of "
+                f"{', '.join(MissingPetUpdate.OWNER_WRITABLE_STATUSES)}"
+            )
         return normalized
 
     class Config:
         json_schema_extra = {
             "example": {
-                "status": "Spotted",
+                "status": "Found",
                 "bounty_amount": 1500.00
             }
         }

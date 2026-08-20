@@ -1,22 +1,42 @@
 """Pure, I/O-free logic extracted from PetService."""
+from datetime import datetime, timedelta, timezone
+
 from app.utils.postgis import create_postgis_point
 
-# The three states a report is shown in (decided 2026-08-17). They are DERIVED,
-# never stored: `missing_pets.status` says only whether the search is still open,
-# and the rest comes from counting the sightings recorded against the pet.
+# The four states a report is shown in (three decided 2026-08-17, EXPIRED added
+# 2026-08-21). They are DERIVED, never stored: `missing_pets.status` says only
+# whether the search is still open, and the rest comes from the report's age and
+# from counting the sightings recorded against the pet.
 #
 # Deriving rather than storing is what keeps the badge honest when a sighting
 # goes away — an admin dismissing a bogus sighting drops the count, so a report
 # whose only sighting was bogus falls back to PENDING by itself. A stored badge
 # would have to be recomputed at every place a sighting can disappear, and would
 # quietly claim "someone has seen your pet" the first time one was missed.
+#
+# This is the ONE vocabulary for the badge. `pet_status` is a storage column
+# with a different word list (Searching / Spotted / Found / Resolved) and a
+# different job — it is the matching filter, not the label — so clients must
+# read `post_status` and never re-derive from `status` themselves.
 POST_STATUS_PENDING = "Pending"    # search open, nobody has reported a sighting
 POST_STATUS_SPOTTED = "Spotted"    # search open, at least one sighting exists
+POST_STATUS_EXPIRED = "Expired"    # aged out with no sighting to show for it
 POST_STATUS_RESCUED = "Rescued"    # the owner closed the search
 
 # `pet_status` values that mean the search is over. 'Resolved' is written by the
 # resolve RPC; 'Found' is what the owner's End Search button writes.
 _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
+
+# SRS-91: a post stops reaching new hunters 7 days after it is filed. The rule
+# lives in SQL as a predicate on the two read paths (`match_missing_pets` and
+# `get_nearby_missing_pets` both carry `mp.created_at > NOW() - INTERVAL
+# '7 days'`), never as a stored state — this database has no pg_cron and a
+# stored expiry would have to be recomputed everywhere a post can change.
+#
+# The badge has to answer the same question, so the constant is duplicated here
+# rather than queried. Keep the two in step: if the interval moves in SQL it
+# moves here, or an owner is shown ACTIVE SEARCH for a post no hunter can see.
+POST_LIFETIME_DAYS = 7
 
 # `sighting_matches.owner_status` — the owner's verdict on one AI match. A
 # rejected match is not a sighting of this pet.
@@ -43,16 +63,95 @@ def build_missing_pet_payload(pet, *, feature_vector) -> dict:
     }
 
 
-def derive_post_status(pet_status: str | None, sighting_count: int) -> str:
+def _parse_timestamp(value) -> datetime | None:
+    """`created_at` as an aware datetime, or None if it cannot be read.
+
+    PostgREST hands timestamps back as ISO strings, but a caller that already
+    holds a row from a driver may have a real datetime — accept both. A value
+    that parses to a naive datetime is read as UTC, which is what the column
+    stores (`timestamp with time zone`, written by NOW()).
+
+    Returning None rather than raising is deliberate: see `is_post_expired`.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        # Postgres/PostgREST emit 'Z' for UTC, which fromisoformat rejects
+        # before Python 3.11.
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def is_post_expired(created_at, *, now: datetime | None = None) -> bool:
+    """Whether a report has passed its 7-day lifetime (SRS-91).
+
+    The comparison mirrors the SQL predicate exactly. SQL keeps a post while
+    `created_at > NOW() - INTERVAL '7 days'`, so expiry is the negation of that
+    and the boundary instant itself counts as expired — a post the database has
+    already stopped matching must never still read ACTIVE SEARCH.
+
+    An unreadable or absent `created_at` is NOT expired. The alternative is to
+    grey out a live search because one timestamp arrived in a shape we did not
+    expect, and hiding a findable pet is the worse failure.
+    """
+    created = _parse_timestamp(created_at)
+    if created is None:
+        return False
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return created <= reference - timedelta(days=POST_LIFETIME_DAYS)
+
+
+def derive_post_status(
+    pet_status: str | None,
+    sighting_count: int,
+    created_at=None,
+    *,
+    now: datetime | None = None,
+) -> str:
     """The badge shown on an owner's report card.
 
-    A closed search wins over everything: a recovered pet reads RESCUED even
-    though sightings were reported along the way — those sightings are how it
-    got home, not an argument that it is still missing.
+    Precedence, highest first:
+
+    * **RESCUED** — a closed search wins over everything: a recovered pet reads
+      RESCUED even though sightings were reported along the way, and even if it
+      was recovered after the post expired. Those sightings are how it got home,
+      not an argument that it is still missing.
+    * **SPOTTED** — at least one sighting has come in.
+    * **EXPIRED** — nothing has come in AND the post has aged out (SRS-91): it
+      no longer matches new sightings and is off the map, so the owner is
+      waiting on something that can no longer happen.
+    * **PENDING** — nothing has come in yet, but the post is still live.
+
+    EXPIRED ranks BELOW spotted on purpose. An expired post that collected
+    sightings still has a queue its owner must work through — the row is
+    untouched by expiry and the case can still be closed and paid — so badging
+    it EXPIRED would grey out the one report that needs action. Expiry is the
+    whole story only when there is no story: the post aged out with nothing to
+    show for it.
+
+    `created_at` is optional: a caller that does not have it gets the pre-expiry
+    behaviour rather than a wrong answer.
     """
     if (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES:
         return POST_STATUS_RESCUED
-    return POST_STATUS_SPOTTED if sighting_count > 0 else POST_STATUS_PENDING
+    if sighting_count > 0:
+        return POST_STATUS_SPOTTED
+    return (
+        POST_STATUS_EXPIRED if is_post_expired(created_at, now=now)
+        else POST_STATUS_PENDING
+    )
 
 
 def count_sightings(links: list[dict]) -> dict[str, int]:
@@ -82,7 +181,10 @@ def count_sightings(links: list[dict]) -> dict[str, int]:
 
 
 def attach_sighting_counts(
-    pets: list[dict], counts: dict[str, int]
+    pets: list[dict],
+    counts: dict[str, int],
+    *,
+    now: datetime | None = None,
 ) -> list[dict]:
     """Add `sighting_count` and `post_status` to each report.
 
@@ -90,14 +192,21 @@ def attach_sighting_counts(
     and not go missing from the list, because "nobody has reported anything" is
     the ordinary state of a fresh report rather than an error.
 
+    `now` is sampled once for the whole list rather than per row, so a list
+    being rendered across the 7-day boundary cannot show two reports filed in
+    the same second on opposite sides of it.
+
     Returns new dicts; the input rows are not mutated.
     """
+    reference = now or datetime.now(timezone.utc)
     enriched = []
     for pet in pets:
         count = counts.get(pet.get("id"), 0)
         enriched.append({
             **pet,
             "sighting_count": count,
-            "post_status": derive_post_status(pet.get("status"), count),
+            "post_status": derive_post_status(
+                pet.get("status"), count, pet.get("created_at"), now=reference,
+            ),
         })
     return enriched

@@ -38,8 +38,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.repositories.sighting_repository import (
+    SearchAlreadyClosed,
     SightingActionLocked,
+    SightingAlreadyDecided,
     SightingNotSaved,
+    SightingOutOfOrder,
     SightingRepository,
 )
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
@@ -336,6 +339,46 @@ class TestSaveTargetedSighting:
         insert_payload = repo.insert_sighting.call_args.args[0]
         assert insert_payload["initial_target_pet_id"] == "target-pet-1"
         assert "feature_vector" not in insert_payload
+
+    def test_puts_the_report_on_the_owners_decision_queue(self):
+        """A targeted report skips the AI match, so nothing else would ever
+        give it a sighting_matches row — and without one its owner cannot rule
+        on it and its hunter can never be scored. similarity_score stays NULL
+        because no vector was computed; sightings_for_pet keys off exactly that
+        to keep calling the report 'targeted' rather than 'both'."""
+        sighting = make_targeted_sighting(target_pet_id="target-pet-1")
+        repo = _repo()
+        repo.insert_sighting.return_value = {
+            "id": "s1", "hunter_id": "hunter-1",
+            "detected_species": "Dog", "sighted_location": POINT,
+        }
+        svc = SightingService(repo, ai_manager=MagicMock())
+
+        run(svc.save_targeted_sighting(sighting))
+
+        repo.upsert_sighting_matches.assert_called_once_with([{
+            "sighting_id": "s1",
+            "missing_pet_id": "target-pet-1",
+            "similarity_score": None,
+            "owner_status": "Pending",
+        }])
+
+    def test_a_failed_queue_row_does_not_fail_the_report(self):
+        """The sighting is already saved by then. Turning a stored report into
+        an error response would tell the hunter their sighting was lost when it
+        was not — the same trade-off _persist_matches makes."""
+        sighting = make_targeted_sighting()
+        repo = _repo()
+        repo.insert_sighting.return_value = {
+            "id": "s1", "hunter_id": "hunter-1",
+            "detected_species": "Dog", "sighted_location": POINT,
+        }
+        repo.upsert_sighting_matches.side_effect = RuntimeError("db down")
+        svc = SightingService(repo, ai_manager=MagicMock())
+
+        result = run(svc.save_targeted_sighting(sighting))
+
+        assert result["sighting"]["id"] == "s1"
 
     def test_skips_match_rpc_and_ai_pipeline_returns_empty_matches(self):
         # The hunter chose the pet by eye — no AnalyzeCache entry, and a
@@ -793,7 +836,7 @@ class TestGetHunterStats:
         repo = _repo()
         repo.get_user.return_value = {"total_score": 42}
         repo.count_sightings_for_hunter.return_value = 5
-        repo.count_verified_sightings_for_hunter.return_value = 3
+        repo.count_owner_confirmed_sightings_for_hunter.return_value = 3
         repo.count_contributions_for_hunter.return_value = 2
         repo.get_penalties_for_hunter.return_value = []
         svc = SightingService(repo, ai_manager=None)
@@ -815,7 +858,7 @@ class TestGetHunterStats:
         repo = _repo()
         repo.get_user.return_value = {"total_score": 15}
         repo.count_sightings_for_hunter.return_value = 4
-        repo.count_verified_sightings_for_hunter.return_value = 2
+        repo.count_owner_confirmed_sightings_for_hunter.return_value = 2
         repo.count_contributions_for_hunter.return_value = 1
         repo.get_penalties_for_hunter.return_value = [
             {"points": 10, "reason": "Not_a_pet"},
@@ -835,7 +878,7 @@ class TestGetHunterStats:
         repo = _repo()
         repo.get_user.return_value = {"total_score": 0}
         repo.count_sightings_for_hunter.return_value = 1
-        repo.count_verified_sightings_for_hunter.return_value = 0
+        repo.count_owner_confirmed_sightings_for_hunter.return_value = 0
         repo.count_contributions_for_hunter.return_value = 0
         repo.get_penalties_for_hunter.return_value = [{"points": 20}]
         svc = SightingService(repo, ai_manager=None)
@@ -849,7 +892,7 @@ class TestGetHunterStats:
         repo = _repo()
         repo.get_user.return_value = None   # no profile row
         repo.count_sightings_for_hunter.return_value = 0
-        repo.count_verified_sightings_for_hunter.return_value = 0
+        repo.count_owner_confirmed_sightings_for_hunter.return_value = 0
         repo.count_contributions_for_hunter.return_value = 0
         repo.get_penalties_for_hunter.return_value = []
         svc = SightingService(repo, ai_manager=None)
@@ -865,94 +908,95 @@ class TestGetHunterStats:
 
 
 # --------------------------------------------------------------------------- #
-# decide_match — the owner's verdict on one AI match (2026-08-17).
+# decide_match — the owner's verdict on one card of their pet's queue.
 #
-# The reply half of the loop. Before it existed `sighting_matches.owner_status`
-# had no writer at all: the owner could read their timeline but not answer it,
-# so a wrong match kept counting as a real sighting of their pet forever.
+# Rewritten 2026-08-21. The verdict used to be two writes issued from here
+# (owner_status, then the sighting's own status) behind a Python-side ownership
+# check. It is now a single `owner_decide_sighting` RPC, because confirming a
+# 'Caught' card ALSO ends the search and distributes every clue score for the
+# case — work that cannot be left half-done, and whose queue rules cannot be
+# checked here without a window for a second request to slip through.
 #
-# What each test protects:
-#   * ownership — a stranger must not be able to rule on (or learn about)
-#     someone else's pet, and must not get a different answer than "not found";
-#   * the asymmetry — Confirmed advances the sighting, Rejected does not,
-#     because one photo can match several pets;
-#   * the verdict surviving a failure in the secondary write.
+# So what is left to test at this layer is exactly the seam: the decision string
+# is normalised BEFORE any I/O, the RPC is called with the caller's identity,
+# its result is passed through untouched, and its refusals arrive as the typed
+# errors the route maps to 404 / 409. The rules themselves — ordering, one seat
+# per hunter, the 25/15/10/5/5 ladder — belong to the database and are pinned by
+# tests/integration/test_owner_decide_sighting.py, against the real function.
 # --------------------------------------------------------------------------- #
 class TestDecideMatch:
     @staticmethod
-    def _svc(owner="owner-1", updated={"sighting_id": "s1", "owner_status": "X"}):
+    def _svc(result=None):
         repo = _repo()
-        repo.get_pet_owners.return_value = {"p1": owner} if owner else {}
-        repo.update_match_owner_status.return_value = updated
+        repo.owner_decide_sighting.return_value = result if result is not None else {
+            "pet_id": "p1", "sighting_id": "s1", "owner_status": "Confirmed",
+            "search_closed": False, "pet_status": "Searching", "awards": [],
+        }
         return SightingService(repo, ai_manager=None), repo
 
-    def test_confirm_writes_both_the_verdict_and_the_sighting_status(self):
+    def test_passes_the_normalised_verdict_and_the_caller_identity(self):
         svc, repo = self._svc()
 
-        out = run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
+        out = run(svc.decide_match("p1", "s1", "owner-1", "confirm"))
 
-        repo.update_match_owner_status.assert_called_once_with(
-            "s1", "p1", "Confirmed"
+        # The alias "confirm" reaches the database as the enum value.
+        repo.owner_decide_sighting.assert_called_once_with(
+            "p1", "s1", "owner-1", "Confirmed",
         )
-        repo.set_sighting_status.assert_called_once_with("s1", "Confirmed")
-        assert out["sighting_status_updated"] is True
+        assert out["owner_status"] == "Confirmed"
 
-    def test_reject_writes_the_verdict_only(self):
-        """A sighting can match several pets. This owner saying "not mine" is
-        no statement about anybody else's pet, so the sighting is untouched."""
+    def test_returns_the_rpc_result_unchanged(self):
+        """The awards list is the only record of who was paid what. The service
+        must not summarise, filter or re-shape it on the way out."""
+        payload = {
+            "pet_id": "p1", "sighting_id": "s4", "owner_status": "Confirmed",
+            "search_closed": True, "pet_status": "Found",
+            "awards": [
+                {"user_id": "h3", "sighting_id": "s4", "rank": 1, "points": 25},
+                {"user_id": "h1", "sighting_id": "s2", "rank": 2, "points": 15},
+            ],
+        }
+        svc, _ = self._svc(result=payload)
+
+        assert run(svc.decide_match("p1", "s4", "owner-1", "Confirmed")) is payload
+
+    def test_a_rejection_is_forwarded_like_any_other_verdict(self):
+        """One photo can match several pets, so "not mine" is a verdict about
+        this pet only. Nothing else is called on the way."""
         svc, repo = self._svc()
 
-        out = run(svc.decide_match("p1", "s1", "owner-1", "Rejected"))
+        run(svc.decide_match("p1", "s1", "owner-1", "Rejected"))
 
-        repo.update_match_owner_status.assert_called_once_with(
-            "s1", "p1", "Rejected"
+        repo.owner_decide_sighting.assert_called_once_with(
+            "p1", "s1", "owner-1", "Rejected",
         )
-        repo.set_sighting_status.assert_not_called()
-        assert out["sighting_status_updated"] is False
-
-    def test_pet_belonging_to_someone_else_is_not_found(self):
-        """404, not 403 — a non-owner must not even learn the pet exists. And
-        nothing may be written on the way to finding that out."""
-        svc, repo = self._svc(owner="someone-else")
-
-        with pytest.raises(LookupError):
-            run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
-
-        repo.update_match_owner_status.assert_not_called()
-        repo.set_sighting_status.assert_not_called()
-
-    def test_unknown_pet_is_not_found(self):
-        svc, repo = self._svc(owner=None)
-        with pytest.raises(LookupError):
-            run(svc.decide_match("ghost", "s1", "owner-1", "Confirmed"))
-        repo.update_match_owner_status.assert_not_called()
-
-    def test_sighting_that_is_not_a_match_for_this_pet_is_not_found(self):
-        svc, repo = self._svc(updated=None)
-        with pytest.raises(LookupError):
-            run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
         repo.set_sighting_status.assert_not_called()
 
     @pytest.mark.parametrize("bad", ["Pending", "Maybe", "", None])
     def test_rejects_a_decision_outside_the_set_before_any_io(self, bad):
-        """'Pending' is the value a match is born with, not an answer — writing
+        """'Pending' is the value a card is born with, not an answer — writing
         it back would silently un-make a decision."""
         svc, repo = self._svc()
         with pytest.raises(ValueError):
             run(svc.decide_match("p1", "s1", "owner-1", bad))
-        repo.get_pet_owners.assert_not_called()
-        repo.update_match_owner_status.assert_not_called()
+        repo.owner_decide_sighting.assert_not_called()
 
-    def test_verdict_survives_a_failed_sighting_status_write(self):
-        """The owner's answer is recorded; the sighting's own lifecycle column
-        is secondary and must not take the verdict down with it."""
+    @pytest.mark.parametrize("error", [
+        LookupError("Missing pet p1 not found or not owned by you"),
+        SightingAlreadyDecided("Sighting s1 has already been decided"),
+        SightingOutOfOrder("Sighting s1 is out of order"),
+        SearchAlreadyClosed("Search for pet p1 is already closed"),
+    ])
+    def test_repository_refusals_reach_the_caller_with_their_type_intact(
+        self, error,
+    ):
+        """Each refusal is a different HTTP status at the route, so the service
+        must not flatten them into one generic failure."""
         svc, repo = self._svc()
-        repo.set_sighting_status.side_effect = RuntimeError("db down")
+        repo.owner_decide_sighting.side_effect = error
 
-        out = run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
-
-        assert out["match"]["owner_status"] == "X"
-        assert out["sighting_status_updated"] is False
+        with pytest.raises(type(error)):
+            run(svc.decide_match("p1", "s1", "owner-1", "Confirmed"))
 
 
 # --------------------------------------------------------------------------- #

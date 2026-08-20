@@ -127,3 +127,29 @@ def test_raises_for_unknown_sighting_id(conn):
     with pytest.raises(psycopg.errors.RaiseException):
         with conn.transaction():
             _match(conn, uuid.uuid4())
+
+
+# --------------------------------------------------------------------------- #
+# Posts expire after 7 days (2026-08-21)
+# --------------------------------------------------------------------------- #
+def test_a_post_older_than_seven_days_stops_matching(conn, seed):
+    """Expiry is a predicate on this query rather than a scheduled job that
+    flips a status: there is no pg_cron here, and a stored expiry would have to
+    be recomputed everywhere a post can change. The row stays exactly as it is
+    — its owner can still work the queue it already collected."""
+    owner = seed.user()
+    fresh = seed.missing_pet(owner_id=owner, species="Cat",
+                             vector=unit_vec(0), age_days=6)
+    stale = seed.missing_pet(owner_id=owner, species="Cat",
+                             vector=unit_vec(0), age_days=8)
+    sighting = seed.sighting(species="Cat", vector=unit_vec(0))
+
+    rows = _match(conn, sighting)
+
+    assert [r[0] for r in rows] == [fresh]
+    assert stale not in {r[0] for r in rows}
+
+    # untouched, not closed: the post is still Searching underneath
+    with conn.cursor() as cur:
+        cur.execute("SELECT status FROM missing_pets WHERE id = %s", (stale,))
+        assert cur.fetchone()[0] == "Searching"

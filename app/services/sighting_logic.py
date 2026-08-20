@@ -278,13 +278,16 @@ def normalize_owner_decision(decision: str | None) -> str:
 # 'Spotted' and 'Caught', so the UI wording is mapped here rather than being
 # duplicated as a second vocabulary in the client.
 #
-# This is NOT a lifecycle value: `sighting_status` tracks the report's progress
-# and `verification_status` holds the owner's verdict. `action_type` says what
-# the hunter did with the animal, and 'Caught' is what makes a sighting
-# eligible to be the bounty-paying final sighting (see the resolve RPC in
-# sql-update.txt), which is why it is worth a deliberate confirmation step.
-# `sightings.verification_status` starts here. While it holds this value the
-# report has not been judged by anyone, which is the window in which the hunter
+# This is NOT a lifecycle value, and the three columns are three different
+# people talking: `action_type` is the HUNTER's account of what they did with
+# the animal, `sighting_matches.owner_status` is the OWNER's verdict on whether
+# it is their pet, and `verification_status` is the ADMINISTRATOR's moderation
+# ruling (in practice only 'Dismissed'). 'Caught' matters because confirming a
+# 'Caught' sighting is what ends the owner's search and pays out — which is why
+# it is worth a deliberate confirmation step rather than a field on the create
+# payload.
+# `sightings.verification_status` starts here. While it holds this value no
+# moderator has ruled on the report, which is the window in which the hunter
 # may still change their own action_type.
 VERIFICATION_PENDING = "Pending"
 

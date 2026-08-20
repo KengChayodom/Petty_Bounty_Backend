@@ -45,7 +45,6 @@ from app.repositories.sighting_repository import (
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
 from app.services.sighting_logic import (
-    OWNER_DECISION_CONFIRMED,
     VERIFICATION_PENDING,
     assemble_hunter_activity,
     build_match_rows,
@@ -270,12 +269,18 @@ class SightingService:
         the initial_target_pet_id branch of sightings_for_pet.
 
         Returns {sighting, matches: []} — the same shape as the discovery
-        endpoint so the client parses both responses identically.
+        endpoint so the client parses both responses identically. `matches` is
+        empty because nothing was MATCHED; the queue row written below is not a
+        match and must not be reported as one.
         """
         try:
             sighting_row = await asyncio.to_thread(
                 self._insert_sighting_row,
                 sighting, vector=None, target_pet_id=sighting.target_pet_id,
+            )
+            await asyncio.to_thread(
+                self._persist_targeted_queue_row,
+                sighting_row["id"], sighting.target_pet_id,
             )
             logger.info(
                 "Sighting %s saved (species=%s, targeted → pet %s)",
@@ -293,23 +298,39 @@ class SightingService:
     async def decide_match(
         self, pet_id: str, sighting_id: str, owner_id: str, decision: str,
     ) -> dict:
-        """The owner's verdict on one AI match: "that is my pet" or "that isn't".
+        """The owner's verdict on one card of their pet's queue.
 
-        This is the reply half of the loop. Until it existed the owner could
-        read their timeline but say nothing back, so `owner_status` sat at
-        Pending on every row and a wrong match kept counting as a real sighting
-        of the pet.
+        Since 2026-08-21 this is the method that decides everything about a
+        case. The owner rules on their sightings oldest-first, and confirming
+        one whose `action_type` is 'Caught' ALSO ends the search and
+        distributes every clue score for the pet. An administrator no longer
+        adjudicates sightings at all — they moderate flags and settle the
+        bounty afterwards.
 
-        A Confirmed verdict also advances the sighting to `Confirmed`. A
-        Rejected one deliberately does NOT touch the sighting: one photo can
+        A Rejected verdict deliberately touches nothing else: one photo can
         match several pets, and this owner saying "not mine" is no statement
         about anybody else's pet.
 
+        All of it — verdict, search closure, awards, closing the remaining
+        sightings — is one `owner_decide_sighting` RPC rather than a sequence of
+        writes here, because a payout that half-happened cannot be
+        reconstructed once the search is closed. The ownership check and the
+        queue-order check live in that function too, so they cannot be raced by
+        a second request between the read and the write.
+
+        Returns the RPC's JSON: `{pet_id, sighting_id, owner_status,
+        search_closed, pet_status, awards[]}`. `awards` is empty for every
+        verdict except the confirmed rescue.
+
         Raises:
             ValueError: decision outside {Confirmed, Rejected} (API -> 400).
-            LookupError: the pet is not the caller's, or the match does not
-                exist (API -> 404 for both — a caller who does not own the pet
-                must not be able to tell the two apart).
+            LookupError: the pet is not the caller's, or the card is not on
+                their queue (API -> 404 for both — a caller who does not own
+                the pet must not be able to tell the two apart). A sighting an
+                administrator dismissed reads as "not on the queue" here.
+            SightingAlreadyDecided / SightingOutOfOrder / SearchAlreadyClosed:
+                the queue rules (API -> 409). All subclass ValueError, so the
+                route must catch them BEFORE its generic 400.
         """
         # Raises ValueError (400) before any I/O — cheap, so it stays on the
         # loop and a bad decision string never costs a thread hop.
@@ -322,41 +343,25 @@ class SightingService:
         self, pet_id: str, sighting_id: str, owner_id: str, status: str,
     ) -> dict:
         """DB half of `decide_match`; `status` is already normalised."""
-        owners = self.repo.get_pet_owners([pet_id])
-        if owners.get(pet_id) != owner_id:
-            # Same 404-not-403 rule the owner-scoped PATCH uses: never confirm
-            # that a pet exists to someone who does not own it.
-            raise LookupError(f"Missing pet {pet_id} not found or not owned by you")
-
-        updated = self.repo.update_match_owner_status(
-            sighting_id, pet_id, status
+        result = self.repo.owner_decide_sighting(
+            pet_id, sighting_id, owner_id, status,
         )
-        if not updated:
-            raise LookupError(
-                f"Sighting {sighting_id} is not a match for pet {pet_id}"
+
+        if result.get("search_closed"):
+            # WARNING, like the other irreversible money/score events: this one
+            # call ended a search and moved every point the case will ever pay.
+            logger.warning(
+                "Owner %s closed the search for pet %s via sighting %s — "
+                "%d hunter(s) awarded",
+                owner_id, pet_id, sighting_id,
+                len(result.get("awards") or []),
             )
-
-        sighting_status_written = False
-        if status == OWNER_DECISION_CONFIRMED:
-            try:
-                self.repo.set_sighting_status(sighting_id, "Confirmed")
-                sighting_status_written = True
-            except Exception as e:
-                # The owner's verdict IS recorded; the sighting's own lifecycle
-                # column is secondary, so a failure here must not lose it.
-                logger.error(
-                    "Match %s/%s confirmed but sighting status write FAILED: %s",
-                    sighting_id, pet_id, e,
-                )
-
-        logger.info(
-            "Owner %s marked sighting %s as %s for pet %s",
-            owner_id, sighting_id, status, pet_id,
-        )
-        return {
-            "match": updated,
-            "sighting_status_updated": sighting_status_written,
-        }
+        else:
+            logger.info(
+                "Owner %s marked sighting %s as %s for pet %s",
+                owner_id, sighting_id, status, pet_id,
+            )
+        return result
 
     async def confirm_sighting_action(
         self, sighting_id: str, hunter_id: str, action_type: str,
@@ -438,6 +443,41 @@ class SightingService:
             "action_type": action_type,
             "changed": True,
         }
+
+    def _persist_targeted_queue_row(
+        self, sighting_id: str, target_pet_id: str
+    ) -> None:
+        """Put a targeted report on its pet's decision queue.
+
+        A targeted report skips the AI match, so before 2026-08-21 it had no
+        `sighting_matches` row at all — which was harmless while the owner's
+        verdict was decorative. It is not harmless now: the verdict is what pays
+        the hunter, and a card with no row cannot be given one (the owner's
+        endpoint answers 404 for it forever).
+
+        `similarity_score` stays NULL, and `sightings_for_pet` keys off exactly
+        that to keep calling these reports 'targeted' rather than 'both'.
+
+        Failure is logged, not raised: the sighting itself is already saved, and
+        turning a successful report into an error response would tell the hunter
+        their sighting was lost when it was not. Same trade-off as
+        `_persist_matches`, and the same ERROR level — this row is the hunter's
+        only route to being paid.
+        """
+        try:
+            self.repo.upsert_sighting_matches([{
+                "sighting_id":      sighting_id,
+                "missing_pet_id":   target_pet_id,
+                "similarity_score": None,
+                "owner_status":     "Pending",
+            }])
+        except Exception as e:
+            logger.error(
+                "Targeted sighting %s: queue row for pet %s NOT written — its "
+                "owner cannot decide it and its hunter cannot be scored; "
+                "response unaffected: %s",
+                sighting_id, target_pet_id, e, exc_info=True,
+            )
 
     def _persist_matches(self, sighting_id: str, matches: list[dict]) -> None:
         """
@@ -595,7 +635,9 @@ class SightingService:
                 "sightings_submitted":
                     self.repo.count_sightings_for_hunter(hunter_id),
                 "sightings_verified":
-                    self.repo.count_verified_sightings_for_hunter(hunter_id),
+                    self.repo.count_owner_confirmed_sightings_for_hunter(
+                        hunter_id
+                    ),
                 "resolutions_contributed_to":
                     self.repo.count_contributions_for_hunter(hunter_id),
                 "penalties_received": len(penalties),

@@ -190,9 +190,14 @@ CREATE INDEX sightings_pet_verified_created_idx
     ON sightings (initial_target_pet_id, verification_status, created_at)
     WHERE verification_status = 'Verified';
 
--- 14. Atomic resolution: pays the bounty + distributes F1 clue scores.
---     Final hunter (Caught + Verified) gets the money; every other hunter
---     with a Verified sighting gets sequence-based points 25/15/10/5/5/…
+-- 14. Bounty settlement. Pays the bounty on a case the OWNER has already
+--     closed, and nothing else. It distributed the F1 clue scores as well
+--     until migration 2026_08_21_owner_driven_resolution, which moved them to
+--     owner_decide_sighting (item 16) — awarding in both places would pay every
+--     hunter twice, once at rescue and once when the money is transferred days
+--     later. Eligibility moved with them: the final sighting qualifies because
+--     its OWNER confirmed it, not because an administrator verified it, since
+--     nothing writes 'Verified' any more.
 CREATE OR REPLACE FUNCTION resolve_missing_pet(
     p_pet_id            UUID,
     p_final_sighting_id UUID,
@@ -202,13 +207,8 @@ CREATE OR REPLACE FUNCTION resolve_missing_pet(
 ) RETURNS JSONB
 LANGUAGE plpgsql AS $$
 DECLARE
-    v_pet           missing_pets%ROWTYPE;
-    v_final_hunter  UUID;
-    v_award_points  INT[] := ARRAY[25, 15, 10];
-    v_clue          RECORD;
-    v_rank          INT := 0;
-    v_pts           INT;
-    v_awards        JSONB := '[]'::JSONB;
+    v_pet          missing_pets%ROWTYPE;
+    v_final_hunter UUID;
 BEGIN
     SELECT * INTO v_pet FROM missing_pets WHERE id = p_pet_id FOR UPDATE;
     IF NOT FOUND THEN
@@ -217,20 +217,24 @@ BEGIN
     IF v_pet.status = 'Resolved' THEN
         RAISE EXCEPTION 'Pet % already resolved', p_pet_id;
     END IF;
+    IF v_pet.status <> 'Found' THEN
+        RAISE EXCEPTION
+          'Pet % has not been recovered yet (status %) — the owner closes the '
+          'search before the bounty is paid', p_pet_id, v_pet.status;
+    END IF;
 
-    -- "Associated with this pet" = explicitly targeted OR AI-matched.
     SELECT s.hunter_id INTO v_final_hunter
       FROM sightings s
+      JOIN sighting_matches sm
+        ON sm.sighting_id = s.id
+       AND sm.missing_pet_id = p_pet_id
      WHERE s.id = p_final_sighting_id
        AND s.action_type = 'Caught'
-       AND s.verification_status = 'Verified'
-       AND (s.initial_target_pet_id = p_pet_id
-            OR EXISTS (SELECT 1 FROM sighting_matches sm
-                        WHERE sm.sighting_id = s.id
-                          AND sm.missing_pet_id = p_pet_id));
+       AND sm.owner_status = 'Confirmed';
+
     IF v_final_hunter IS NULL THEN
         RAISE EXCEPTION
-          'Final sighting % is not a verified Caught sighting for pet %',
+          'Final sighting % is not a confirmed Caught sighting for pet %',
           p_final_sighting_id, p_pet_id;
     END IF;
 
@@ -242,45 +246,13 @@ BEGIN
          p_slip_image_url, p_reference_no, NOW(), 'Verified', NOW(),
          p_verified_by);
 
-    FOR v_clue IN
-        SELECT DISTINCT ON (s.hunter_id)
-               s.hunter_id, s.id AS sighting_id, s.created_at
-          FROM sightings s
-         WHERE s.verification_status = 'Verified'
-           AND s.hunter_id IS NOT NULL
-           AND s.hunter_id <> v_final_hunter
-           AND (s.initial_target_pet_id = p_pet_id
-                OR EXISTS (SELECT 1 FROM sighting_matches sm
-                            WHERE sm.sighting_id = s.id
-                              AND sm.missing_pet_id = p_pet_id))
-         ORDER BY s.hunter_id, s.created_at ASC
-    LOOP
-        v_rank := v_rank + 1;
-        v_pts  := COALESCE(v_award_points[v_rank], 5);
-
-        INSERT INTO score_awards
-            (user_id, missing_pet_id, sighting_id, points, rank)
-        VALUES
-            (v_clue.hunter_id, p_pet_id, v_clue.sighting_id, v_pts, v_rank);
-
-        UPDATE users SET total_score = total_score + v_pts
-         WHERE id = v_clue.hunter_id;
-
-        v_awards := v_awards || jsonb_build_object(
-            'user_id',     v_clue.hunter_id,
-            'sighting_id', v_clue.sighting_id,
-            'rank',        v_rank,
-            'points',      v_pts
-        );
-    END LOOP;
-
     UPDATE missing_pets SET status = 'Resolved' WHERE id = p_pet_id;
 
     RETURN jsonb_build_object(
         'pet_id',          p_pet_id,
         'final_hunter_id', v_final_hunter,
         'bounty_amount',   v_pet.bounty_amount,
-        'awards',          v_awards
+        'awards',          '[]'::JSONB   -- kept, always empty: see item 16
     );
 END;
 $$;
@@ -301,6 +273,7 @@ CREATE OR REPLACE FUNCTION sightings_for_pet(
     action_type          action_type,
     sighting_status      sighting_status,
     verification_status  verification_status,
+    owner_status         owner_decision,   -- added 2026_08_21: the queue needs it
     sighted_location     TEXT,
     created_at           TIMESTAMP WITH TIME ZONE,
     similarity_score     DECIMAL,
@@ -312,6 +285,10 @@ BEGIN
         SELECT sm.sighting_id, MAX(sm.similarity_score) AS sim
           FROM sighting_matches sm
          WHERE sm.missing_pet_id = p_pet_id
+           -- A targeted report now carries a queue row too (2026_08_21). A NULL
+           -- similarity is what says "not an AI match", and without this the
+           -- match_source of every targeted report would flip to 'both'.
+           AND sm.similarity_score IS NOT NULL
          GROUP BY sm.sighting_id
     ),
     targeted AS (
@@ -335,14 +312,31 @@ BEGIN
     SELECT s.id, s.hunter_id, u.display_name,
            s.image_url, s.detected_species, s.action_type,
            s.sighting_status, s.verification_status,
+           COALESCE(sm.owner_status, 'Pending'::owner_decision),
            ST_AsText(s.sighted_location::geometry),
            s.created_at,
            d.sim, d.src
       FROM deduped d
       JOIN sightings s ON s.id = d.sighting_id
       LEFT JOIN users u ON u.id = s.hunter_id
+      LEFT JOIN sighting_matches sm
+             ON sm.sighting_id = s.id AND sm.missing_pet_id = p_pet_id
      WHERE p_include_dismissed OR s.verification_status <> 'Dismissed'
      ORDER BY s.created_at DESC
      LIMIT p_limit OFFSET p_offset;
 END;
 $$;
+
+-- 16. The owner's verdict on one sighting — and, when that sighting is a
+--     confirmed 'Caught', the end of the search and the whole of the case's
+--     scoring. Added by migration 2026_08_21_owner_driven_resolution.sql, which
+--     is the authoritative copy: the function is ~150 lines of queue rules
+--     (ordering, one seat per hunter, the 25/15/10/5/5 ladder capped at five,
+--     the single payout) and is not duplicated here.
+--
+--     Read it there before changing anything in this file that touches
+--     sighting_matches.owner_status, missing_pets.status, or score_awards.
+--
+--     The same migration also adds a seven-day age predicate to
+--     match_missing_pets and get_nearby_missing_pets: a report older than that
+--     stops matching and leaves the map, while the row itself is untouched.

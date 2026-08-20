@@ -110,7 +110,8 @@ class TestResolveMissingPet:
 
     @pytest.mark.parametrize("msg", [
         "pet already resolved",
-        "final sighting is not a verified Caught sighting",
+        "final sighting is not a confirmed Caught sighting",
+        "pet has not been recovered yet (status Searching)",
         "pet not found",
     ])
     def test_known_db_errors_become_valueerror(self, msg):

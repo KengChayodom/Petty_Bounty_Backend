@@ -11,15 +11,27 @@ status model gets wrong in practice:
     reported a sighting for it yet;
   * the badge being computed in two places (server and client) and drifting.
 """
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.services.pet_logic import (
+    POST_LIFETIME_DAYS,
+    POST_STATUS_EXPIRED,
     POST_STATUS_PENDING,
     POST_STATUS_RESCUED,
     POST_STATUS_SPOTTED,
     attach_sighting_counts,
     derive_post_status,
+    is_post_expired,
 )
+
+# A fixed "now" so the 7-day boundary is a value in the test, not the clock.
+NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
+FRESH = NOW - timedelta(days=1)
+JUST_INSIDE = NOW - timedelta(days=POST_LIFETIME_DAYS) + timedelta(seconds=1)
+ON_THE_BOUNDARY = NOW - timedelta(days=POST_LIFETIME_DAYS)
+LONG_EXPIRED = NOW - timedelta(days=30)
 
 
 class TestDerivePostStatus:
@@ -55,6 +67,84 @@ class TestDerivePostStatus:
         owner their pet is home."""
         assert derive_post_status(None, 0) == POST_STATUS_PENDING
         assert derive_post_status("", 1) == POST_STATUS_SPOTTED
+
+
+class TestIsPostExpired:
+    """SRS-91. The predicate must agree with the SQL exactly, because the SQL
+    is what actually stops a post reaching hunters — disagreeing means the
+    badge says one thing and the map does another."""
+
+    @pytest.mark.parametrize("created_at,expected", [
+        (FRESH, False),
+        (JUST_INSIDE, False),
+        # SQL keeps a post while created_at > NOW() - INTERVAL '7 days', so the
+        # boundary instant itself is already out.
+        (ON_THE_BOUNDARY, True),
+        (LONG_EXPIRED, True),
+    ])
+    def test_the_boundary(self, created_at, expected):
+        assert is_post_expired(created_at, now=NOW) is expected
+
+    def test_reads_postgrest_iso_strings(self):
+        """PostgREST hands timestamps back as strings, including the 'Z' form
+        that fromisoformat rejected before Python 3.11."""
+        assert is_post_expired(LONG_EXPIRED.isoformat(), now=NOW) is True
+        assert is_post_expired("2026-07-01T00:00:00Z", now=NOW) is True
+        assert is_post_expired("2026-08-20T00:00:00Z", now=NOW) is False
+
+    def test_naive_timestamps_are_read_as_utc(self):
+        """The column is `timestamp with time zone` written by NOW(), but a
+        driver may hand back a naive value. Reading it as local time would move
+        the boundary by the machine's offset."""
+        assert is_post_expired(
+            LONG_EXPIRED.replace(tzinfo=None), now=NOW
+        ) is True
+
+    def test_a_naive_now_is_also_read_as_utc(self):
+        """Callers pass an aware `now`, but a naive one must still answer
+        rather than raising on a naive/aware comparison."""
+        assert is_post_expired(
+            LONG_EXPIRED, now=NOW.replace(tzinfo=None)
+        ) is True
+        assert is_post_expired(FRESH, now=NOW.replace(tzinfo=None)) is False
+
+    @pytest.mark.parametrize("bad", [None, "", "   ", "not-a-date", 12345])
+    def test_an_unreadable_timestamp_is_not_an_expiry(self, bad):
+        """Greying out a live search because one timestamp arrived in an odd
+        shape hides a findable pet — the worse of the two failures."""
+        assert is_post_expired(bad, now=NOW) is False
+
+
+class TestDerivePostStatusExpiry:
+    def test_an_aged_out_post_with_nothing_to_show_reads_expired(self):
+        assert derive_post_status(
+            "Searching", 0, LONG_EXPIRED, now=NOW
+        ) == POST_STATUS_EXPIRED
+
+    def test_spotted_outranks_expired(self):
+        """An expired post that collected sightings still has a queue its owner
+        must work through — the row is untouched by expiry and the case can
+        still be closed and paid. Badging it EXPIRED would grey out the one
+        report that needs action."""
+        assert derive_post_status(
+            "Searching", 2, LONG_EXPIRED, now=NOW
+        ) == POST_STATUS_SPOTTED
+
+    def test_rescued_outranks_expired(self):
+        """A pet recovered after its post aged out is still home."""
+        assert derive_post_status(
+            "Found", 0, LONG_EXPIRED, now=NOW
+        ) == POST_STATUS_RESCUED
+
+    def test_a_live_post_is_unaffected(self):
+        assert derive_post_status(
+            "Searching", 0, FRESH, now=NOW
+        ) == POST_STATUS_PENDING
+
+    def test_callers_without_a_timestamp_keep_the_old_behaviour(self):
+        """`created_at` is optional so a caller that does not have it gets the
+        pre-expiry answer rather than a wrong one."""
+        assert derive_post_status("Searching", 0) == POST_STATUS_PENDING
 
 
 class TestAttachSightingCounts:
@@ -96,6 +186,27 @@ class TestAttachSightingCounts:
 
     def test_empty_list(self):
         assert attach_sighting_counts([], {}) == []
+
+    def test_expiry_is_attached_per_row(self):
+        pets = [
+            {"id": "p1", "status": "Searching", "created_at": FRESH},
+            {"id": "p2", "status": "Searching", "created_at": LONG_EXPIRED},
+            {"id": "p3", "status": "Searching", "created_at": LONG_EXPIRED},
+        ]
+        out = attach_sighting_counts(pets, {"p3": 2}, now=NOW)
+        assert [p["post_status"] for p in out] == [
+            POST_STATUS_PENDING, POST_STATUS_EXPIRED, POST_STATUS_SPOTTED,
+        ]
+
+    def test_now_is_sampled_once_for_the_whole_list(self):
+        """Two reports filed in the same second must not land on opposite sides
+        of the boundary because the clock ticked mid-loop."""
+        pets = [
+            {"id": f"p{i}", "status": "Searching", "created_at": ON_THE_BOUNDARY}
+            for i in range(3)
+        ]
+        out = attach_sighting_counts(pets, {}, now=NOW)
+        assert {p["post_status"] for p in out} == {POST_STATUS_EXPIRED}
 
 
 class TestCountSightings:

@@ -7,7 +7,42 @@ port contract requires (SightingNotSaved on an empty INSERT). No logic beyond
 that lives here — filtering/mapping/assembly are pure functions in the service
 layer.
 """
-from app.repositories.sighting_repository import SightingNotSaved
+from app.repositories.sighting_repository import (
+    SearchAlreadyClosed,
+    SightingAlreadyDecided,
+    SightingNotSaved,
+    SightingOutOfOrder,
+)
+
+# `owner_decide_sighting` refuses a verdict by RAISE-ing, which reaches us as
+# one opaque PostgREST error. PostgreSQL offers no way to attach a machine
+# code to a plpgsql RAISE that survives PostgREST, so the message text IS the
+# contract: these fragments are asserted by the integration tests against the
+# real function, and the migration that defines them says so above each RAISE.
+#
+# Order matters only in that the first match wins; the fragments are disjoint.
+_DECISION_ERRORS = (
+    ("not found or not owned by you", LookupError),
+    ("is not a match for pet",        LookupError),
+    ("has already been decided",      SightingAlreadyDecided),
+    ("is out of order",               SightingOutOfOrder),
+    ("is already closed",             SearchAlreadyClosed),
+    ("decision must be",              ValueError),
+)
+
+
+def _translate_decision_error(exc: Exception) -> Exception:
+    """Map an `owner_decide_sighting` failure onto a domain error.
+
+    Anything unrecognised is handed back as-is: a transport failure or a bug in
+    the function must surface as a 500, not be flattened into a client error
+    that tells the owner their perfectly valid request was invalid.
+    """
+    message = str(getattr(exc, "message", None) or exc)
+    for fragment, error_type in _DECISION_ERRORS:
+        if fragment in message:
+            return error_type(message)
+    return exc
 
 
 class SupabaseSightingRepository:
@@ -33,17 +68,21 @@ class SupabaseSightingRepository:
                        .execute())
         return res.data[0] if res.data else None
 
-    def update_match_owner_status(
-        self, sighting_id: str, pet_id: str, status: str
-    ) -> dict | None:
-        # Scoped to the ONE (sighting, pet) pair: a sighting can match several
-        # pets, and each owner decides only about their own.
-        res = (self._db.table("sighting_matches")
-                       .update({"owner_status": status})
-                       .eq("sighting_id", sighting_id)
-                       .eq("missing_pet_id", pet_id)
-                       .execute())
-        return res.data[0] if res.data else None
+    def owner_decide_sighting(
+        self, pet_id: str, sighting_id: str, owner_id: str, decision: str,
+    ) -> dict:
+        # One RPC, not four writes: see the port's docstring for why the verdict
+        # and everything that follows from it have to be one transaction.
+        try:
+            res = self._db.rpc("owner_decide_sighting", {
+                "p_pet_id":      pet_id,
+                "p_sighting_id": sighting_id,
+                "p_owner_id":    owner_id,
+                "p_decision":    decision,
+            }).execute()
+        except Exception as e:
+            raise _translate_decision_error(e) from e
+        return res.data or {}
 
     def set_sighting_action_type(
         self, sighting_id: str, hunter_id: str, action_type: str
@@ -167,13 +206,29 @@ class SupabaseSightingRepository:
                        .execute())
         return res.data[0] if res.data else None
 
-    def count_verified_sightings_for_hunter(self, hunter_id: str) -> int:
-        res = (self._db.table("sightings")
-                       .select("id", count="exact")
-                       .eq("hunter_id", hunter_id)
-                       .eq("verification_status", "Verified")
+    def count_owner_confirmed_sightings_for_hunter(self, hunter_id: str) -> int:
+        # Replaces a count of `verification_status = 'Verified'`, which stopped
+        # meaning anything when administrators stopped adjudicating sightings
+        # (2026-08-21): that count now reads 0 for every hunter alive.
+        #
+        # The verdict lives on sighting_matches, so the count starts there and
+        # reaches the hunter through an inner-joined embed. The obvious
+        # alternative — counting `sightings.sighting_status = 'Confirmed'` —
+        # looks equivalent and is not: closing a search rewrites that column to
+        # 'Closed', so a hunter's confirmations would evaporate the moment each
+        # case ended, which is exactly when they matter most.
+        res = (self._db.table("sighting_matches")
+                       .select("sighting_id, sightings!inner(hunter_id)")
+                       .eq("owner_status", "Confirmed")
+                       .eq("sightings.hunter_id", hunter_id)
                        .execute())
-        return res.count or 0
+        # One photo can be confirmed by two different owners (it matched both
+        # their pets). That is one sighting the hunter reported, so the ids are
+        # deduplicated rather than counted server-side.
+        return len({
+            row["sighting_id"] for row in (res.data or [])
+            if row.get("sighting_id")
+        })
 
     def count_contributions_for_hunter(self, hunter_id: str) -> int:
         res = (self._db.table("score_awards")
