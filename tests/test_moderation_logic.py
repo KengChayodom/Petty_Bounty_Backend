@@ -49,9 +49,11 @@ class TestNormalizeFlagDecision:
     @pytest.mark.parametrize("supplied,expected", [
         ("Dismissed", DECISION_DISMISS),
         ("Dismiss Flag", DECISION_DISMISS),          # UD-14's Action wording
-        ("Reviewed_Ban", DECISION_UPHOLD),
+        ("Reviewed_Penalty", DECISION_UPHOLD),
+        ("Reviewed_Ban", DECISION_UPHOLD),           # pre-2026-08-20 enum name
         ("Reviewed and banned", DECISION_UPHOLD),    # MD-40's wording
         ("Uphold and Ban User", DECISION_UPHOLD),    # UD-14's Action wording
+        ("Uphold and Penalise User", DECISION_UPHOLD),
     ])
     def test_maps_onto_the_enum(self, supplied, expected):
         assert normalize_flag_decision(supplied) == expected
@@ -68,9 +70,9 @@ class TestNormalizeFlagStatusFilter:
     @pytest.mark.parametrize("supplied,expected", [
         ("Pending", "Pending"),
         ("Dismissed", DECISION_DISMISS),
-        ("Reviewed_Ban", DECISION_UPHOLD),
+        ("Reviewed_Penalty", DECISION_UPHOLD),
         ("  pending  ", "Pending"),          # user-interface casing / padding
-        ("REVIEWED_BAN", DECISION_UPHOLD),
+        ("REVIEWED_PENALTY", DECISION_UPHOLD),
     ])
     def test_maps_onto_the_enum(self, supplied, expected):
         assert normalize_flag_status_filter(supplied) == expected

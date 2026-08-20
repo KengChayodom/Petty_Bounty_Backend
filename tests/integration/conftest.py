@@ -35,6 +35,7 @@ REAL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_05_27_feature2_logging_scor
 FCM_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_feature_fcm_push.sql"
 BYID_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_get_missing_pet_by_id.sql"
 SM_UNIQUE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_sighting_matches_unique.sql"
+PENALTY_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_20_flag_penalty_not_ban.sql"
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -72,6 +73,7 @@ def _apply_schema(dsn: str) -> None:
         SQL_DIR / "10_color_pattern_columns.sql",  # prod-only cols by-id projects
         BYID_MIGRATION,              # adds get_missing_pet_by_id (the fixed shape)
         SM_UNIQUE_MIGRATION,         # adds sighting_matches UNIQUE (the upsert arbiter)
+        PENALTY_MIGRATION,           # renames Reviewed_Ban, adds score_penalties + RPC
         SQL_DIR / "20_live_match_rpc.sql",
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
@@ -188,6 +190,18 @@ class Seeder:
                 "(sighting_id, missing_pet_id, similarity_score) VALUES (%s, %s, %s)",
                 (sighting_id, missing_pet_id, similarity),
             )
+
+    def report(self, *, sighting_id=None, reporter_id=None, reason="Not_a_pet",
+               status="Pending") -> uuid.UUID:
+        """A moderation flag — one user's complaint about a sighting."""
+        rid = uuid.uuid4()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reports (id, reporter_id, sighting_id, reason, status) "
+                "VALUES (%s, %s, %s, %s::report_reason, %s::report_status)",
+                (rid, reporter_id, sighting_id, reason, status),
+            )
+        return rid
 
     def device_token(self, *, user_id, fcm_token="tok", platform="android") -> None:
         with self.conn.cursor() as cur:

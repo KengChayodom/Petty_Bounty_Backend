@@ -356,9 +356,20 @@ def build_match_rows(sighting_id: str, matches: list[dict]) -> list[dict]:
 
 
 def assemble_hunter_activity(
-    sightings: list[dict], matches: list[dict], awards: list[dict]
+    sightings: list[dict],
+    matches: list[dict],
+    awards: list[dict],
+    penalties: list[dict] | None = None,
 ) -> list[dict]:
-    """Attach each sighting's AI match candidates and score award in place."""
+    """Attach each sighting's AI match candidates, score award, and score
+    penalty in place.
+
+    `penalties` defaults to None rather than being required, because the two
+    callers that predate the deduction (and the tests written against them)
+    pass three arguments. A sighting with no penalty gets `score_penalty:
+    None`, exactly as `score_award` already behaves — the key is always
+    present, so a client can render "no deduction" without probing for it.
+    """
     matches_by_sighting: dict[str, list] = {}
     for m in matches:
         matches_by_sighting.setdefault(m["sighting_id"], []).append(m)
@@ -366,8 +377,15 @@ def assemble_hunter_activity(
     awards_by_sighting: dict[str, dict] = {
         a["sighting_id"]: a for a in awards if a.get("sighting_id")
     }
+    # A penalty's sighting_id is ON DELETE SET NULL, so a deduction can outlive
+    # the sighting it punished. Those rows still count toward the total in
+    # get_hunter_stats; they simply have no row here to hang off.
+    penalties_by_sighting: dict[str, dict] = {
+        p["sighting_id"]: p for p in (penalties or []) if p.get("sighting_id")
+    }
 
     for s in sightings:
         s["matches"] = matches_by_sighting.get(s["id"], [])
         s["score_award"] = awards_by_sighting.get(s["id"])
+        s["score_penalty"] = penalties_by_sighting.get(s["id"])
     return sightings

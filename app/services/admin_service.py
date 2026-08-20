@@ -13,13 +13,17 @@ resolution; flag review additionally needs the queue itself (`ReportRepository`)
 which is an optional constructor argument so the rest of this service keeps its
 one-argument construction.
 
-**Scope of admin power (decided 2026-08-17).** An administrator moderates by
-REMOVING things — dismissing a flagged sighting, deleting a report that breaks
-the guidelines. There is deliberately no ban, no account suspension, and no
-account dashboard: an earlier design had all three, and they were withdrawn
-because moderation that touches accounts needs a review process the project does
-not have. Admins are also no longer expected to verify every sighting; they look
-at what users flag.
+**Scope of admin power (decided 2026-08-17, extended 2026-08-20).** An
+administrator moderates by REMOVING things — dismissing a flagged sighting,
+deleting a report that breaks the guidelines — and, since 2026-08-20, by
+DEDUCTING SCORE from the hunter behind an upheld flag. There is still
+deliberately no ban, no account suspension, and no account dashboard: an earlier
+design had all three, and they were withdrawn because moderation that touches
+accounts needs a review process the project does not have. The deduction is the
+replacement sanction, and it was chosen because it stays inside the scoring
+tables — banning would need an account-state column plus a per-request check of
+it, since an already-issued JWT keeps working. Admins are also no longer
+expected to verify every sighting; they look at what users flag.
 """
 import asyncio
 import logging
@@ -35,6 +39,7 @@ from app.services.moderation_logic import (
     DECISION_UPHOLD,
     normalize_flag_decision,
     normalize_flag_status_filter,
+    resolve_penalty_points,
 )
 from app.services.sighting_logic import strip_feature_vector
 
@@ -193,35 +198,53 @@ class AdminService:
     # MD-40 — review a moderation flag (SRS-68, UD-14)
     # ---------------------------------------------------------------- #
     async def review_report(
-        self, report_id: str, decision: str, admin_id: str,
+        self,
+        report_id: str,
+        decision: str,
+        admin_id: str,
+        penalty_points: Optional[int] = None,
     ) -> dict:
         """
-        Resolve a pending flag: dismiss it, or uphold it and drop the sighting.
+        Resolve a pending flag: dismiss it, or uphold it and sanction the hunter.
 
-        Upholding is two writes: the flagged sighting is set Dismissed so it
-        stops reaching owners, and the flag itself is closed as Reviewed_Ban.
-        Despite that enum value's name, **nobody is banned** — the hunter keeps
-        their account (see the module docstring); only the offending sighting is
-        withdrawn.
+        Upholding is three writes: the flagged sighting is set Dismissed so it
+        stops reaching owners, the sighting's hunter loses score, and the flag
+        itself is closed as Reviewed_Penalty. **Nobody is banned** — the hunter
+        keeps their account (see the module docstring); they lose points and the
+        offending sighting.
+
+        `penalty_points` is the administrator's explicit ruling; omit it to
+        charge the per-reason default from `PENALTY_POINTS_BY_REASON`. Passing 0
+        upholds the flag and withdraws the sighting without any deduction.
 
         The flag's own status is written **last** on purpose. It is the
         idempotency key — while it is still Pending the whole decision can be
         retried, so a failure part-way through leaves work to redo rather than a
-        flag marked handled whose consequences never landed.
+        flag marked handled whose consequences never landed. The deduction is
+        safe under that retry because `apply_score_penalty` is idempotent on
+        report_id.
 
         Raises:
-            ValueError: decision outside {Dismissed, Reviewed_Ban} (API -> 400).
+            ValueError: decision outside {Dismissed, Reviewed_Penalty}, or
+                penalty_points out of range (API -> 400).
             ReportNotFound: no such flag (API -> 404).
             ReportAlreadyModerated: another admin already decided (API -> 409).
         """
-        # Raises ValueError (400) before any I/O.
+        # Both raise ValueError (400) before any I/O.
         status = normalize_flag_decision(decision)
+        if penalty_points is not None:
+            resolve_penalty_points(None, penalty_points)
         return await asyncio.to_thread(
-            self._review_report_sync, report_id, status, admin_id
+            self._review_report_sync, report_id, status, admin_id,
+            penalty_points,
         )
 
     def _review_report_sync(
-        self, report_id: str, status: str, admin_id: str,
+        self,
+        report_id: str,
+        status: str,
+        admin_id: str,
+        penalty_points: Optional[int] = None,
     ) -> dict:
         """DB half of `review_report`; `status` is already normalised.
 
@@ -239,6 +262,7 @@ class AdminService:
             raise ReportAlreadyModerated(report_id, current)
 
         sighting_dismissed = False
+        penalty = None
 
         if status == DECISION_UPHOLD:
             sighting_id = flag.get("sighting_id")
@@ -247,10 +271,16 @@ class AdminService:
                     sighting_id, "Dismissed"
                 )
                 sighting_dismissed = bool(sighting)
+                # The dismiss write hands back the row, which is the only place
+                # the offender's identity is available — the flag itself names
+                # the *reporter*, never the reported.
+                penalty = self._apply_penalty(
+                    flag, sighting, report_id, admin_id, penalty_points,
+                )
             else:
                 logger.warning(
                     "Flag %s upheld but carries no sighting_id — nothing to "
-                    "dismiss", report_id,
+                    "dismiss and nobody to penalise", report_id,
                 )
 
         updated = self.report_repo.update_report(report_id, {"status": status})
@@ -258,10 +288,47 @@ class AdminService:
             raise ReportNotFound(report_id)
 
         logger.warning(
-            "Admin %s reviewed flag %s -> %s (sighting_dismissed=%s)",
+            "Admin %s reviewed flag %s -> %s (sighting_dismissed=%s, "
+            "penalty=%s)",
             admin_id, report_id, status, sighting_dismissed,
+            (penalty or {}).get("points_applied"),
         )
         return {
             "report": updated,
             "sighting_dismissed": sighting_dismissed,
+            "penalty": penalty,
         }
+
+    def _apply_penalty(
+        self,
+        flag: dict,
+        sighting: dict | None,
+        report_id: str,
+        admin_id: str,
+        penalty_points: Optional[int],
+    ) -> dict | None:
+        """Deduct score from the hunter behind an upheld flag.
+
+        Returns None when there is nobody to charge — the sighting row did not
+        come back, or it carries no hunter_id. That is not an error: the flag
+        still gets upheld and the sighting still gets withdrawn. Charging the
+        wrong account, or failing the whole review over a missing column, are
+        both worse outcomes than skipping the deduction and logging it.
+        """
+        hunter_id = (sighting or {}).get("hunter_id")
+        if not hunter_id:
+            logger.warning(
+                "Flag %s upheld but the sighting yielded no hunter_id — "
+                "sighting withdrawn, no score deducted", report_id,
+            )
+            return None
+
+        points = resolve_penalty_points(flag.get("reason"), penalty_points)
+        return self.repo.apply_score_penalty(
+            user_id=hunter_id,
+            sighting_id=flag.get("sighting_id"),
+            report_id=report_id,
+            points=points,
+            reason=flag.get("reason"),
+            penalised_by=admin_id,
+        )

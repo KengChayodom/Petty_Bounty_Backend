@@ -12,7 +12,7 @@ CREATE TYPE verification_status AS ENUM ('Pending', 'Verified', 'Dismissed');
 CREATE TYPE owner_decision AS ENUM ('Pending', 'Confirmed', 'Rejected');
 CREATE TYPE transaction_status AS ENUM ('Pending_Verification', 'Verified', 'Rejected');
 CREATE TYPE report_reason AS ENUM ('Spam', 'Not_a_pet', 'Inappropriate_image');
-CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Ban', 'Dismissed');
+CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Penalty', 'Dismissed');  -- renamed from Reviewed_Ban, migration 2026_08_20
 
 -- 3. สร้างตาราง USERS
 CREATE TABLE users (
