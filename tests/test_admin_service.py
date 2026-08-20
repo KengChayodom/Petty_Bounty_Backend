@@ -10,10 +10,13 @@ Category-Partition highlights:
     ValueError (400); any other error propagates as-is.
   * review_report (UTC-35): unknown [404] / already moderated [409] / dismiss /
     uphold / write-ordering / bad decision [400] / null target / db error [500]
+  * review_report penalty (2026-08-20): per-reason default / admin override /
+    explicit zero / out-of-range [400] / no hunter to charge
 
 Withdrawn on 2026-08-17 along with the feature: the account dashboard
-(list/search) and the suspend/deactivate blocks. Admin moderation no longer
-touches accounts at all — see the admin_service module docstring.
+(list/search) and the suspend/deactivate blocks. Admin moderation still never
+suspends an account — upholding a flag now costs the hunter SCORE instead — see
+the admin_service module docstring.
 """
 import asyncio
 from unittest.mock import MagicMock
@@ -27,6 +30,10 @@ from app.repositories.report_repository import (
     ReportRepository,
 )
 from app.services.admin_service import AdminService
+from app.services.moderation_logic import (
+    MAX_PENALTY_POINTS,
+    PENALTY_POINTS_BY_REASON,
+)
 
 
 def run(coro):
@@ -130,7 +137,8 @@ class TestResolveMissingPet:
 # `AdminRepository.update_sighting_verification` this service already owns (the
 # same call PATCH /admin/sightings/{id}/verification makes), so the constructor
 # is `AdminService(repo, report_repo=...)`. There is no user repo either:
-# upholding a flag withdraws the SIGHTING and never touches the account.
+# upholding a flag withdraws the SIGHTING and deducts SCORE (through the same
+# AdminRepository, via the apply_score_penalty RPC) — the account is untouched.
 #
 # Ordering matters and is asserted: the flag's own status is written LAST, so a
 # failure mid-way leaves it Pending and retryable rather than closed with its
@@ -141,6 +149,9 @@ def _moderation_service(flag=None, sighting=None):
     and its sighting update returning `sighting`."""
     repo = _repo()
     repo.update_sighting_verification.return_value = sighting
+    repo.apply_score_penalty.return_value = {
+        "already_applied": False, "points_applied": 10, "total_score_after": 0,
+    }
     report_repo = MagicMock(spec=ReportRepository)
     report_repo.get_report.return_value = flag
     report_repo.update_report.side_effect = lambda rid, patch: {
@@ -150,7 +161,11 @@ def _moderation_service(flag=None, sighting=None):
     return service, repo, report_repo
 
 
-_PENDING_FLAG = {"id": "r1", "sighting_id": "s1", "status": "Pending"}
+# Carries a `reason`, because that is what selects the default penalty.
+_PENDING_FLAG = {
+    "id": "r1", "sighting_id": "s1", "status": "Pending",
+    "reason": "Not_a_pet",
+}
 
 
 class TestReviewReport:
@@ -167,7 +182,7 @@ class TestReviewReport:
             flag={"id": "r1", "sighting_id": "s1", "status": "Dismissed"},
         )
         with pytest.raises(ReportAlreadyModerated):
-            run(service.review_report("r1", "Reviewed_Ban", "a1"))
+            run(service.review_report("r1", "Reviewed_Penalty", "a1"))
         report_repo.update_report.assert_not_called()
 
     def test_dismiss_writes_status_only(self):
@@ -200,24 +215,24 @@ class TestReviewReport:
             "s1", "Dismissed"
         )
         report_repo.update_report.assert_called_once_with(
-            "r1", {"status": "Reviewed_Ban"}
+            "r1", {"status": "Reviewed_Penalty"}
         )
         assert out["sighting_dismissed"] is True
 
     def test_uphold_leaves_the_hunters_account_alone(self):
-        """Despite the Reviewed_Ban enum name, nobody is banned — the account
-        system was withdrawn on 2026-08-17. The returned outcome must not claim
-        a suspension either, or the admin panel will report one that never
+        """Nobody is banned — the account system was withdrawn on 2026-08-17
+        and the sanction is a score deduction. The returned outcome must not
+        claim a suspension, or the admin panel will report one that never
         happened."""
         service, _, _ = _moderation_service(
             flag=dict(_PENDING_FLAG),
             sighting={"id": "s1", "hunter_id": "h9"},
         )
 
-        out = run(service.review_report("r1", "Reviewed_Ban", "a1"))
+        out = run(service.review_report("r1", "Reviewed_Penalty", "a1"))
 
         assert "suspended_user_id" not in out
-        assert set(out) == {"report", "sighting_dismissed"}
+        assert set(out) == {"report", "sighting_dismissed", "penalty"}
 
     def test_flag_status_is_written_last(self):
         """The idempotency guard only works if the flag closes AFTER its
@@ -229,7 +244,7 @@ class TestReviewReport:
         repo.update_sighting_verification.side_effect = RuntimeError("db down")
 
         with pytest.raises(RuntimeError):
-            run(service.review_report("r1", "Reviewed_Ban", "a1"))
+            run(service.review_report("r1", "Reviewed_Penalty", "a1"))
 
         report_repo.update_report.assert_not_called()
 
@@ -251,11 +266,124 @@ class TestReviewReport:
             flag={"id": "r1", "sighting_id": None, "status": "Pending"},
         )
 
-        out = run(service.review_report("r1", "Reviewed_Ban", "a1"))
+        out = run(service.review_report("r1", "Reviewed_Penalty", "a1"))
 
         repo.update_sighting_verification.assert_not_called()
-        assert out["report"]["status"] == "Reviewed_Ban"
+        assert out["report"]["status"] == "Reviewed_Penalty"
         assert out["sighting_dismissed"] is False
+        repo.apply_score_penalty.assert_not_called()
+        assert out["penalty"] is None
+
+    def test_penalty_defaults_to_the_reasons_tariff(self):
+        """Omitting penalty_points charges the per-reason default, and the
+        deduction is billed to the SIGHTING's hunter — never to the flag's
+        reporter, who is the one complaining."""
+        service, repo, _ = _moderation_service(
+            flag=dict(_PENDING_FLAG, reporter_id="whistleblower"),
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+
+        run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        repo.apply_score_penalty.assert_called_once_with(
+            user_id="h9",
+            sighting_id="s1",
+            report_id="r1",
+            points=PENALTY_POINTS_BY_REASON["Not_a_pet"],
+            reason="Not_a_pet",
+            penalised_by="a1",
+        )
+
+    def test_admin_override_beats_the_default(self):
+        service, repo, _ = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+
+        run(service.review_report(
+            "r1", "Reviewed_Penalty", "a1", penalty_points=42,
+        ))
+
+        assert repo.apply_score_penalty.call_args.kwargs["points"] == 42
+
+    def test_zero_override_charges_nothing_but_still_upholds(self):
+        """0 is a real ruling — uphold the flag, withdraw the sighting, charge
+        nothing — so it must not be mistaken for "no value supplied"."""
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+
+        out = run(service.review_report(
+            "r1", "Reviewed_Penalty", "a1", penalty_points=0,
+        ))
+
+        assert repo.apply_score_penalty.call_args.kwargs["points"] == 0
+        assert out["sighting_dismissed"] is True
+        report_repo.update_report.assert_called_once_with(
+            "r1", {"status": "Reviewed_Penalty"}
+        )
+
+    @pytest.mark.parametrize("bad", [-1, MAX_PENALTY_POINTS + 1])
+    def test_out_of_range_override_raises_before_any_io(self, bad):
+        """The bound is checked at the edge (API maps it to 400), so a typo in
+        the admin panel cannot reach the RPC and wipe a hunter's history."""
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+
+        with pytest.raises(ValueError):
+            run(service.review_report(
+                "r1", "Reviewed_Penalty", "a1", penalty_points=bad,
+            ))
+
+        report_repo.get_report.assert_not_called()
+        repo.apply_score_penalty.assert_not_called()
+        report_repo.update_report.assert_not_called()
+
+    def test_no_penalty_when_the_sighting_yields_no_hunter(self):
+        """A sighting row that comes back without hunter_id leaves nobody to
+        charge. That must still close the flag rather than fail the review or,
+        worse, deduct from a guessed account."""
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting={"id": "s1"},
+        )
+
+        out = run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        repo.apply_score_penalty.assert_not_called()
+        assert out["penalty"] is None
+        assert out["sighting_dismissed"] is True
+        report_repo.update_report.assert_called_once_with(
+            "r1", {"status": "Reviewed_Penalty"}
+        )
+
+    def test_penalty_is_charged_before_the_flag_closes(self):
+        """Same ordering rule as the sighting dismissal: if the deduction
+        fails, the flag must stay Pending so the whole review can be retried."""
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+        repo.apply_score_penalty.side_effect = RuntimeError("rpc down")
+
+        with pytest.raises(RuntimeError):
+            run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        report_repo.update_report.assert_not_called()
+
+    def test_dismissing_never_charges_anyone(self):
+        service, repo, _ = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+
+        out = run(service.review_report("r1", "Dismissed", "a1"))
+
+        repo.apply_score_penalty.assert_not_called()
+        assert out["penalty"] is None
 
     def test_db_error_propagates(self):
         """UTC-35-TC-05 — a repo failure surfaces (API maps it to 500)."""
@@ -315,8 +443,8 @@ class TestListReports:
     def test_filter_is_normalised_before_the_query(self):
         """UTC-46-TC-03 — casing from a UI must not reach the enum verbatim."""
         service, report_repo = _queue_service()
-        run(service.list_reports(status="  reviewed_ban  "))
-        assert report_repo.list_reports.call_args.args[0] == "Reviewed_Ban"
+        run(service.list_reports(status="  reviewed_penalty  "))
+        assert report_repo.list_reports.call_args.args[0] == "Reviewed_Penalty"
 
     def test_unknown_filter_raises_before_any_io(self):
         """UTC-46-TC-04 — the 400 happens at the edge; the port is never

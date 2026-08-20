@@ -188,14 +188,63 @@ class TestReviewReportRoute:
     def test_success_returns_the_outcome(self):
         service = _service()
         service.review_report = _async_returns({
-            "report": {"id": "r1", "status": "Reviewed_Ban"},
+            "report": {"id": "r1", "status": "Reviewed_Penalty"},
             "sighting_dismissed": True,
+            "penalty": {"points": 10, "points_applied": 10,
+                        "total_score_after": 5},
         })
         r = _admin_client(service).patch(
             "/admin/reports/r1", json={"decision": "Reviewed and banned"},
         )
         assert r.status_code == 200
-        assert r.json()["data"]["sighting_dismissed"] is True
+        body = r.json()["data"]
+        assert body["sighting_dismissed"] is True
+        assert body["penalty"]["points_applied"] == 10
+
+    def test_penalty_points_reach_the_service(self):
+        """The admin's explicit ruling must survive the route, including 0 —
+        which means "uphold, withdraw the sighting, charge nothing" and is the
+        value a truthiness check would silently turn back into the default."""
+        service = _service()
+        # Set return_value rather than replacing the attribute: spec= already
+        # made this an AsyncMock, and replacing it would throw away call_args.
+        service.review_report.return_value = {
+            "report": {"id": "r1", "status": "Reviewed_Penalty"},
+            "sighting_dismissed": True, "penalty": None,
+        }
+        r = _admin_client(service).patch(
+            "/admin/reports/r1",
+            json={"decision": "Uphold and Penalise User", "penalty_points": 0},
+        )
+        assert r.status_code == 200
+        assert service.review_report.call_args.kwargs["penalty_points"] == 0
+
+    def test_penalty_points_default_to_none_when_omitted(self):
+        """Omitting the field must not become 0 — that is the difference
+        between "charge the per-reason default" and "charge nothing"."""
+        service = _service()
+        service.review_report.return_value = {
+            "report": {"id": "r1", "status": "Reviewed_Penalty"},
+            "sighting_dismissed": True, "penalty": None,
+        }
+        r = _admin_client(service).patch(
+            "/admin/reports/r1", json={"decision": "Reviewed_Penalty"},
+        )
+        assert r.status_code == 200
+        assert service.review_report.call_args.kwargs["penalty_points"] is None
+
+    def test_out_of_range_penalty_is_a_400_not_a_422(self):
+        """Consistent with `decision`: this endpoint reports bad input as 400,
+        so the bound lives in moderation_logic and not in the Pydantic field."""
+        service = _service()
+        service.review_report = _async_raises(
+            ValueError("penalty_points must not exceed 100")
+        )
+        r = _admin_client(service).patch(
+            "/admin/reports/r1",
+            json={"decision": "Reviewed_Penalty", "penalty_points": 5000},
+        )
+        assert r.status_code == 400
 
 
 # --------------------------------------------------------------------------- #

@@ -152,8 +152,8 @@ async def list_reports(
     offset: int = Query(0, ge=0),
     status: str | None = Query(
         None,
-        description="Optional filter: Pending, Reviewed_Ban, or Dismissed. "
-                    "Omit for every status.",
+        description="Optional filter: Pending, Reviewed_Penalty, or "
+                    "Dismissed. Omit for every status.",
     ),
     service: AdminService = Depends(get_admin_service),
     admin_id: str = Depends(require_admin),
@@ -190,15 +190,19 @@ async def review_report(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-40 / SRS-68 — dismiss a flag, or uphold it and ban the hunter.
+    MD-40 / SRS-68 — dismiss a flag, or uphold it and deduct the hunter's score.
 
-    Upholding also sets the flagged sighting to Dismissed and the offending
-    hunter's account to Suspended (UD-14 steps 4-5). A flag another admin has
-    already decided returns 409 rather than being overwritten (UD-14 [E1]).
+    Upholding sets the flagged sighting to Dismissed and subtracts score from
+    the hunter who submitted it (UD-14 steps 4-5). **No account is banned or
+    suspended** — that sanction was replaced by the deduction on 2026-08-20; see
+    the `admin_service` module docstring for why. `penalty_points` overrides the
+    per-reason default. A flag another admin has already decided returns 409
+    rather than being overwritten (UD-14 [E1]).
     """
     try:
         result = await service.review_report(
             report_id, payload.decision, admin_id,
+            penalty_points=payload.penalty_points,
         )
     except ReportNotFound as e:
         raise HTTPException(status_code=404, detail=str(e))

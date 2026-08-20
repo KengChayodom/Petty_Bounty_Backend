@@ -681,11 +681,14 @@ class TestGetSightingById:
 
 
 # --------------------------------------------------------------------------- #
-# get_hunter_activity — three repo round-trips + the pure assemble step
+# get_hunter_activity — four repo round-trips + the pure assemble step
 # (sighting_logic.assemble_hunter_activity). Category-Partition:
 #   * sightings list: empty (short-circuit) / non-empty
 #   * per sighting: has matches / has none (assemble default branch)
 #   * awards: attached by sighting_id / with a NULL sighting_id (excluded)
+#   * penalties (2026-08-20): attached by sighting_id / NULL sighting_id
+#     (excluded — ON DELETE SET NULL lets one outlive its sighting) / a
+#     sighting carrying both an award and a penalty
 #   * any repo call raises -> propagates
 # --------------------------------------------------------------------------- #
 class TestGetHunterActivity:
@@ -698,9 +701,10 @@ class TestGetHunterActivity:
         out = run(svc.get_hunter_activity("hunter-1"))
 
         assert out == {"sightings": [], "total_count": 0}
-        # no reason to fetch matches/awards when there are no sightings
+        # no reason to fetch matches/awards/penalties when there are no sightings
         repo.get_matches_for_sightings.assert_not_called()
         repo.get_awards_for_hunter.assert_not_called()
+        repo.get_penalties_for_hunter.assert_not_called()
 
     def test_attaches_matches_and_awards_per_sighting(self):
         repo = _repo()
@@ -714,6 +718,7 @@ class TestGetHunterActivity:
             {"sighting_id": "s1", "points": 25},   # attaches to s1
             {"sighting_id": None, "points": 5},     # NULL sighting_id -> excluded
         ]
+        repo.get_penalties_for_hunter.return_value = []
         svc = SightingService(repo, ai_manager=None)
 
         out = run(svc.get_hunter_activity("hunter-1"))
@@ -728,6 +733,49 @@ class TestGetHunterActivity:
         assert s2["matches"] == []          # no matches -> default []
         assert s2["score_award"] is None    # no award for s2
 
+    def test_attaches_the_penalty_that_punished_each_sighting(self):
+        """A hunter looking at why their score fell needs the deduction on the
+        sighting that caused it, not just a smaller number on the stats card."""
+        repo = _repo()
+        repo.count_sightings_for_hunter.return_value = 2
+        repo.list_sightings_for_hunter.return_value = [{"id": "s1"}, {"id": "s2"}]
+        repo.get_matches_for_sightings.return_value = []
+        repo.get_awards_for_hunter.return_value = []
+        repo.get_penalties_for_hunter.return_value = [
+            {"sighting_id": "s2", "points": 10, "reason": "Not_a_pet"},
+            # sighting_id is ON DELETE SET NULL, so a deduction can outlive the
+            # sighting it punished — it must not crash the assembly.
+            {"sighting_id": None, "points": 5, "reason": "Spam"},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        s1, s2 = run(svc.get_hunter_activity("hunter-1"))["sightings"]
+
+        assert s1["score_penalty"] is None
+        assert s2["score_penalty"] == {
+            "sighting_id": "s2", "points": 10, "reason": "Not_a_pet",
+        }
+
+    def test_a_sighting_can_carry_both_an_award_and_a_penalty(self):
+        """They are independent records: a sighting that earned points on one
+        case can still have been flagged and upheld."""
+        repo = _repo()
+        repo.count_sightings_for_hunter.return_value = 1
+        repo.list_sightings_for_hunter.return_value = [{"id": "s1"}]
+        repo.get_matches_for_sightings.return_value = []
+        repo.get_awards_for_hunter.return_value = [
+            {"sighting_id": "s1", "points": 25},
+        ]
+        repo.get_penalties_for_hunter.return_value = [
+            {"sighting_id": "s1", "points": 10},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        s1 = run(svc.get_hunter_activity("hunter-1"))["sightings"][0]
+
+        assert s1["score_award"]["points"] == 25
+        assert s1["score_penalty"]["points"] == 10
+
     def test_repo_error_is_reraised(self):
         repo = _repo()
         repo.count_sightings_for_hunter.side_effect = RuntimeError("db down")
@@ -737,7 +785,8 @@ class TestGetHunterActivity:
 
 
 # --------------------------------------------------------------------------- #
-# get_hunter_stats — total_score defaults to 0 when the user row is absent.
+# get_hunter_stats — total_score defaults to 0 when the user row is absent, and
+# (2026-08-20) the deduction summary that explains a fallen score.
 # --------------------------------------------------------------------------- #
 class TestGetHunterStats:
     def test_returns_all_counts_with_user_score(self):
@@ -746,6 +795,7 @@ class TestGetHunterStats:
         repo.count_sightings_for_hunter.return_value = 5
         repo.count_verified_sightings_for_hunter.return_value = 3
         repo.count_contributions_for_hunter.return_value = 2
+        repo.get_penalties_for_hunter.return_value = []
         svc = SightingService(repo, ai_manager=None)
 
         out = run(svc.get_hunter_stats("hunter-1"))
@@ -755,7 +805,45 @@ class TestGetHunterStats:
             "sightings_submitted": 5,
             "sightings_verified": 3,
             "resolutions_contributed_to": 2,
+            "penalties_received": 0,
+            "penalty_points_total": 0,
         }
+
+    def test_summarises_the_deductions_behind_the_score(self):
+        """total_score already has them subtracted; these two fields are what
+        let the card explain the drop instead of just showing it."""
+        repo = _repo()
+        repo.get_user.return_value = {"total_score": 15}
+        repo.count_sightings_for_hunter.return_value = 4
+        repo.count_verified_sightings_for_hunter.return_value = 2
+        repo.count_contributions_for_hunter.return_value = 1
+        repo.get_penalties_for_hunter.return_value = [
+            {"points": 10, "reason": "Not_a_pet"},
+            {"points": 5, "reason": "Spam"},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        out = run(svc.get_hunter_stats("hunter-1"))
+
+        assert out["penalties_received"] == 2
+        assert out["penalty_points_total"] == 15
+        assert out["total_score"] == 15   # the balance, not derived from above
+
+    def test_a_ruling_larger_than_the_balance_is_summed_as_ruled(self):
+        """The RPC floors total_score at 0 but records the full ruling, so a
+        20-point penalty against a 3-point hunter still reads as 20 here."""
+        repo = _repo()
+        repo.get_user.return_value = {"total_score": 0}
+        repo.count_sightings_for_hunter.return_value = 1
+        repo.count_verified_sightings_for_hunter.return_value = 0
+        repo.count_contributions_for_hunter.return_value = 0
+        repo.get_penalties_for_hunter.return_value = [{"points": 20}]
+        svc = SightingService(repo, ai_manager=None)
+
+        out = run(svc.get_hunter_stats("hunter-1"))
+
+        assert out["penalty_points_total"] == 20
+        assert out["total_score"] == 0
 
     def test_defaults_score_to_zero_when_no_user_row(self):
         repo = _repo()
@@ -763,6 +851,7 @@ class TestGetHunterStats:
         repo.count_sightings_for_hunter.return_value = 0
         repo.count_verified_sightings_for_hunter.return_value = 0
         repo.count_contributions_for_hunter.return_value = 0
+        repo.get_penalties_for_hunter.return_value = []
         svc = SightingService(repo, ai_manager=None)
 
         assert run(svc.get_hunter_stats("hunter-1"))["total_score"] == 0
