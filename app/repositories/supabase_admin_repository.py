@@ -41,3 +41,25 @@ class SupabaseAdminRepository:
             "p_verified_by":       verified_by,
         }).execute()
         return res.data
+
+    def apply_score_penalty(
+        self,
+        user_id: str,
+        sighting_id: str | None,
+        report_id: str,
+        points: int,
+        reason: str | None,
+        penalised_by: str,
+    ) -> dict:
+        # One RPC, not two writes: the audit row and the balance change must
+        # land together. The function is idempotent on report_id, so a retried
+        # review does not deduct twice — it returns already_applied=True.
+        res = self._db.rpc("apply_score_penalty", {
+            "p_user_id":      user_id,
+            "p_sighting_id":  sighting_id,
+            "p_report_id":    report_id,
+            "p_points":       points,
+            "p_reason":       reason,
+            "p_penalised_by": penalised_by,
+        }).execute()
+        return res.data or {}

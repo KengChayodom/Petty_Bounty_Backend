@@ -22,3 +22,12 @@ class AdminRepository(Protocol):
         reference_no: str | None,
         verified_by: str,
     ) -> object: ...
+    def apply_score_penalty(
+        self,
+        user_id: str,
+        sighting_id: str | None,
+        report_id: str,
+        points: int,
+        reason: str | None,
+        penalised_by: str,
+    ) -> dict: ...

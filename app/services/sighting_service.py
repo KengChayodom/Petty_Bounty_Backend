@@ -525,11 +525,12 @@ class SightingService:
     ) -> dict:
         """
         Activity log for a single hunter — sightings (newest first) plus,
-        per sighting, the AI match candidates and the score award (if the
-        target pet has already been resolved).
+        per sighting, the AI match candidates, the score award (if the target
+        pet has already been resolved), and the score penalty (if a flag
+        against that sighting was upheld).
 
-        Three repo round-trips instead of a single big join: simpler to reason
-        about, all three tables are small per-hunter, and there is no clean
+        Four repo round-trips instead of a single big join: simpler to reason
+        about, all four tables are small per-hunter, and there is no clean
         embedded-resource join that also covers the score_awards
         UNIQUE(pet, user) relation (which is not a FK to sightings).
         """
@@ -556,8 +557,14 @@ class SightingService:
             # cheap and avoids missing awards whose link was an AI match
             # (initial_target_pet_id NULL) rather than an explicit target.
             awards = self.repo.get_awards_for_hunter(hunter_id)
+            # Fetched the same way and for the same reason: a deduction is
+            # keyed on the flag, not on the sighting, so there is no join to
+            # ride in on.
+            penalties = self.repo.get_penalties_for_hunter(hunter_id)
 
-            sightings = assemble_hunter_activity(sightings, matches, awards)
+            sightings = assemble_hunter_activity(
+                sightings, matches, awards, penalties
+            )
             return {"sightings": sightings, "total_count": total_count}
 
         except Exception as e:
@@ -577,6 +584,12 @@ class SightingService:
             user = self.repo.get_user(hunter_id)
             total_score = user["total_score"] if user else 0
 
+            # `total_score` already has every deduction subtracted — the RPC
+            # writes the balance. These two fields exist so the card can SAY
+            # so: without them a hunter watches their score drop with nothing
+            # on screen accounting for it.
+            penalties = self.repo.get_penalties_for_hunter(hunter_id)
+
             return {
                 "total_score": total_score,
                 "sightings_submitted":
@@ -585,6 +598,13 @@ class SightingService:
                     self.repo.count_verified_sightings_for_hunter(hunter_id),
                 "resolutions_contributed_to":
                     self.repo.count_contributions_for_hunter(hunter_id),
+                "penalties_received": len(penalties),
+                # The sum of what was RULED, which can exceed what the balance
+                # absorbed. Showing the ruling is the honest figure; deriving
+                # "points actually lost" from a floored balance is not
+                # reconstructable after the fact anyway.
+                "penalty_points_total":
+                    sum(p.get("points") or 0 for p in penalties),
             }
         except Exception as e:
             logger.exception("Error fetching stats for hunter %s: %s",

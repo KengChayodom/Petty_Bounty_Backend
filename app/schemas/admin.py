@@ -3,6 +3,11 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.services.moderation_logic import (
+    MAX_PENALTY_POINTS,
+    PENALTY_POINTS_BY_REASON,
+)
+
 
 class VerifySightingRequest(BaseModel):
     """Body of PATCH /admin/sightings/{id}/verification."""
@@ -56,6 +61,24 @@ class ReviewReportRequest(BaseModel):
 
     decision: str = Field(
         ...,
-        description="'Dismissed' or 'Reviewed_Ban' (also accepts 'Reviewed and "
-                    "banned', 'Dismiss Flag', 'Uphold and Ban User').",
+        description="'Dismissed' or 'Reviewed_Penalty' (also accepts 'Dismiss "
+                    "Flag', 'Uphold and Penalise User', and the legacy ban "
+                    "wording — upholding deducts score, it never bans).",
+    )
+    # Deliberately unconstrained here: the range is enforced in
+    # `moderation_logic.resolve_penalty_points`, which raises ValueError and so
+    # surfaces as the 400 this endpoint documents. Declaring ge/le would make
+    # Pydantic reject it first as a 422, contradicting `decision` right above.
+    penalty_points: Optional[int] = Field(
+        None,
+        description=(
+            "Score to deduct from the reported hunter. Omit to charge the "
+            "per-reason default ("
+            + ", ".join(
+                f"{r}={p}" for r, p in PENALTY_POINTS_BY_REASON.items()
+            )
+            + f"). Must be 0-{MAX_PENALTY_POINTS}. 0 upholds the flag and "
+            "withdraws the sighting without any deduction. Ignored when "
+            "`decision` is 'Dismissed'."
+        ),
     )

@@ -149,6 +149,17 @@ class SupabaseSightingRepository:
                        .execute())
         return res.data or []
 
+    def get_penalties_for_hunter(self, hunter_id: str) -> list[dict]:
+        # Mirror of get_awards_for_hunter over the deduction trail. `points` is
+        # what the admin ruled, which is what the hunter should be shown — the
+        # part their balance could not absorb was still a ruling against them.
+        res = (self._db.table("score_penalties")
+                       .select("sighting_id, report_id, points, reason, "
+                               "penalised_at")
+                       .eq("user_id", hunter_id)
+                       .execute())
+        return res.data or []
+
     def get_user(self, hunter_id: str) -> dict | None:
         res = (self._db.table("users")
                        .select("total_score")
