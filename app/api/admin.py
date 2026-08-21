@@ -17,7 +17,7 @@ from app.schemas.admin import (
     ReviewReportRequest,
     VerifySightingRequest,
 )
-from app.schemas.common import StandardResponse
+from app.schemas.common import PaginatedData, StandardResponse
 from app.services.admin_service import AdminService
 from app.services.pet_service import PetService
 
@@ -107,24 +107,47 @@ async def list_all_missing_pets(
         None,
         description="Optional filter: Searching, Spotted, Found, or Resolved.",
     ),
+    species: str | None = Query(
+        None,
+        description="Optional filter: Cat, Dog, Bird, or Other.",
+    ),
     repo: MissingPetRepository = Depends(get_missing_pet_repository),
     admin_id: str = Depends(require_admin),
 ):
-    """MD-37 / SRS-64 — browse every missing-pet report for moderation."""
+    """MD-37 / SRS-64 — browse every missing-pet report for moderation.
+
+    Returns `{items, total, limit, offset}`. `total` counts every report
+    matching `status`, not just this page, so the console can draw numbered
+    pages instead of guessing whether another page exists.
+    """
     try:
-        pets = await PetService.list_all_missing_pets(
-            repo, limit=limit, offset=offset, status=status,
+        page = await PetService.list_all_missing_pets(
+            repo, limit=limit, offset=offset, status=status, species=species,
         )
         return StandardResponse(
             status="success",
-            message=f"Retrieved {len(pets)} reports.",
-            data=pets,
+            message=f"Retrieved {len(page.items)} of {page.total} reports.",
+            data=PaginatedData(
+                items=page.items, total=page.total,
+                limit=limit, offset=offset,
+            ),
         )
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to list missing pets: {e}"
         )
 
+@router.get("/missing-pets/{pet_id}")
+async def get_missing_pet(
+    pet_id: str,
+    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    admin_id: str = Depends(require_admin),
+):
+    """Get a specific missing pet for admin details view."""
+    pet = await PetService.get_missing_pet_by_id(repo, pet_id)
+    if not pet:
+        raise HTTPException(status_code=404, detail="Pet not found")
+    return pet
 
 @router.delete("/missing-pets/{pet_id}", response_model=StandardResponse)
 async def remove_missing_pet(
@@ -171,9 +194,12 @@ async def list_reports(
     The listing `PATCH /admin/reports/{report_id}` acts from: without it an
     administrator can only review a flag whose identifier they already hold,
     which no screen could supply.
+
+    Returns `{items, total, limit, offset}`; `total` is the depth of the queue
+    for the requested status, which is the number a moderator works against.
     """
     try:
-        flags = await service.list_reports(
+        page = await service.list_reports(
             status=status, limit=limit, offset=offset,
         )
     except ValueError as ve:
@@ -184,8 +210,10 @@ async def list_reports(
         )
     return StandardResponse(
         status="success",
-        message=f"Retrieved {len(flags)} flags.",
-        data=flags,
+        message=f"Retrieved {len(page.items)} of {page.total} flags.",
+        data=PaginatedData(
+            items=page.items, total=page.total, limit=limit, offset=offset,
+        ),
     )
 
 
