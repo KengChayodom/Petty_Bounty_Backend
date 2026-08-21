@@ -14,8 +14,8 @@ from app.core.config import settings
 from app.core.database import close_supabase_client
 from app.core.firebase import init_firebase
 from app.api import (
-    admin, auth, dev_auth, devices, hunters, me, missing_pets, reports,
-    sightings, upload,
+    admin, auth, dev_auth, devices, hunters, leaderboard, me, missing_pets,
+    reports, sightings, upload,
 )
 # 💡 นำเข้า AIManager เพื่อใช้โหลดโมเดลตอนสตาร์ทเซิร์ฟเวอร์
 from app.services.ai_service import AIManager
@@ -91,6 +91,7 @@ app.include_router(admin.router)
 app.include_router(devices.router)
 app.include_router(me.router)
 app.include_router(reports.router)
+app.include_router(leaderboard.router)
 
 # DEV-ONLY: mount auth convenience endpoints ONLY when explicitly enabled.
 # When the flag is off these routes are never registered (404), not just
