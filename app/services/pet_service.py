@@ -18,6 +18,7 @@ import asyncio
 import logging
 
 from app.repositories.missing_pet_repository import MissingPetRepository
+from app.repositories.pagination import Page
 from app.schemas.missing_pets import MissingPetCreate
 from app.services.ai_service import AIManager
 from app.services.pet_logic import (
@@ -179,17 +180,22 @@ class PetService:
         limit: int = 20,
         offset: int = 0,
         status: str | None = None,
-    ) -> list[dict]:
+        species: str | None = None,
+    ) -> Page:
         """
         MD-37 / SRS-64 — platform-wide browse for moderation.
 
         `status=None` means "every status", not "status IS NULL"; the filter is
         applied by the repository only when one was supplied. The admin gate
         itself lives in require_admin (MD-04), not here.
+
+        Returns the page AND the total number of matching reports, so the admin
+        console can draw numbered pages rather than infer a next page from a
+        full one.
         """
         try:
             return await asyncio.to_thread(
-                repo.list_all, status, limit, offset
+                repo.list_all, status, species, limit, offset
             )
         except Exception as e:
             logger.error("Error listing all missing pets: %s", e)
