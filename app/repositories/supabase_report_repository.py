@@ -1,4 +1,5 @@
 """Supabase adapter for ReportRepository — the `public.reports` moderation queue."""
+from app.repositories.pagination import Page
 from app.repositories.report_repository import FlagNotSaved
 
 
@@ -25,18 +26,24 @@ class SupabaseReportRepository:
 
     def list_reports(
         self, status: str | None, limit: int, offset: int
-    ) -> list[dict]:
+    ) -> Page:
         # MD-51 moderation queue, mirroring the missing-pet browse of MD-37:
         # the status predicate is applied ONLY when one was supplied, so `None`
         # means every status rather than "status IS NULL". Newest first,
         # because a queue is worked from the most recent complaint backwards.
-        query = self._db.table("reports").select("*")
+        #
+        # count="exact" carries the queue DEPTH back with the page. A moderator
+        # needs to know how much is waiting, and the console cannot infer it
+        # from a page that happens to be full.
+        query = self._db.table("reports").select("*", count="exact")
         if status is not None:
             query = query.eq("status", status)
         res = (query.order("created_at", desc=True)
                     .range(offset, offset + limit - 1)
                     .execute())
-        return res.data or []
+        rows = res.data or []
+        total = getattr(res, "count", None)
+        return Page(rows, len(rows) if total is None else total)
 
     def update_report(self, report_id: str, patch: dict) -> dict | None:
         res = (self._db.table("reports")

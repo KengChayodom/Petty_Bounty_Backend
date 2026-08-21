@@ -15,6 +15,8 @@ depend on this port; tests double it with MagicMock(spec=ReportRepository).
 """
 from typing import Protocol
 
+from app.repositories.pagination import Page
+
 
 class ReportNotFound(ValueError):
     """No `reports` row with that id — MD-40's 404."""
@@ -66,4 +68,4 @@ class ReportRepository(Protocol):
     def update_report(self, report_id: str, patch: dict) -> dict | None: ...
     def list_reports(
         self, status: str | None, limit: int, offset: int
-    ) -> list[dict]: ...
+    ) -> Page: ...
