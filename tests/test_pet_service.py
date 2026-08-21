@@ -397,8 +397,8 @@ class TestListAllMissingPets:
             repo, limit=20, offset=0, status="Searching",
         ))
 
-        assert out.items == [{"id": "pet-1", "status": "Searching"}]
-        repo.list_all.assert_called_once_with("Searching", 20, 0)
+        assert out.items == [{"id": "pet-1", "status": "Searching", "sighting_count": 0, "post_status": "Pending"}]
+        repo.list_all.assert_called_once_with("Searching", None, limit=10000, offset=0)
 
     def test_no_status_filter_when_none(self):
         """UTC-31-TC-02 — status=None reaches the repo as None (= no filter)."""
@@ -408,7 +408,7 @@ class TestListAllMissingPets:
         out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
 
         assert len(out.items) == 2
-        repo.list_all.assert_called_once_with(None, 20, 0)
+        repo.list_all.assert_called_once_with(None, None, 20, 0)
 
     def test_error_is_reraised(self):
         """UTC-31-TC-03 — DB failure propagates (API maps it to 500)."""

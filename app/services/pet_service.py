@@ -189,17 +189,67 @@ class PetService:
         applied by the repository only when one was supplied. The admin gate
         itself lives in require_admin (MD-04), not here.
 
+        `post_status` (Pending / Spotted / Expired / Rescued) is attached to
+        every row so the admin console can display the derived badge instead of
+        the raw `status` column (Searching / Found / Resolved). This mirrors
+        exactly what `get_my_missing_pets` does for the owner's own list — the
+        rule lives in `pet_logic.derive_post_status`, not here.
+
         Returns the page AND the total number of matching reports, so the admin
         console can draw numbered pages rather than infer a next page from a
         full one.
         """
         try:
             return await asyncio.to_thread(
-                repo.list_all, status, species, limit, offset
+                PetService._list_all_missing_pets_sync,
+                repo, status, species, limit, offset,
             )
         except Exception as e:
             logger.error("Error listing all missing pets: %s", e)
             raise
+
+    @staticmethod
+    def _list_all_missing_pets_sync(
+        repo: MissingPetRepository,
+        status: str | None,
+        species: str | None,
+        limit: int,
+        offset: int,
+    ) -> Page:
+        # "Spotted" and "Searching" (pure — no sightings yet) are both stored as
+        # status='Searching' in the DB. Splitting them requires sighting_count,
+        # which is only known after attach_sighting_counts(). We therefore fetch
+        # ALL Searching rows first, attach counts, filter, then slice — so the
+        # returned `total` is the count of the *derived* state, not the raw DB
+        # bucket, and pagination arithmetic on the frontend is correct.
+        #
+        # For Found / Resolved / None the DB query already gives the right total
+        # so we use the normal efficient path (DB-level limit + offset).
+        if status in ("Spotted", "Searching"):
+            raw = repo.list_all("Searching", species, limit=10_000, offset=0)
+            if not raw.items:
+                return Page([], 0)
+            links = repo.get_sighting_links_for_pets(
+                [p["id"] for p in raw.items if p.get("id")]
+            )
+            enriched = attach_sighting_counts(raw.items, count_sightings(links))
+            if status == "Spotted":
+                filtered = [p for p in enriched if p.get("sighting_count", 0) > 0]
+            else:  # "Searching" — pure, no sightings yet
+                filtered = [p for p in enriched if p.get("sighting_count", 0) == 0]
+            total = len(filtered)
+            paged = filtered[offset: offset + limit]
+            return Page(paged, total)
+
+        # Normal path: Found / Resolved / None — DB total is already correct.
+        page = repo.list_all(status, species, limit, offset)
+        if not page.items:
+            return page
+        links = repo.get_sighting_links_for_pets(
+            [p["id"] for p in page.items if p.get("id")]
+        )
+        enriched = attach_sighting_counts(page.items, count_sightings(links))
+        return Page(enriched, page.total)
 
     @staticmethod
     async def remove_missing_pet(
