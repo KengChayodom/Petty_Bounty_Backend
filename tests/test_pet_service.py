@@ -25,6 +25,7 @@ from app.repositories.missing_pet_repository import (
     MissingPetNotSaved,
     MissingPetRepository,
 )
+from app.repositories.pagination import Page
 from app.schemas.missing_pets import MissingPetCreate
 from app.services.ai_service import AIManager
 from app.services.pet_service import PetService
@@ -379,28 +380,34 @@ class TestGetMyMissingPets:
 # status=None must mean every status, never `status IS NULL`. Both TC-01 and
 # TC-02 assert the exact argument handed to the port, because that argument IS
 # the filtering behaviour at this layer.
+#
+# TC-05 pins the OTHER half of the contract: the total travels with the page.
+# It is the number the console draws numbered pages from, so a service that
+# quietly returned len(items) would produce a pager that stops at page one.
 # --------------------------------------------------------------------------- #
 class TestListAllMissingPets:
     def test_applies_status_filter_when_given(self):
         """UTC-31-TC-01 — a supplied status is forwarded verbatim."""
         repo = _repo()
-        repo.list_all.return_value = [{"id": "pet-1", "status": "Searching"}]
+        repo.list_all.return_value = Page(
+            [{"id": "pet-1", "status": "Searching"}], 1,
+        )
 
         out = run(PetService.list_all_missing_pets(
             repo, limit=20, offset=0, status="Searching",
         ))
 
-        assert out == [{"id": "pet-1", "status": "Searching"}]
+        assert out.items == [{"id": "pet-1", "status": "Searching"}]
         repo.list_all.assert_called_once_with("Searching", 20, 0)
 
     def test_no_status_filter_when_none(self):
         """UTC-31-TC-02 — status=None reaches the repo as None (= no filter)."""
         repo = _repo()
-        repo.list_all.return_value = [{"id": "pet-1"}, {"id": "pet-2"}]
+        repo.list_all.return_value = Page([{"id": "pet-1"}, {"id": "pet-2"}], 2)
 
         out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
 
-        assert len(out) == 2
+        assert len(out.items) == 2
         repo.list_all.assert_called_once_with(None, 20, 0)
 
     def test_error_is_reraised(self):
@@ -413,8 +420,23 @@ class TestListAllMissingPets:
     def test_empty_page_returns_empty_list(self):
         """UTC-31-TC-04 — an empty page is [], not None."""
         repo = _repo()
-        repo.list_all.return_value = []
-        assert run(PetService.list_all_missing_pets(repo, limit=20, offset=0)) == []
+        repo.list_all.return_value = Page([], 0)
+        out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
+        assert out.items == [] and out.total == 0
+
+    def test_total_is_the_filter_count_not_the_page_length(self):
+        """UTC-31-TC-05 — a full page of a larger result carries the real total.
+
+        This is the whole point of the count: page 1 of 57 reports must say 57,
+        because that is what tells the console pages 2 and 3 exist.
+        """
+        repo = _repo()
+        repo.list_all.return_value = Page([{"id": f"pet-{i}"} for i in range(20)], 57)
+
+        out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
+
+        assert len(out.items) == 20
+        assert out.total == 57
 
 
 # --------------------------------------------------------------------------- #
