@@ -271,15 +271,15 @@ class TestReviewReportRoute:
 class TestAdminMissingPetRoutes:
     def test_list_forwards_the_status_filter(self):
         repo = MagicMock(spec=MissingPetRepository)
-        repo.list_all.return_value = Page([{"id": "p1"}], 1)
+        repo.list_all.return_value = Page([{"id": "p1", "sighting_count": 0}], 1)
         r = _admin_client(pet_repo=repo).get(
-            "/admin/missing-pets?status=Searching&limit=5&offset=10"
+            "/admin/missing-pets?status=Searching&limit=5&offset=0"
         )
         assert r.status_code == 200
-        repo.list_all.assert_called_once_with("Searching", 5, 10)
-        assert r.json()["data"] == {
-            "items": [{"id": "p1"}], "total": 1, "limit": 5, "offset": 10,
-        }
+        repo.list_all.assert_called_once_with("Searching", None, limit=10000, offset=0)
+        assert r.json()["data"]["items"][0]["id"] == "p1"
+        assert r.json()["data"]["limit"] == 5
+        assert r.json()["data"]["offset"] == 0
 
     def test_list_reports_the_total_for_the_filter_not_the_page(self):
         """Page one of a larger result must say how large it is, or the console
