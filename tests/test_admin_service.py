@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.repositories.admin_repository import AdminRepository
+from app.repositories.pagination import Page
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
@@ -408,7 +409,7 @@ class TestReviewReport:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-46  list_reports (MD-51) — read the queue that UTC-35 acts from.
+# UTC-48  list_reports (MD-51) — read the queue that UTC-35 acts from.
 #
 # The gap this closes: review_report takes a report_id, and until now nothing
 # returned one. The queue was writable (MD-39) and decidable (MD-40) but never
@@ -419,36 +420,43 @@ class TestReviewReport:
 # before any I/O. The last one is what keeps a typo a 400 rather than a failed
 # enum cast surfacing as a 500.
 # --------------------------------------------------------------------------- #
-def _queue_service(rows=None):
-    """AdminService whose report repo returns `rows` from list_reports."""
+def _queue_service(rows=None, total=None):
+    """AdminService whose report repo returns `rows` from list_reports.
+
+    `total` defaults to the page length, which is the uninteresting case; pass
+    it explicitly to model a page taken out of a deeper queue.
+    """
     report_repo = MagicMock(spec=ReportRepository)
-    report_repo.list_reports.return_value = rows if rows is not None else []
+    rows = rows if rows is not None else []
+    report_repo.list_reports.return_value = Page(
+        rows, len(rows) if total is None else total,
+    )
     return AdminService(_repo(), report_repo=report_repo), report_repo
 
 
 class TestListReports:
     def test_forwards_a_valid_filter_and_pagination(self):
-        """UTC-46-TC-01 — the normalised bucket and the page reach the port."""
+        """UTC-48-TC-01 — the normalised bucket and the page reach the port."""
         service, report_repo = _queue_service(rows=[{"id": "r1"}])
         out = run(service.list_reports(status="Pending", limit=5, offset=10))
-        assert out == [{"id": "r1"}]
+        assert out.items == [{"id": "r1"}]
         report_repo.list_reports.assert_called_once_with("Pending", 5, 10)
 
     def test_absent_filter_passes_none_meaning_every_status(self):
-        """UTC-46-TC-02 — None must survive to the adapter so the predicate is
+        """UTC-48-TC-02 — None must survive to the adapter so the predicate is
         skipped entirely. A string here would silently show one bucket only."""
         service, report_repo = _queue_service()
         run(service.list_reports())
         assert report_repo.list_reports.call_args.args[0] is None
 
     def test_filter_is_normalised_before_the_query(self):
-        """UTC-46-TC-03 — casing from a UI must not reach the enum verbatim."""
+        """UTC-48-TC-03 — casing from a UI must not reach the enum verbatim."""
         service, report_repo = _queue_service()
         run(service.list_reports(status="  reviewed_penalty  "))
         assert report_repo.list_reports.call_args.args[0] == "Reviewed_Penalty"
 
     def test_unknown_filter_raises_before_any_io(self):
-        """UTC-46-TC-04 — the 400 happens at the edge; the port is never
+        """UTC-48-TC-04 — the 400 happens at the edge; the port is never
         touched, so a bad filter cannot become a database error."""
         service, report_repo = _queue_service()
         with pytest.raises(ValueError):
@@ -456,13 +464,28 @@ class TestListReports:
         report_repo.list_reports.assert_not_called()
 
     def test_empty_queue_returns_empty_list(self):
-        """UTC-46-TC-05 — nothing to moderate is a success, not a 404."""
+        """UTC-48-TC-05 — nothing to moderate is a success, not a 404."""
         service, _ = _queue_service(rows=[])
-        assert run(service.list_reports()) == []
+        out = run(service.list_reports())
+        assert out.items == [] and out.total == 0
 
     def test_db_error_propagates(self):
-        """UTC-46-TC-06 — a repo failure surfaces (API maps it to 500)."""
+        """UTC-48-TC-06 — a repo failure surfaces (API maps it to 500)."""
         service, report_repo = _queue_service()
         report_repo.list_reports.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(service.list_reports())
+
+    def test_total_is_the_queue_depth_not_the_page_length(self):
+        """UTC-48-TC-07 — a page out of a deeper queue reports the depth.
+
+        The moderator's question is "how much is waiting", and a full page
+        answers it only by accident. The count is the filter's count, so a
+        20-row page of 143 pending flags says 143.
+        """
+        service, _ = _queue_service(
+            rows=[{"id": f"r{i}"} for i in range(20)], total=143,
+        )
+        out = run(service.list_reports(status="Pending", limit=20, offset=0))
+        assert len(out.items) == 20
+        assert out.total == 143

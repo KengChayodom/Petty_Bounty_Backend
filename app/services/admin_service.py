@@ -39,6 +39,7 @@ import logging
 from typing import Optional
 
 from app.repositories.admin_repository import AdminRepository
+from app.repositories.pagination import Page
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
@@ -177,9 +178,12 @@ class AdminService:
     # ---------------------------------------------------------------- #
     async def list_reports(
         self, status: str | None = None, limit: int = 20, offset: int = 0,
-    ) -> list[dict]:
+    ) -> Page:
         """
         Paginated read of the `reports` moderation queue, newest first.
+
+        Returns the page AND the queue depth for the filter, which is what a
+        moderator actually wants to know and what numbered pages are drawn from.
 
         Exists because `review_report` (MD-40) takes a `report_id` an
         administrator previously had no way to obtain: the flag queue could be
@@ -198,7 +202,7 @@ class AdminService:
 
     def _list_reports_sync(
         self, status: str | None, limit: int, offset: int,
-    ) -> list[dict]:
+    ) -> Page:
         try:
             return self.report_repo.list_reports(status, limit, offset)
         except Exception as e:
