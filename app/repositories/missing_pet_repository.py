@@ -6,6 +6,8 @@ vendor type crosses the boundary; methods are sync (supabase-py blocks).
 """
 from typing import Protocol
 
+from app.repositories.pagination import Page
+
 
 class MissingPetNotSaved(ValueError):
     """Raised by the adapter when the missing_pets INSERT returns no row.
@@ -27,8 +29,8 @@ class MissingPetRepository(Protocol):
         self, pet_ids: list[str]
     ) -> list[dict]: ...
     def list_all(
-        self, status: str | None, limit: int, offset: int
-    ) -> list[dict]: ...
+        self, status: str | None, species: str | None, limit: int, offset: int
+    ) -> Page: ...
     def remove(self, pet_id: str) -> dict | None: ...
     def close_sightings_for_pet(self, pet_id: str) -> int: ...
     def update_missing_pet_owned(

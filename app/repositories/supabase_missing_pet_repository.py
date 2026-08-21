@@ -5,6 +5,7 @@ The ONLY place the missing-pet flow touches supabase-py. Each method is the
 the `.data` unwrap and the one INSERT error-translation (MissingPetNotSaved).
 """
 from app.repositories.missing_pet_repository import MissingPetNotSaved
+from app.repositories.pagination import Page
 
 
 class SupabaseMissingPetRepository:
@@ -83,17 +84,28 @@ class SupabaseMissingPetRepository:
         return links
 
     def list_all(
-        self, status: str | None, limit: int, offset: int
-    ) -> list[dict]:
+        self, status: str | None, species: str | None, limit: int, offset: int
+    ) -> Page:
         # MD-37 admin browse. The status filter is applied ONLY when supplied —
         # `None` must mean "every status", not "status IS NULL".
-        query = self._db.table("missing_pets").select("*")
+        #
+        # count="exact" makes PostgREST report the number of rows matching the
+        # filter in the Content-Range header, so the page and its total arrive
+        # in ONE round trip rather than a list query plus a count query.
+        query = self._db.table("missing_pets").select("*", count="exact")
         if status is not None:
             query = query.eq("status", status)
+        if species is not None:
+            query = query.eq("species", species)
         res = (query.order("created_at", desc=True)
                     .range(offset, offset + limit - 1)
                     .execute())
-        return res.data or []
+        rows = res.data or []
+        # `count` is None if the header is missing (an old PostgREST, or a
+        # double that does not model it). Falling back to the page length keeps
+        # the caller working; it only understates the total.
+        total = getattr(res, "count", None)
+        return Page(rows, len(rows) if total is None else total)
 
     def remove(self, pet_id: str) -> dict | None:
         # MD-38 / SRS-66: UD-14's postcondition is "removed from the database
