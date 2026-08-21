@@ -27,6 +27,7 @@ from app.api import reports as reports_api
 from app.core.auth import get_current_user_id, require_admin
 from app.core.database import get_supabase_client
 from app.repositories.missing_pet_repository import MissingPetRepository
+from app.repositories.pagination import Page
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
@@ -126,22 +127,39 @@ class TestFlagSightingRoute:
 class TestListReportsRoute:
     def test_forwards_filter_and_pagination(self):
         service = _service()
-        service.list_reports = _async_returns([{"id": "r1"}])
+        service.list_reports = _async_returns(Page([{"id": "r1"}], 1))
         r = _admin_client(service).get(
             "/admin/reports?status=Pending&limit=5&offset=10"
         )
         assert r.status_code == 200
-        assert r.json()["data"] == [{"id": "r1"}]
+        assert r.json()["data"] == {
+            "items": [{"id": "r1"}], "total": 1, "limit": 5, "offset": 10,
+        }
+
+    def test_page_carries_the_queue_depth_and_the_window_asked_for(self):
+        """The console draws numbered pages from `total`, and echoing back the
+        limit/offset it was served keeps a stale response from being read as a
+        page it is not."""
+        service = _service()
+        service.list_reports = _async_returns(
+            Page([{"id": f"r{i}"} for i in range(5)], 143),
+        )
+        body = _admin_client(service).get(
+            "/admin/reports?limit=5&offset=20"
+        ).json()["data"]
+        assert body["total"] == 143
+        assert body["limit"] == 5 and body["offset"] == 20
+        assert len(body["items"]) == 5
 
     def test_static_path_is_not_captured_by_the_report_id_route(self):
         """`/admin/reports` must reach the listing, not be read as a
         report_id by `PATCH /admin/reports/{report_id}`. They differ by method
         so ordering is safe, but a later GET /reports/{id} would break this."""
         service = _service()
-        service.list_reports = _async_returns([])
+        service.list_reports = _async_returns(Page([], 0))
         r = _admin_client(service).get("/admin/reports")
         assert r.status_code == 200
-        assert r.json()["data"] == []
+        assert r.json()["data"]["items"] == []
 
     @pytest.mark.parametrize("exc,expected", [
         (ValueError("status must be one of"), 400),
@@ -159,7 +177,7 @@ class TestListReportsRoute:
     ])
     def test_pagination_bounds_are_enforced_by_the_route(self, query):
         service = _service()
-        service.list_reports = _async_returns([])
+        service.list_reports = _async_returns(Page([], 0))
         assert _admin_client(service).get(
             f"/admin/reports{query}"
         ).status_code == 422
@@ -253,16 +271,31 @@ class TestReviewReportRoute:
 class TestAdminMissingPetRoutes:
     def test_list_forwards_the_status_filter(self):
         repo = MagicMock(spec=MissingPetRepository)
-        repo.list_all.return_value = [{"id": "p1"}]
+        repo.list_all.return_value = Page([{"id": "p1", "sighting_count": 0}], 1)
         r = _admin_client(pet_repo=repo).get(
-            "/admin/missing-pets?status=Searching&limit=5&offset=10"
+            "/admin/missing-pets?status=Searching&limit=5&offset=0"
         )
         assert r.status_code == 200
-        repo.list_all.assert_called_once_with("Searching", 5, 10)
+        repo.list_all.assert_called_once_with("Searching", None, limit=10000, offset=0)
+        assert r.json()["data"]["items"][0]["id"] == "p1"
+        assert r.json()["data"]["limit"] == 5
+        assert r.json()["data"]["offset"] == 0
+
+    def test_list_reports_the_total_for_the_filter_not_the_page(self):
+        """Page one of a larger result must say how large it is, or the console
+        has no way to know pages two and three exist."""
+        repo = MagicMock(spec=MissingPetRepository)
+        repo.list_all.return_value = Page(
+            [{"id": f"p{i}"} for i in range(20)], 57,
+        )
+        body = _admin_client(pet_repo=repo).get(
+            "/admin/missing-pets?limit=20&offset=0"
+        ).json()["data"]
+        assert body["total"] == 57 and len(body["items"]) == 20
 
     def test_list_without_filter_passes_none(self):
         repo = MagicMock(spec=MissingPetRepository)
-        repo.list_all.return_value = []
+        repo.list_all.return_value = Page([], 0)
         r = _admin_client(pet_repo=repo).get("/admin/missing-pets")
         assert r.status_code == 200
         assert repo.list_all.call_args.args[0] is None
