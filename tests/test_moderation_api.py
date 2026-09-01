@@ -4,7 +4,7 @@ Route tests for the Progress-II moderation endpoints.
 The service tests above verify the decisions; these verify the one thing that
 lives only in the route layer and that every MD entry states explicitly — the
 HTTP status each domain outcome becomes. Getting 404 vs 409 vs 400 wrong is
-invisible to a service test and very visible to the admin panel (UD-14 [E1]
+invisible to a service test and very visible to the admin panel (UD-16 [E1]
 needs 409 to show "already moderated" instead of a generic failure).
 
 Seams: the auth dependencies (`get_current_user_id` / `require_admin`) and the

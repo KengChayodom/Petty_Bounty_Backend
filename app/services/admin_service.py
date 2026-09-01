@@ -212,7 +212,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-40 — review a moderation flag (SRS-68, UD-14)
+    # MD-40 — review a moderation flag (SRS-68, UD-16)
     # ---------------------------------------------------------------- #
     async def review_report(
         self,
@@ -275,7 +275,7 @@ class AdminService:
 
         current = flag.get("status") or "Pending"
         if current != "Pending":
-            # UD-14 [E1] Action Conflict — do not overwrite the first decision.
+            # UD-16 [E1] Action Conflict — do not overwrite the first decision.
             raise ReportAlreadyModerated(report_id, current)
 
         sighting_dismissed = False

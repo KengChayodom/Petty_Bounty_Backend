@@ -37,6 +37,7 @@ BYID_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_get_missing_pet_b
 SM_UNIQUE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_sighting_matches_unique.sql"
 PENALTY_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_20_flag_penalty_not_ban.sql"
 OWNER_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_21_owner_driven_resolution.sql"
+EXPIRES_AT_MIGRATION = BACKEND_ROOT / "migrations" / "2026-09-01_post_expires_at.sql"
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -77,6 +78,7 @@ def _apply_schema(dsn: str) -> None:
         PENALTY_MIGRATION,           # renames Reviewed_Ban, adds score_penalties + RPC
         SQL_DIR / "20_live_match_rpc.sql",
         OWNER_MIGRATION,             # owner_decide_sighting + the de-fanged resolve
+        EXPIRES_AT_MIGRATION,        # missing_pets.expires_at; read paths filter it
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:
@@ -147,9 +149,11 @@ class Seeder:
     def missing_pet(self, *, owner_id=None, species="Cat", status="Searching",
                     lat=13.7563, lon=100.5018, vector=None, bounty=1000,
                     pet_name="Pet", age_days=0) -> uuid.UUID:
-        # age_days backdates created_at: posts expire out of the match RPC and
-        # the map query after 7 days (2026-08-21 migration), and that rule is
-        # only testable if a test can seed a post older than "now".
+        # age_days backdates BOTH created_at and expires_at: the match RPC and
+        # the map query filter `expires_at > NOW()` (2026-09-01 migration), and
+        # expires_at is granted 7 days from filing, so a post seeded age_days
+        # old expires 7 - age_days from now — negative once age_days > 7. This
+        # is the only way a test can seed a post that has already aged out.
         pid = uuid.uuid4()
         vec = vec_literal(vector) if vector is not None else None
         with self.conn.cursor() as cur:
@@ -157,13 +161,14 @@ class Seeder:
                 "INSERT INTO missing_pets "
                 "(id, owner_id, pet_name, species, characteristics, bounty_amount, "
                 " last_seen_location, last_seen_time, image_url, feature_vector, status, "
-                " created_at) "
+                " created_at, expires_at) "
                 "VALUES (%s, %s, %s, %s::pet_species, '{}'::jsonb, %s, "
                 "        ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, NOW(), "
                 "        %s, %s::vector, %s::pet_status, "
-                "        NOW() - make_interval(days => %s))",
+                "        NOW() - make_interval(days => %s), "
+                "        NOW() - make_interval(days => %s) + INTERVAL '7 days')",
                 (pid, owner_id, pet_name, species, bounty, lon, lat,
-                 "http://img/pet.jpg", vec, status, age_days),
+                 "http://img/pet.jpg", vec, status, age_days, age_days),
             )
         return pid
 

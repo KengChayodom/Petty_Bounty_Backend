@@ -138,7 +138,7 @@ class PetService:
         repo: MissingPetRepository, owner_id: str
     ) -> list[dict]:
         """
-        MD-34 / SRS-65 — the owner's "My Reports" list.
+        MD-34 / SRS-63 — the owner's "My Reports" list.
 
         Scoping is structural: the port takes an owner_id, so there is no query
         shape here that could return another owner's reports. Newest-first
@@ -183,7 +183,7 @@ class PetService:
         species: str | None = None,
     ) -> Page:
         """
-        MD-37 / SRS-64 — platform-wide browse for moderation.
+        MD-37 / SRS-66 — platform-wide browse for moderation.
 
         `status=None` means "every status", not "status IS NULL"; the filter is
         applied by the repository only when one was supplied. The admin gate
@@ -256,7 +256,7 @@ class PetService:
         repo: MissingPetRepository, pet_id: str, admin_id: str
     ) -> dict:
         """
-        MD-38 / SRS-66 — remove a report that violates the guidelines.
+        MD-38 / SRS-65 — remove a report that violates the guidelines.
 
         UD-14's postcondition is "removed from the database and the search map",
         so this is a hard delete rather than a hidden flag. The moderation

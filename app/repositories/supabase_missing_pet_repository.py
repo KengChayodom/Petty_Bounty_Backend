@@ -108,7 +108,7 @@ class SupabaseMissingPetRepository:
         return Page(rows, len(rows) if total is None else total)
 
     def remove(self, pet_id: str) -> dict | None:
-        # MD-38 / SRS-66: UD-14's postcondition is "removed from the database
+        # MD-38 / SRS-65: UD-14's postcondition is "removed from the database
         # and the search map", so this is a hard DELETE (FKs cascade to
         # sighting_matches). Returns the deleted row, or None when nothing
         # matched — the caller turns that into 404.

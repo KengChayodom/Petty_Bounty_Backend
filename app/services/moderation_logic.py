@@ -3,10 +3,10 @@
 The specs and the database disagree on spelling, and this module is where that
 is reconciled once instead of at every call site:
 
-  * UD-14 writes the flag reasons as "Spam", "Not_a_pet", "Inappropriate_image"
+  * UD-15 writes the flag reasons as "Spam", "Not_a_pet", "Inappropriate_image"
     while MD-39 writes them as "Spam", "Not a pet", "Inappropriate image". The
     `report_reason` enum only accepts the underscored form.
-  * MD-40 writes the decisions as "Dismissed" and "Reviewed and banned", UD-14
+  * MD-40 writes the decisions as "Dismissed" and "Reviewed and banned", UD-16
     as "Dismiss Flag" / "Uphold and Ban User"; the `report_status` enum only
     accepts "Dismissed" and "Reviewed_Penalty". The ban wording is kept as an
     accepted *alias* — the old spec text and the Vue admin build still use it —

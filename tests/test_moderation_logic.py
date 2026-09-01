@@ -24,7 +24,7 @@ from app.services.moderation_logic import (
 
 class TestNormalizeFlagReason:
     @pytest.mark.parametrize("supplied,expected", [
-        # the enum spellings (UD-14's Input Specification)
+        # the enum spellings (UD-16's Input Specification)
         ("Spam", "Spam"),
         ("Not_a_pet", "Not_a_pet"),
         ("Inappropriate_image", "Inappropriate_image"),
@@ -48,11 +48,11 @@ class TestNormalizeFlagReason:
 class TestNormalizeFlagDecision:
     @pytest.mark.parametrize("supplied,expected", [
         ("Dismissed", DECISION_DISMISS),
-        ("Dismiss Flag", DECISION_DISMISS),          # UD-14's Action wording
+        ("Dismiss Flag", DECISION_DISMISS),          # UD-16's Action wording
         ("Reviewed_Penalty", DECISION_UPHOLD),
         ("Reviewed_Ban", DECISION_UPHOLD),           # pre-2026-08-20 enum name
         ("Reviewed and banned", DECISION_UPHOLD),    # MD-40's wording
-        ("Uphold and Ban User", DECISION_UPHOLD),    # UD-14's Action wording
+        ("Uphold and Ban User", DECISION_UPHOLD),    # UD-16's Action wording
         ("Uphold and Penalise User", DECISION_UPHOLD),
     ])
     def test_maps_onto_the_enum(self, supplied, expected):

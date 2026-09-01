@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class ReportService:
-    """Write side of the moderation queue (SRS-67, UD-14)."""
+    """Write side of the moderation queue (SRS-67, UD-15)."""
 
     def __init__(
         self, repo: ReportRepository, sighting_repo: SightingRepository

@@ -78,7 +78,7 @@ async def update_my_profile(
     """Edit the caller's own profile — username (MD-41) and/or photo (MD-42).
 
     Caller identity comes solely from the JWT; the update is self-scoped to that
-    row in `users`. Validation mirrors UD-15: a blank username -> 400, an
+    row in `users`. Validation mirrors UD-17: a blank username -> 400, an
     unsupported photo format -> 400, a missing profile row -> 404.
     """
     patch: dict = {}

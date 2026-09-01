@@ -264,7 +264,7 @@ class TestGetSightingsForPet:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-29  get_my_missing_pets (MD-34, SRS-65) — the owner's "My Reports" list.
+# UTC-29  get_my_missing_pets (MD-34, SRS-63) — the owner's "My Reports" list.
 #
 # As-built note: the test plan writes this as `PetService(pet_repo)
 # .get_my_missing_pets(owner_id)`, but PetService is a static-method service
@@ -374,7 +374,7 @@ class TestGetMyMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-31  list_all_missing_pets (MD-37, SRS-64) — admin browse.
+# UTC-31  list_all_missing_pets (MD-37, SRS-66) — admin browse.
 #
 # The distinction that matters is "no filter" vs "filter on None": passing
 # status=None must mean every status, never `status IS NULL`. Both TC-01 and
@@ -440,7 +440,7 @@ class TestListAllMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-32  remove_missing_pet (MD-38, SRS-66) — admin removal.
+# UTC-32  remove_missing_pet (MD-38, SRS-65) — admin removal.
 #
 # UD-14's postcondition is "removed from the database and the search map", so
 # the deletion is real; "no row deleted" is the not-found signal, which the

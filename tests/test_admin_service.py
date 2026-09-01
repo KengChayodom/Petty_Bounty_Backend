@@ -179,7 +179,7 @@ class TestReviewReport:
         report_repo.update_report.assert_not_called()
 
     def test_already_moderated_raises_conflict(self):
-        """UTC-35-TC-02 — UD-14 [E1]: a decided flag is never overwritten."""
+        """UTC-35-TC-02 — UD-16 [E1]: a decided flag is never overwritten."""
         service, _, report_repo = _moderation_service(
             flag={"id": "r1", "sighting_id": "s1", "status": "Dismissed"},
         )

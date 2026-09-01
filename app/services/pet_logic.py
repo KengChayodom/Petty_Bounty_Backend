@@ -1,12 +1,12 @@
 """Pure, I/O-free logic extracted from PetService."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from app.utils.postgis import create_postgis_point
 
 # The four states a report is shown in (three decided 2026-08-17, EXPIRED added
 # 2026-08-21). They are DERIVED, never stored: `missing_pets.status` says only
-# whether the search is still open, and the rest comes from the report's age and
-# from counting the sightings recorded against the pet.
+# whether the search is still open, and the rest comes from the report's own
+# `expires_at` and from counting the sightings recorded against the pet.
 #
 # Deriving rather than storing is what keeps the badge honest when a sighting
 # goes away — an admin dismissing a bogus sighting drops the count, so a report
@@ -27,16 +27,12 @@ POST_STATUS_RESCUED = "Rescued"    # the owner closed the search
 # resolve RPC; 'Found' is what the owner's End Search button writes.
 _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
 
-# SRS-91: a post stops reaching new hunters 7 days after it is filed. The rule
-# lives in SQL as a predicate on the two read paths (`match_missing_pets` and
-# `get_nearby_missing_pets` both carry `mp.created_at > NOW() - INTERVAL
-# '7 days'`), never as a stored state — this database has no pg_cron and a
-# stored expiry would have to be recomputed everywhere a post can change.
-#
-# The badge has to answer the same question, so the constant is duplicated here
-# rather than queried. Keep the two in step: if the interval moves in SQL it
-# moves here, or an owner is shown ACTIVE SEARCH for a post no hunter can see.
-POST_LIFETIME_DAYS = 7
+# SRS-85: a post stops reaching new hunters once it passes its `expires_at`.
+# The read paths (`match_missing_pets`, `get_nearby_missing_pets`) filter
+# `mp.expires_at > NOW()`, and the badge below reads the same column — one
+# source of truth, no duplicated interval. The seven-day grant lives only in
+# the column DEFAULT (`NOW() + INTERVAL '7 days'`); extending one post is a
+# plain UPDATE of `expires_at` and needs no change here.
 
 # `sighting_matches.owner_status` — the owner's verdict on one AI match. A
 # rejected match is not a sighting of this pet.
@@ -45,7 +41,11 @@ OWNER_REJECTED = "Rejected"
 
 def build_missing_pet_payload(pet, *, feature_vector) -> dict:
     """The missing_pets INSERT payload — location as a PostGIS POINT, status
-    seeded to 'Searching', and the CLIP feature vector attached."""
+    seeded to 'Searching', and the CLIP feature vector attached.
+
+    `expires_at` is deliberately absent: the column DEFAULT (`NOW() + INTERVAL
+    '7 days'`) is the single source of the seven-day grant (SRS-85).
+    """
     location_point = create_postgis_point(pet.latitude, pet.longitude)
     return {
         "owner_id": pet.owner_id,
@@ -64,7 +64,7 @@ def build_missing_pet_payload(pet, *, feature_vector) -> dict:
 
 
 def _parse_timestamp(value) -> datetime | None:
-    """`created_at` as an aware datetime, or None if it cannot be read.
+    """A timestamp as an aware datetime, or None if it cannot be read.
 
     PostgREST hands timestamps back as ISO strings, but a caller that already
     holds a row from a driver may have a real datetime — accept both. A value
@@ -92,31 +92,31 @@ def _parse_timestamp(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def is_post_expired(created_at, *, now: datetime | None = None) -> bool:
-    """Whether a report has passed its 7-day lifetime (SRS-91).
+def is_post_expired(expires_at, *, now: datetime | None = None) -> bool:
+    """Whether a report has passed its `expires_at` (SRS-85).
 
-    The comparison mirrors the SQL predicate exactly. SQL keeps a post while
-    `created_at > NOW() - INTERVAL '7 days'`, so expiry is the negation of that
-    and the boundary instant itself counts as expired — a post the database has
-    already stopped matching must never still read ACTIVE SEARCH.
+    The comparison mirrors the SQL predicate exactly. The read paths keep a post
+    while `expires_at > NOW()`, so expiry is the negation of that and the
+    boundary instant itself counts as expired — a post the database has already
+    stopped matching must never still read ACTIVE SEARCH.
 
-    An unreadable or absent `created_at` is NOT expired. The alternative is to
+    An unreadable or absent `expires_at` is NOT expired. The alternative is to
     grey out a live search because one timestamp arrived in a shape we did not
     expect, and hiding a findable pet is the worse failure.
     """
-    created = _parse_timestamp(created_at)
-    if created is None:
+    expires = _parse_timestamp(expires_at)
+    if expires is None:
         return False
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         reference = reference.replace(tzinfo=timezone.utc)
-    return created <= reference - timedelta(days=POST_LIFETIME_DAYS)
+    return expires <= reference
 
 
 def derive_post_status(
     pet_status: str | None,
     sighting_count: int,
-    created_at=None,
+    expires_at=None,
     *,
     now: datetime | None = None,
 ) -> str:
@@ -129,7 +129,7 @@ def derive_post_status(
       was recovered after the post expired. Those sightings are how it got home,
       not an argument that it is still missing.
     * **SPOTTED** — at least one sighting has come in.
-    * **EXPIRED** — nothing has come in AND the post has aged out (SRS-91): it
+    * **EXPIRED** — nothing has come in AND the post has aged out (SRS-85): it
       no longer matches new sightings and is off the map, so the owner is
       waiting on something that can no longer happen.
     * **PENDING** — nothing has come in yet, but the post is still live.
@@ -141,7 +141,7 @@ def derive_post_status(
     whole story only when there is no story: the post aged out with nothing to
     show for it.
 
-    `created_at` is optional: a caller that does not have it gets the pre-expiry
+    `expires_at` is optional: a caller that does not have it gets the pre-expiry
     behaviour rather than a wrong answer.
     """
     if (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES:
@@ -149,7 +149,7 @@ def derive_post_status(
     if sighting_count > 0:
         return POST_STATUS_SPOTTED
     return (
-        POST_STATUS_EXPIRED if is_post_expired(created_at, now=now)
+        POST_STATUS_EXPIRED if is_post_expired(expires_at, now=now)
         else POST_STATUS_PENDING
     )
 
@@ -193,8 +193,8 @@ def attach_sighting_counts(
     the ordinary state of a fresh report rather than an error.
 
     `now` is sampled once for the whole list rather than per row, so a list
-    being rendered across the 7-day boundary cannot show two reports filed in
-    the same second on opposite sides of it.
+    being rendered across an `expires_at` boundary cannot show two reports
+    expiring in the same second on opposite sides of it.
 
     Returns new dicts; the input rows are not mutated.
     """
@@ -206,7 +206,7 @@ def attach_sighting_counts(
             **pet,
             "sighting_count": count,
             "post_status": derive_post_status(
-                pet.get("status"), count, pet.get("created_at"), now=reference,
+                pet.get("status"), count, pet.get("expires_at"), now=reference,
             ),
         })
     return enriched

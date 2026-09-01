@@ -130,13 +130,15 @@ def test_raises_for_unknown_sighting_id(conn):
 
 
 # --------------------------------------------------------------------------- #
-# Posts expire after 7 days (2026-08-21)
+# Posts drop out once expires_at passes (2026-08-21 rule; expires_at column
+# 2026-09-01) — the seeder's age_days backdates expires_at as well as created_at.
 # --------------------------------------------------------------------------- #
 def test_a_post_older_than_seven_days_stops_matching(conn, seed):
-    """Expiry is a predicate on this query rather than a scheduled job that
-    flips a status: there is no pg_cron here, and a stored expiry would have to
-    be recomputed everywhere a post can change. The row stays exactly as it is
-    — its owner can still work the queue it already collected."""
+    """Expiry is a predicate on this query (`mp.expires_at > NOW()`) rather than
+    a scheduled job that flips a status: there is no pg_cron here, and a stored
+    'is_expired' flag would have to be recomputed everywhere a post can change.
+    The row stays exactly as it is — its owner can still work the queue it
+    already collected, and can still be granted more time via expires_at."""
     owner = seed.user()
     fresh = seed.missing_pet(owner_id=owner, species="Cat",
                              vector=unit_vec(0), age_days=6)
