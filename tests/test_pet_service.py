@@ -27,7 +27,7 @@ from app.repositories.missing_pet_repository import (
 )
 from app.repositories.pagination import Page
 from app.schemas.missing_pets import MissingPetCreate
-from app.services.ai_service import AIManager
+from app.services.ai_service import AIManager, EmbedResult
 from app.services.pet_service import PetService
 
 
@@ -98,23 +98,22 @@ def _make_pet(**overrides):
     return MissingPetCreate(**data)
 
 
-def _patch_ai(monkeypatch, *, isolate_return, vector):
-    """Mock the AIManager pipeline at the class boundary.
-    download/yolo/clip are awaited; isolate_subject is synchronous."""
-    monkeypatch.setattr(AIManager, "download_image", AsyncMock(return_value="SRC_IMG"))
-    monkeypatch.setattr(AIManager, "run_yolo_seg", AsyncMock(return_value="YOLO_RESULTS"))
-    monkeypatch.setattr(AIManager, "isolate_subject", MagicMock(return_value=isolate_return))
-    monkeypatch.setattr(AIManager, "clip_encode", AsyncMock(return_value=vector))
+def _patch_embed(monkeypatch, *, result):
+    """Mock the one shared embed pipeline at the class boundary. The individual
+    download → YOLO → isolate → CLIP wiring is asserted in test_ai_service.py."""
+    monkeypatch.setattr(
+        AIManager, "embed_image", AsyncMock(return_value=result)
+    )
 
 
 class TestRegisterMissingPet:
     def test_success_inserts_isolated_vector(self, monkeypatch):
         vector = [0.1, 0.2, 0.3]
-        _patch_ai(
-            monkeypatch,
-            isolate_return=("CROP_IMG", "Dog", 0.9, [1.0, 2.0, 3.0, 4.0]),
-            vector=vector,
-        )
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=vector, species="Dog", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+            used_full_frame=False,
+        ))
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
@@ -127,31 +126,29 @@ class TestRegisterMissingPet:
         assert payload["status"] == "Searching"
         assert payload["species"] == "Dog"
         assert payload["last_seen_location"] == "POINT(100.5018 13.7563)"
-        # isolate constrained to the user-confirmed species; CLIP encodes the crop
-        AIManager.isolate_subject.assert_called_once_with(
-            "SRC_IMG", "YOLO_RESULTS", expected_species="Dog"
+        # embed is constrained to the user-confirmed species
+        AIManager.embed_image.assert_awaited_once_with(
+            "https://img.example/pet.jpg", expected_species="Dog"
         )
-        AIManager.clip_encode.assert_awaited_once_with("CROP_IMG")
 
     def test_yolo_miss_falls_back_to_full_frame(self, monkeypatch):
         vector = [0.4, 0.5]
-        _patch_ai(monkeypatch, isolate_return=None, vector=vector)
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=vector, used_full_frame=True,
+        ))
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
         run(PetService.register_missing_pet(repo, _make_pet()))
 
-        # On a YOLO miss CLIP encodes the original downloaded frame, and that
-        # vector is what gets inserted.
-        AIManager.clip_encode.assert_awaited_once_with("SRC_IMG")
+        # On a YOLO miss embed_image full-frame-encodes; that vector is inserted.
         assert repo.insert_missing_pet.call_args.args[0]["feature_vector"] == vector
 
     def test_insert_returning_no_row_raises_valueerror(self, monkeypatch):
-        _patch_ai(
-            monkeypatch,
-            isolate_return=("CROP_IMG", "Dog", 0.9, [1.0, 2.0, 3.0, 4.0]),
-            vector=[0.1],
-        )
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=[0.1], species="Dog", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+        ))
         repo = _repo()
         # The adapter raises MissingPetNotSaved (a ValueError) on an empty insert.
         repo.insert_missing_pet.side_effect = MissingPetNotSaved({})
@@ -163,7 +160,7 @@ class TestRegisterMissingPet:
         # A NON-ValueError from the AI pipeline is caught and re-raised as a
         # generic Exception carrying context (distinct from the ValueError path).
         monkeypatch.setattr(
-            AIManager, "download_image", AsyncMock(side_effect=RuntimeError("net")))
+            AIManager, "embed_image", AsyncMock(side_effect=RuntimeError("net")))
         repo = _repo()
 
         with pytest.raises(Exception) as ei:

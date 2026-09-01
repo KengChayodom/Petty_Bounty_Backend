@@ -27,7 +27,7 @@ class SupabaseReportRepository:
     def list_reports(
         self, status: str | None, limit: int, offset: int
     ) -> Page:
-        # MD-51 moderation queue, mirroring the missing-pet browse of MD-37:
+        # MD-47 moderation queue, mirroring the missing-pet browse of MD-37:
         # the status predicate is applied ONLY when one was supplied, so `None`
         # means every status rather than "status IS NULL". Newest first,
         # because a queue is worked from the most recent complaint backwards.

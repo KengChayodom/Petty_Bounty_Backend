@@ -11,7 +11,7 @@
 --   `mp.expires_at > NOW()`
 -- and the badge reads the column directly. The seven-day grant lives once, in
 -- this column's DEFAULT. Extending one post (the paid-extension feature planned
--- for the next progress round, MD-56) becomes a plain
+-- for the next progress round, MD-52) becomes a plain
 --   `UPDATE missing_pets SET expires_at = ... WHERE id = ...`
 -- with no schema change and no touch to the read paths.
 --

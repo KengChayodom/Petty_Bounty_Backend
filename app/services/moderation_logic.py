@@ -104,7 +104,7 @@ def normalize_flag_status_filter(status: str | None) -> str | None:
 
     `None` passes through and means "every status", not "a status which is
     null" — the same convention MD-37's missing-pet browse uses. Any other
-    unrecognised value raises ValueError (MD-51's 400) rather than reaching
+    unrecognised value raises ValueError (MD-47's 400) rather than reaching
     PostgREST and failing there as an enum cast, which would surface as a 500.
     Matching is case-insensitive but exact on the enum names; the decision
     aliases are deliberately not accepted, because "uphold" is an instruction

@@ -174,7 +174,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-51 — read the moderation flag queue (the listing MD-40 acts from)
+    # MD-47 — read the moderation flag queue (the listing MD-40 acts from)
     # ---------------------------------------------------------------- #
     async def list_reports(
         self, status: str | None = None, limit: int = 20, offset: int = 0,

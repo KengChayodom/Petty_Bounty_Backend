@@ -409,7 +409,7 @@ class TestReviewReport:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-48  list_reports (MD-51) — read the queue that UTC-35 acts from.
+# UTC-48  list_reports (MD-47) — read the queue that UTC-35 acts from.
 #
 # The gap this closes: review_report takes a report_id, and until now nothing
 # returned one. The queue was writable (MD-39) and decidable (MD-40) but never

@@ -122,7 +122,7 @@ class TestFlagSightingRoute:
 
 
 # --------------------------------------------------------------------------- #
-# GET /admin/reports — MD-51
+# GET /admin/reports — MD-47
 # --------------------------------------------------------------------------- #
 class TestListReportsRoute:
     def test_forwards_filter_and_pagination(self):

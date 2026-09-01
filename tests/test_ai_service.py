@@ -15,13 +15,13 @@ exercise is the plumbing and the pure logic:
 """
 import asyncio
 import io
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 from PIL import Image
 
 from app.services import ai_service
-from app.services.ai_service import AIManager
+from app.services.ai_service import AIManager, EmbedResult
 
 
 def run(coro):
@@ -253,6 +253,74 @@ class TestPipelineDelegation:
 
         assert out == [1.0, 2.0, 3.0]              # ndarray -> list
         model.encode.assert_called_once_with("ISOLATED_IMG")
+
+
+# --------------------------------------------------------------------------- #
+# embed_image — the ONE shared pipeline (download → YOLO → isolate → CLIP →
+# colour). This is where the wiring assertions live now that the four callers
+# (register_missing_pet, analyze, cache-miss, seed) delegate here.
+# --------------------------------------------------------------------------- #
+class TestEmbedImage:
+    @staticmethod
+    def _patch(monkeypatch, *, iso, vector, color="#ABCDEF"):
+        monkeypatch.setattr(AIManager, "download_image", AsyncMock(return_value="SRC_IMG"))
+        monkeypatch.setattr(AIManager, "run_yolo_seg", AsyncMock(return_value="YOLO_RESULTS"))
+        monkeypatch.setattr(AIManager, "isolate_subject", MagicMock(return_value=iso))
+        monkeypatch.setattr(AIManager, "clip_encode", AsyncMock(return_value=vector))
+        monkeypatch.setattr(AIManager, "extract_coat_color_hex", MagicMock(return_value=color))
+
+    def test_hit_encodes_the_isolated_crop_and_fills_every_field(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            iso=("CROP_IMG", "Dog", 0.9, [1.0, 2.0, 3.0, 4.0]),
+            vector=[0.1, 0.2],
+        )
+
+        r = run(AIManager.embed_image("http://img/x.jpg",
+                                      expected_species="Dog", with_color=True))
+
+        assert r == EmbedResult(
+            feature_vector=[0.1, 0.2], species="Dog", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+            primary_color_hex="#ABCDEF", used_full_frame=False,
+        )
+        AIManager.download_image.assert_awaited_once_with("http://img/x.jpg")
+        AIManager.run_yolo_seg.assert_awaited_once_with("SRC_IMG")
+        AIManager.isolate_subject.assert_called_once_with(
+            "SRC_IMG", "YOLO_RESULTS", expected_species="Dog"
+        )
+        AIManager.clip_encode.assert_awaited_once_with("CROP_IMG")  # the crop, not SRC_IMG
+
+    def test_miss_encodes_the_full_frame_and_flags_it(self, monkeypatch):
+        self._patch(monkeypatch, iso=None, vector=[0.3, 0.4])
+
+        r = run(AIManager.embed_image("http://img/x.jpg", with_color=True))
+
+        assert r.feature_vector == [0.3, 0.4]
+        assert r.used_full_frame is True
+        assert r.species is None and r.bbox is None and r.isolated_image is None
+        assert r.primary_color_hex is None                 # skipped on the fallback
+        AIManager.clip_encode.assert_awaited_once_with("SRC_IMG")  # full frame
+        AIManager.extract_coat_color_hex.assert_not_called()
+
+    def test_without_color_skips_the_colour_pass(self, monkeypatch):
+        self._patch(monkeypatch, iso=("CROP_IMG", "Cat", 0.7, [0, 0, 1, 1]),
+                    vector=[0.5])
+
+        r = run(AIManager.embed_image("http://img/x.jpg"))  # with_color defaults False
+
+        assert r.primary_color_hex is None
+        AIManager.extract_coat_color_hex.assert_not_called()
+
+    def test_no_species_constraint_when_expected_is_none(self, monkeypatch):
+        self._patch(monkeypatch, iso=("CROP_IMG", "Cat", 0.7, [0, 0, 1, 1]),
+                    vector=[0.5])
+
+        run(AIManager.embed_image("http://img/x.jpg"))
+
+        AIManager.isolate_subject.assert_called_once_with(
+            "SRC_IMG", "YOLO_RESULTS", expected_species=None
+        )
 
 
 # --------------------------------------------------------------------------- #

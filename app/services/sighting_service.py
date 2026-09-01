@@ -66,65 +66,49 @@ class SightingService:
         self.repo = repo
         self.ai = ai_manager
 
-    async def analyze_sighting_image(self, image_url: str, conf: float = 0.25):
+    async def analyze_sighting_image(self, image_url: str):
         """
-        Heavy step: download → YOLO-seg → mask-isolate → CLIP encode.
-        Caches the full pipeline result keyed by image_url so the
-        follow-up POST /sightings/ doesn't repeat any of it.
+        Heavy step: the shared `AIManager.embed_image` pipeline (download →
+        YOLO-seg → mask-isolate → CLIP encode → coat colour). Caches the full
+        result keyed by image_url so the follow-up POST /sightings/ doesn't
+        repeat any of it.
 
         Returns the same shape as before — `{species, confidence, bbox}` —
         so the Flutter verification screen contract is unchanged.
         """
         try:
-            image = await self.ai.download_image(str(image_url))
-            results = await self.ai.run_yolo_seg(image, conf=conf)
-            # Off-thread like run_yolo_seg / clip_encode above it: this is a
-            # full-frame numpy pass (mask resize, background blackout, np.where
-            # over every pixel), and on the event loop it stalls every other
-            # request in the process, not just this one.
-            iso = await asyncio.to_thread(self.ai.isolate_subject, image, results)
-            if iso is None:
+            embedding = await self.ai.embed_image(str(image_url), with_color=True)
+            if embedding.used_full_frame:
+                # No cat/dog/bird found: the verify screen asks the hunter to
+                # retake the photo, so nothing is cached and no row can be saved.
                 return {
                     "status": "not_found",
-                    "message": "No target animals detected."
+                    "message": "No target animals detected.",
                 }
-
-            isolated_image, species, confidence, bbox = iso
-
-            # Pre-compute CLIP NOW. This is the entire optimisation —
-            # POST /sightings/ doesn't have to do CLIP, it just reads
-            # the vector out of the cache.
-            feature_vector = await self.ai.clip_encode(isolated_image)
-            # Coat colour off the SAME isolated crop (safe: iso is not None here,
-            # so the crop has a black background to strip). None for a near-black
-            # subject → matching falls back to CLIP-only for this sighting.
-            # np.median sorts, so this is the pricier of the two numpy passes.
-            primary_color_hex = await asyncio.to_thread(
-                self.ai.extract_coat_color_hex, isolated_image
-            )
 
             cache_key = str(image_url)
             AnalyzeCache.set(cache_key, {
-                "isolated_image": isolated_image,
-                "species": species,
-                "bbox": bbox,
-                "confidence": confidence,
-                "feature_vector": feature_vector,
-                "primary_color_hex": primary_color_hex,
+                "isolated_image": embedding.isolated_image,
+                "species": embedding.species,
+                "bbox": embedding.bbox,
+                "confidence": embedding.confidence,
+                "feature_vector": embedding.feature_vector,
+                "primary_color_hex": embedding.primary_color_hex,
             })
             # WARNING level so URL drift / worker isolation is easy to spot
             # — pair with the HIT/MISS logs in process_and_save_sighting.
             logger.warning(
-                "Analyze-cache SET key=%r (species=%s)", cache_key, species
+                "Analyze-cache SET key=%r (species=%s)",
+                cache_key, embedding.species,
             )
 
             return {
                 "status": "success",
-                "message": f"AI detected a {species}.",
+                "message": f"AI detected a {embedding.species}.",
                 "data": {
-                    "species": species,
-                    "confidence": round(confidence * 100, 2),
-                    "bbox": bbox,
+                    "species": embedding.species,
+                    "confidence": round(embedding.confidence * 100, 2),
+                    "bbox": embedding.bbox,
                 }
             }
         except Exception as e:
@@ -178,27 +162,17 @@ class SightingService:
                     "Analyze-cache MISS key=%r — re-running YOLO + CLIP",
                     image_url,
                 )
-                image = await self.ai.download_image(image_url)
-                results = await self.ai.run_yolo_seg(image)
-                # Forgiving re-run: don't constrain by user-confirmed species.
-                # The user may have corrected YOLO's guess; the vector should
-                # still represent whatever animal pixels YOLO actually finds
-                # in the photo. The user's species choice is honoured at the
-                # INSERT step regardless.
-                iso = await asyncio.to_thread(
-                    self.ai.isolate_subject, image, results
-                )
-                if iso is None:
+                # Forgiving re-run: no `expected_species`, so the vector
+                # represents whatever animal pixels YOLO finds even if the user
+                # corrected YOLO's guess (the user's choice is honoured at the
+                # INSERT step). `with_color` keeps a cache-miss save colour-aware.
+                embedding = await self.ai.embed_image(image_url, with_color=True)
+                if embedding.used_full_frame:
                     raise ValueError(
                         "No target animal detected in image during re-run."
                     )
-                isolated, _, _, _ = iso
-                vector = await self.ai.clip_encode(isolated)
-                # Re-extract colour too so a cache-miss save is colour-aware,
-                # not silently CLIP-only.
-                primary_color_hex = await asyncio.to_thread(
-                    self.ai.extract_coat_color_hex, isolated
-                )
+                vector = embedding.feature_vector
+                primary_color_hex = embedding.primary_color_hex
 
             sighting_row = await asyncio.to_thread(
                 self._insert_sighting_row,
