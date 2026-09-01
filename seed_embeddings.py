@@ -11,17 +11,10 @@ Why it must match:
     seed embeddings carry background that sighting embeddings don't, and
     similarity scores degrade.
 
-Pipeline per pet (delegates to AIManager so there's a single source of truth):
-    1. Download image bytes via requests (sync, this is a CLI script).
-    2. Decode to PIL RGB.
-    3. AIManager.get_yolo().predict(source=pil_image) — runs YOLO-seg on the
-       in-memory image, no second HTTP fetch.
-    4. AIManager.isolate_subject(pil_image, results, expected_species=...)
-       returns the masked + tight-cropped subject.
-    5. AIManager.get_clip().encode(isolated) — same CLIP model the live path uses.
-
-Set USE_ONNX_INFERENCE=1 (default) for the ONNX-backed models — see
-scripts/export_onnx.py for the one-time export step.
+Pipeline per pet: `AIManager.embed_image(image_url, expected_species=...)` — the
+exact same download → YOLO-seg → mask-isolate → CLIP-encode path the live
+`/sightings/analyze` and `register_missing_pet` run, so seed vectors and
+sighting vectors are comparable by construction.
 
 Usage:
     # Default: only pets whose feature_vector is currently NULL.
@@ -30,13 +23,11 @@ Usage:
     # Re-vector every pet (use after changing the encoding pipeline).
     python seed_embeddings.py --all
 """
-import io
+import asyncio
 import os
 import sys
 
-import requests
 from dotenv import load_dotenv
-from PIL import Image
 from supabase import create_client, Client
 
 from app.services.ai_service import AIManager
@@ -57,35 +48,21 @@ AIManager.get_clip()
 print("✅ Models loaded.")
 
 
-def download_pil(url: str) -> Image.Image:
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    return Image.open(io.BytesIO(resp.content)).convert("RGB")
-
-
 def embed_pet(image_url: str, species: str) -> tuple[list[float] | None, bool]:
     """
     Return (vector, used_full_frame).
 
     used_full_frame is True when YOLO found no matching subject and we fell
     back to encoding the full image — useful for the run summary.
+
+    Runs the async `AIManager.embed_image` via `asyncio.run` (one loop per pet,
+    fine for a CLI backfill) so this script and the live path share one pipeline.
     """
     try:
-        image = download_pil(image_url)
-        yolo = AIManager.get_yolo()
-        results = yolo.predict(source=image, conf=0.25, verbose=False)
-        iso = AIManager.isolate_subject(image, results, expected_species=species)
-
-        if iso is None:
-            # Fall back to full frame so we still produce a vector for the row.
-            target = image
-            used_full_frame = True
-        else:
-            target = iso[0]
-            used_full_frame = False
-
-        clip = AIManager.get_clip()
-        return clip.encode(target).tolist(), used_full_frame
+        result = asyncio.run(
+            AIManager.embed_image(image_url, expected_species=species)
+        )
+        return result.feature_vector, result.used_full_frame
     except Exception as e:
         print(f"   ❌ embed failed for {image_url}: {e}")
         return None, False

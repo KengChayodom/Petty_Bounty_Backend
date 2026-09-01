@@ -55,33 +55,23 @@ class PetService:
             Exception: If feature extraction or the DB operation fails
         """
         try:
-            # Step 1: AI Feature Extraction — same mask-isolated pipeline the
-            # live /sightings/ POST uses, so missing_pets and sightings vectors
-            # remain directly comparable for pgvector similarity.
+            # Feature extraction runs the one shared embed pipeline
+            # (AIManager.embed_image), so missing_pets and sightings vectors
+            # stay directly comparable for pgvector similarity.
             logger.info(f"Extracting features from pet image: {pet.image_url}")
-            image = await AIManager.download_image(str(pet.image_url))
-            results = await AIManager.run_yolo_seg(image)
-            # Off-thread for the same reason sighting_service does it: a
-            # full-frame numpy pass on the event loop stalls every concurrent
-            # request in the process.
-            iso = await asyncio.to_thread(
-                AIManager.isolate_subject,
-                image, results, expected_species=pet.species,
+            embedding = await AIManager.embed_image(
+                str(pet.image_url), expected_species=pet.species,
             )
-            if iso is None:
+            if embedding.used_full_frame:
                 logger.warning(
-                    "YOLO found no %s in %s; falling back to full-frame embedding",
+                    "YOLO found no %s in %s; used a full-frame embedding",
                     pet.species, pet.image_url,
                 )
-                target_image = image
-            else:
-                target_image, _, _, _ = iso
-            feature_vector = await AIManager.clip_encode(target_image)
 
-            # Step 2 + 3: build the payload (PostGIS point + status) ...
-            data = build_missing_pet_payload(pet, feature_vector=feature_vector)
+            data = build_missing_pet_payload(
+                pet, feature_vector=embedding.feature_vector,
+            )
 
-            # Step 4: Insert via the repository
             logger.info(f"Registering missing pet: {pet.pet_name}")
             created = await asyncio.to_thread(repo.insert_missing_pet, data)
             logger.info(f"Missing pet registered successfully: {created['id']}")

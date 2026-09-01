@@ -1,9 +1,20 @@
 # Test Audit — `tests/test_sighting_service.py`
 
+> **Stale as of 2026-09-01.** The four-step embed pipeline (download → YOLO →
+> isolate → CLIP) was consolidated into `AIManager.embed_image`, so the cache-HIT
+> / cache-MISS / analyze tests now mock **`ai.embed_image` alone** (one AsyncMock
+> returning an `EmbedResult`) instead of the four individual coroutines. The
+> download → YOLO → isolate → CLIP wiring assertions moved to
+> `tests/test_ai_service.py::TestEmbedImage`. The line numbers, `_make_ai`
+> description, and the "MISS-2 asserts only the isolate call" note below all
+> predate that change. The *substance* of the audit — mutation coverage,
+> effect-vs-call assertions, the async-mock reasoning — still applies, now at the
+> `embed_image` boundary.
+
 **Scope:** `TestProcessAndSaveCacheHit`, `TestProcessAndSaveCacheMiss`, and the
 shared `wire_save_path` helper (the cache-MISS round and the HIT tests it
 refactored).
-**Date:** 2026-06-04 (updated after fixes #1–#2)
+**Date:** 2026-06-04 (updated after fixes #1–#2; superseded note added 2026-09-01)
 **Verdict:** substance is sound — **12/12 targeted mutations now killed**
 (was 10/12; M8 & M9 closed by fixes #1–#2), async-mock wiring verified
 mechanically, no vacuous assertions. Three reachable branch gaps remain

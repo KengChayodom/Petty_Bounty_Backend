@@ -47,6 +47,7 @@ from app.repositories.sighting_repository import (
 )
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
+from app.services.ai_service import EmbedResult
 from app.services.sighting_service import SightingService
 
 POINT = "POINT(100.5018 13.7563)"
@@ -260,9 +261,7 @@ class TestProcessAndSaveCacheHit:
         assert insert_payload["feature_vector"] == cached_vector
         assert insert_payload["sighting_status"] == "Pending_Analysis"
         # cache hit must short-circuit the heavy pipeline entirely
-        ai.download_image.assert_not_called()
-        ai.run_yolo_seg.assert_not_called()
-        ai.clip_encode.assert_not_called()
+        ai.embed_image.assert_not_called()
 
     def test_strips_feature_vector_from_response_and_returns_matches(self):
         cached_vector = [0.5, 0.6]
@@ -401,9 +400,7 @@ class TestSaveTargetedSighting:
         repo.match_missing_pets.assert_not_called()
         assert result["matches"] == []
         # never reaches the AI pipeline
-        ai.download_image.assert_not_called()
-        ai.run_yolo_seg.assert_not_called()
-        ai.clip_encode.assert_not_called()
+        ai.embed_image.assert_not_called()
         # feature_vector stripped from the returned row
         assert "feature_vector" not in result["sighting"]
 
@@ -428,20 +425,15 @@ class TestSaveTargetedSighting:
 
 # --------------------------------------------------------------------------- #
 # process_and_save_sighting — the cache-MISS branch (TTL expiry / worker restart)
-# must transparently re-run the heavy pipeline. download_image / run_yolo_seg /
-# clip_encode are awaited (AsyncMock); isolate_subject stays a plain MagicMock
-# because the service dispatches it through asyncio.to_thread, which calls it
-# synchronously on a worker thread — an AsyncMock here would NOT be awaited.
+# must transparently re-run the heavy pipeline via the shared `embed_image`
+# (AsyncMock). The individual download → YOLO → isolate → CLIP wiring inside
+# embed_image is asserted in test_ai_service.py.
 # --------------------------------------------------------------------------- #
 class TestProcessAndSaveCacheMiss:
     @staticmethod
-    def _make_ai(*, recomputed_vector, isolate_return,
-                 image="PIL_IMAGE", results="YOLO_RESULTS"):
+    def _make_ai(*, embed_result):
         ai = MagicMock()
-        ai.download_image = AsyncMock(return_value=image)
-        ai.run_yolo_seg = AsyncMock(return_value=results)
-        ai.isolate_subject = MagicMock(return_value=isolate_return)  # run via to_thread
-        ai.clip_encode = AsyncMock(return_value=recomputed_vector)
+        ai.embed_image = AsyncMock(return_value=embed_result)
         return ai
 
     def test_miss_reruns_pipeline_and_inserts_recomputed_vector(self):
@@ -450,58 +442,61 @@ class TestProcessAndSaveCacheMiss:
         # No AnalyzeCache.set -> the autouse fixture leaves the cache empty -> MISS.
         repo = _repo()
         wire_save_path(repo, recomputed)
-        ai = self._make_ai(
-            recomputed_vector=recomputed,
+        ai = self._make_ai(embed_result=EmbedResult(
             # YOLO re-detects a Cat; the user said Dog. The vector follows YOLO,
             # the stored species must follow the user.
-            isolate_return=("ISOLATED_IMG", "Cat", 0.91, [0, 0, 10, 10]),
-        )
+            feature_vector=recomputed, species="Cat", confidence=0.91,
+            bbox=[0, 0, 10, 10], isolated_image="ISOLATED_IMG",
+            primary_color_hex="#AABBCC",
+        ))
         svc = SightingService(repo, ai_manager=ai)
 
         result = run(svc.process_and_save_sighting(sighting))
 
-        # full pipeline actually ran, in order, on the real inputs
-        ai.download_image.assert_awaited_once_with("https://img.example/sighting.jpg")
-        ai.run_yolo_seg.assert_awaited_once_with("PIL_IMAGE")
-        ai.clip_encode.assert_awaited_once_with("ISOLATED_IMG")  # the isolated frame, not the tuple
+        # the re-run went through the shared pipeline on the real URL
+        ai.embed_image.assert_awaited_once_with(
+            "https://img.example/sighting.jpg", with_color=True
+        )
 
         insert_payload = repo.insert_sighting.call_args.args[0]
         assert insert_payload["feature_vector"] == recomputed       # re-encoded, not cached
         assert insert_payload["detected_species"] == "Dog"          # user wins over YOLO's "Cat"
+        assert insert_payload["primary_color_hex"] == "#AABBCC"     # colour from the re-run
         assert "feature_vector" not in result["sighting"]           # still stripped from response
 
     def test_miss_isolate_runs_without_species_constraint(self):
-        # The "forgiving re-run" contract: isolate_subject is called on the raw
-        # YOLO results with NO expected_species, so the vector represents whatever
-        # animal pixels YOLO finds regardless of the user's species choice.
+        # The "forgiving re-run" contract: embed_image is called with NO
+        # expected_species, so the vector represents whatever animal pixels YOLO
+        # finds regardless of the user's species choice.
         recomputed = [0.1, 0.2]
         sighting = make_sighting(detected_species="Bird")
         repo = _repo()
         wire_save_path(repo, recomputed)
-        ai = self._make_ai(
-            recomputed_vector=recomputed,
-            isolate_return=("ISOLATED_IMG", "Dog", 0.8, [1, 2, 3, 4]),
-        )
+        ai = self._make_ai(embed_result=EmbedResult(
+            feature_vector=recomputed, species="Dog", confidence=0.8,
+            bbox=[1, 2, 3, 4], isolated_image="ISOLATED_IMG",
+        ))
         svc = SightingService(repo, ai_manager=ai)
 
         run(svc.process_and_save_sighting(sighting))
 
-        ai.isolate_subject.assert_called_once_with("PIL_IMAGE", "YOLO_RESULTS")
+        _, kwargs = ai.embed_image.call_args
+        assert "expected_species" not in kwargs
 
     def test_miss_yolo_finds_nothing_raises_and_skips_insert(self):
         # SRS-30: when no cat/dog/bird is detected the server refuses to save a
         # sighting (the UI surfaces "No target animal detected, please try again").
-        # isolate_subject returns None (YOLO miss) -> ValueError, no row written,
-        # and CLIP must not be invoked on a non-existent subject.
+        # embed_image reports used_full_frame -> ValueError, no row written.
         sighting = make_sighting()
         repo = _repo()
-        ai = self._make_ai(recomputed_vector=[0.0], isolate_return=None)
+        ai = self._make_ai(embed_result=EmbedResult(
+            feature_vector=[0.0], used_full_frame=True,
+        ))
         svc = SightingService(repo, ai_manager=ai)
 
         with pytest.raises(ValueError, match="No target animal detected"):
             run(svc.process_and_save_sighting(sighting))
 
-        ai.clip_encode.assert_not_awaited()
         repo.insert_sighting.assert_not_called()
 
 
@@ -628,25 +623,21 @@ class TestProcessAndSaveErrorFrames:
 # --------------------------------------------------------------------------- #
 class TestAnalyzeSightingImage:
     @staticmethod
-    def _make_ai(*, isolate_return, vector=None, download_exc=None,
-                 image="PIL_IMAGE", results="YOLO_RESULTS"):
+    def _make_ai(*, embed_result=None, embed_exc=None):
         ai = MagicMock()
-        if download_exc is not None:
-            ai.download_image = AsyncMock(side_effect=download_exc)
-        else:
-            ai.download_image = AsyncMock(return_value=image)
-        ai.run_yolo_seg = AsyncMock(return_value=results)
-        ai.isolate_subject = MagicMock(return_value=isolate_return)  # run via to_thread
-        ai.clip_encode = AsyncMock(return_value=vector)
+        ai.embed_image = (
+            AsyncMock(side_effect=embed_exc) if embed_exc is not None
+            else AsyncMock(return_value=embed_result)
+        )
         return ai
 
     def test_success_caches_and_returns_payload(self):
         url = "https://img.example/analyze.jpg"
         bbox = [1.0, 2.0, 3.0, 4.0]
-        ai = self._make_ai(
-            isolate_return=("ISOLATED_IMG", "Dog", 0.8825, bbox),
-            vector=[0.11, 0.22],
-        )
+        ai = self._make_ai(embed_result=EmbedResult(
+            feature_vector=[0.11, 0.22], species="Dog", confidence=0.8825,
+            bbox=bbox, isolated_image="ISOLATED_IMG", primary_color_hex="#123456",
+        ))
         svc = SightingService(_repo(), ai_manager=ai)
 
         out = run(svc.analyze_sighting_image(url))
@@ -655,6 +646,7 @@ class TestAnalyzeSightingImage:
         assert out["data"]["species"] == "Dog"
         assert out["data"]["confidence"] == 88.25      # round(0.8825 * 100, 2)
         assert out["data"]["bbox"] == bbox
+        ai.embed_image.assert_awaited_once_with(url, with_color=True)
 
         cached = AnalyzeCache.get(url)
         assert cached is not None
@@ -662,6 +654,7 @@ class TestAnalyzeSightingImage:
         assert cached["confidence"] == 0.8825          # raw, not the percentage
         assert cached["species"] == "Dog"
         assert cached["isolated_image"] == "ISOLATED_IMG"
+        assert cached["primary_color_hex"] == "#123456"
         # The full decoded source frame is deliberately NOT retained: nothing
         # reads it back, and at ~9.4 MB a photo it was the whole memory
         # footprint of this cache. See the ai_cache module docstring.
@@ -669,20 +662,19 @@ class TestAnalyzeSightingImage:
 
     def test_no_target_animal_returns_not_found_without_caching(self):
         url = "https://img.example/empty-scene.jpg"
-        ai = self._make_ai(isolate_return=None)
+        ai = self._make_ai(embed_result=EmbedResult(
+            feature_vector=[0.0], used_full_frame=True,
+        ))
         svc = SightingService(_repo(), ai_manager=ai)
 
         out = run(svc.analyze_sighting_image(url))
 
         assert out["status"] == "not_found"
         assert AnalyzeCache.get(url) is None
-        ai.clip_encode.assert_not_awaited()
 
     def test_pipeline_error_reraises_without_caching(self):
         url = "https://img.example/broken.jpg"
-        ai = self._make_ai(
-            isolate_return=None, download_exc=RuntimeError("download failed"),
-        )
+        ai = self._make_ai(embed_exc=RuntimeError("download failed"))
         svc = SightingService(_repo(), ai_manager=ai)
 
         with pytest.raises(RuntimeError):

@@ -189,7 +189,7 @@ async def list_reports(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-51 — browse the moderation flag queue.
+    MD-47 — browse the moderation flag queue.
 
     The listing `PATCH /admin/reports/{report_id}` acts from: without it an
     administrator can only review a flag whose identifier they already hold,
