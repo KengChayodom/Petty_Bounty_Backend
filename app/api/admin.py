@@ -114,7 +114,7 @@ async def list_all_missing_pets(
     repo: MissingPetRepository = Depends(get_missing_pet_repository),
     admin_id: str = Depends(require_admin),
 ):
-    """MD-37 / SRS-64 — browse every missing-pet report for moderation.
+    """MD-37 / SRS-66 — browse every missing-pet report for moderation.
 
     Returns `{items, total, limit, offset}`. `total` counts every report
     matching `status`, not just this page, so the console can draw numbered
@@ -156,7 +156,7 @@ async def remove_missing_pet(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-38 / SRS-66 — remove a report that violates the platform guidelines.
+    MD-38 / SRS-65 — remove a report that violates the platform guidelines.
 
     UD-14's postcondition is "removed from the database and the search map", so
     the row is deleted outright; the moderation action is recorded in the log.
@@ -228,11 +228,11 @@ async def review_report(
     MD-40 / SRS-68 — dismiss a flag, or uphold it and deduct the hunter's score.
 
     Upholding sets the flagged sighting to Dismissed and subtracts score from
-    the hunter who submitted it (UD-14 steps 4-5). **No account is banned or
+    the hunter who submitted it (UD-16 steps 4-5). **No account is banned or
     suspended** — that sanction was replaced by the deduction on 2026-08-20; see
     the `admin_service` module docstring for why. `penalty_points` overrides the
     per-reason default. A flag another admin has already decided returns 409
-    rather than being overwritten (UD-14 [E1]).
+    rather than being overwritten (UD-16 [E1]).
     """
     try:
         result = await service.review_report(

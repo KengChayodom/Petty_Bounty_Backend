@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.services.pet_logic import (
-    POST_LIFETIME_DAYS,
     POST_STATUS_EXPIRED,
     POST_STATUS_PENDING,
     POST_STATUS_RESCUED,
@@ -26,12 +25,13 @@ from app.services.pet_logic import (
     is_post_expired,
 )
 
-# A fixed "now" so the 7-day boundary is a value in the test, not the clock.
+# A fixed "now" so the boundary is a value in the test, not the clock. The
+# timestamps below are `expires_at` values (an absolute instant), not ages.
 NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=timezone.utc)
-FRESH = NOW - timedelta(days=1)
-JUST_INSIDE = NOW - timedelta(days=POST_LIFETIME_DAYS) + timedelta(seconds=1)
-ON_THE_BOUNDARY = NOW - timedelta(days=POST_LIFETIME_DAYS)
-LONG_EXPIRED = NOW - timedelta(days=30)
+FRESH = NOW + timedelta(days=1)                       # expires tomorrow — live
+JUST_INSIDE = NOW + timedelta(seconds=1)              # expires in 1s — still live
+ON_THE_BOUNDARY = NOW                                 # expires_at == now — out
+LONG_EXPIRED = NOW - timedelta(days=30)               # expired a month ago
 
 
 class TestDerivePostStatus:
@@ -70,27 +70,27 @@ class TestDerivePostStatus:
 
 
 class TestIsPostExpired:
-    """SRS-91. The predicate must agree with the SQL exactly, because the SQL
+    """SRS-85. The predicate must agree with the SQL exactly, because the SQL
     is what actually stops a post reaching hunters — disagreeing means the
     badge says one thing and the map does another."""
 
-    @pytest.mark.parametrize("created_at,expected", [
+    @pytest.mark.parametrize("expires_at,expected", [
         (FRESH, False),
         (JUST_INSIDE, False),
-        # SQL keeps a post while created_at > NOW() - INTERVAL '7 days', so the
-        # boundary instant itself is already out.
+        # The read paths keep a post while expires_at > NOW(), so the boundary
+        # instant itself is already out.
         (ON_THE_BOUNDARY, True),
         (LONG_EXPIRED, True),
     ])
-    def test_the_boundary(self, created_at, expected):
-        assert is_post_expired(created_at, now=NOW) is expected
+    def test_the_boundary(self, expires_at, expected):
+        assert is_post_expired(expires_at, now=NOW) is expected
 
     def test_reads_postgrest_iso_strings(self):
         """PostgREST hands timestamps back as strings, including the 'Z' form
         that fromisoformat rejected before Python 3.11."""
         assert is_post_expired(LONG_EXPIRED.isoformat(), now=NOW) is True
         assert is_post_expired("2026-07-01T00:00:00Z", now=NOW) is True
-        assert is_post_expired("2026-08-20T00:00:00Z", now=NOW) is False
+        assert is_post_expired("2026-09-01T00:00:00Z", now=NOW) is False
 
     def test_naive_timestamps_are_read_as_utc(self):
         """The column is `timestamp with time zone` written by NOW(), but a
@@ -189,9 +189,9 @@ class TestAttachSightingCounts:
 
     def test_expiry_is_attached_per_row(self):
         pets = [
-            {"id": "p1", "status": "Searching", "created_at": FRESH},
-            {"id": "p2", "status": "Searching", "created_at": LONG_EXPIRED},
-            {"id": "p3", "status": "Searching", "created_at": LONG_EXPIRED},
+            {"id": "p1", "status": "Searching", "expires_at": FRESH},
+            {"id": "p2", "status": "Searching", "expires_at": LONG_EXPIRED},
+            {"id": "p3", "status": "Searching", "expires_at": LONG_EXPIRED},
         ]
         out = attach_sighting_counts(pets, {"p3": 2}, now=NOW)
         assert [p["post_status"] for p in out] == [
@@ -199,10 +199,10 @@ class TestAttachSightingCounts:
         ]
 
     def test_now_is_sampled_once_for_the_whole_list(self):
-        """Two reports filed in the same second must not land on opposite sides
-        of the boundary because the clock ticked mid-loop."""
+        """Two reports expiring in the same second must not land on opposite
+        sides of the boundary because the clock ticked mid-loop."""
         pets = [
-            {"id": f"p{i}", "status": "Searching", "created_at": ON_THE_BOUNDARY}
+            {"id": f"p{i}", "status": "Searching", "expires_at": ON_THE_BOUNDARY}
             for i in range(3)
         ]
         out = attach_sighting_counts(pets, {}, now=NOW)

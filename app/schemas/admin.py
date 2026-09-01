@@ -55,7 +55,7 @@ class ReviewReportRequest(BaseModel):
     `decision` is a plain string rather than a Literal so an unrecognised value
     comes back as the 400 the spec calls for (raised by
     `moderation_logic.normalize_flag_decision`) instead of FastAPI's 422, and so
-    the UD-14 wording ("Dismiss Flag" / "Uphold and Ban User") is accepted
+    the UD-16 wording ("Dismiss Flag" / "Uphold and Ban User") is accepted
     alongside the enum values.
     """
 

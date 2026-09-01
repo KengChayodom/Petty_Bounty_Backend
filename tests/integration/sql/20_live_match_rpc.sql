@@ -10,8 +10,16 @@
 -- SQL file — sql-update.txt only defines a different 6-arg variant. CLAUDE.md
 -- documents that this overload was deployed directly to Supabase. The service
 -- calls it as rpc("match_missing_pets", {"p_sighting_id":…, "match_limit":…})
--- (sighting_service.py:234), so it is the function under test. Keep in sync
+-- (sighting_service.py), so it is the function under test. Keep in sync
 -- with the live DB; re-pull with pg_get_functiondef if the deployment changes.
+--
+-- SUPERSEDED IN THE HARNESS: the 2026_08_21 and 2026-09-01 migrations both
+-- CREATE OR REPLACE this same overload later in the apply order (see conftest),
+-- so the version actually exercised is the one from 2026-09-01 (it filters
+-- `mp.expires_at > NOW()` for SRS-85). This file is kept only as the pre-expiry
+-- historical baseline; it deliberately still has NO age predicate, because it
+-- is applied before the migration that adds `missing_pets.expires_at` and a
+-- plpgsql body referencing that column would fail to validate here.
 --
 -- NOTE the real behaviours this pins: (1) RAISES if the sighting's vector is
 -- NULL; (2) radius is HARDCODED at 10 000 m; (3) there is NO similarity

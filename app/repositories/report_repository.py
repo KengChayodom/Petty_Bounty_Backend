@@ -29,7 +29,7 @@ class ReportNotFound(ValueError):
 class ReportAlreadyModerated(ValueError):
     """The flag has already been dismissed or upheld — MD-40's 409.
 
-    UD-14 [E1] "Action Conflict": another admin got there first, so the second
+    UD-16 [E1] "Action Conflict": another admin got there first, so the second
     decision must not silently overwrite the first.
     """
 
