@@ -1,7 +1,7 @@
 """The moderation-flag aggregate's repository port (`public.reports`).
 
 A **flag** is one user's complaint that a sighting violates the platform
-guidelines (MD-39 terminology note). It is a row of `reports`, and it is never a
+guidelines (MD-43 terminology note). It is a row of `reports`, and it is never a
 missing-pet report — the word "report" means a missing pet everywhere else in
 this codebase.
 
@@ -10,7 +10,7 @@ Column-name note: the method spec calls the fields `report_reason` and
 2026-08-16) names them `reason` and `status`. The DB names win inside the
 adapter; the service works in domain terms.
 
-`ReportService.flag_sighting` (MD-39) and `AdminService.review_report` (MD-40)
+`ReportService.flag_sighting` (MD-43) and `AdminService.review_report` (MD-44)
 depend on this port; tests double it with MagicMock(spec=ReportRepository).
 """
 from typing import Protocol
@@ -19,7 +19,7 @@ from app.repositories.pagination import Page
 
 
 class ReportNotFound(ValueError):
-    """No `reports` row with that id — MD-40's 404."""
+    """No `reports` row with that id — MD-44's 404."""
 
     def __init__(self, report_id: str):
         super().__init__(f"Report {report_id} not found")
@@ -27,7 +27,7 @@ class ReportNotFound(ValueError):
 
 
 class ReportAlreadyModerated(ValueError):
-    """The flag has already been dismissed or upheld — MD-40's 409.
+    """The flag has already been dismissed or upheld — MD-44's 409.
 
     UD-16 [E1] "Action Conflict": another admin got there first, so the second
     decision must not silently overwrite the first.
@@ -43,7 +43,7 @@ class ReportAlreadyModerated(ValueError):
 
 
 class FlagTargetNotFound(ValueError):
-    """The sighting being flagged does not exist — MD-39's 404."""
+    """The sighting being flagged does not exist — MD-43's 404."""
 
     def __init__(self, sighting_id: str):
         super().__init__(f"Sighting {sighting_id} not found")

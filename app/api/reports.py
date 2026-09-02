@@ -1,4 +1,4 @@
-"""Moderation flags — a user reporting a sighting for review (MD-39, SRS-67).
+"""Moderation flags — a user reporting a sighting for review (MD-43, SRS-72).
 
 "Flag" is the term used throughout for a `reports` row, so it is never confused
 with a missing-pet report (see app/repositories/report_repository.py).

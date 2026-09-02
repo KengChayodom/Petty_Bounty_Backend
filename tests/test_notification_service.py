@@ -1,8 +1,8 @@
 """
-Unit tests for app/services/notification_service.send_to_users (UTC-10, MD-13, SRS-21).
+Unit tests for app/services/notification_service.send_to_users (UTC-10, MD-12, SRS-24).
 
-Progress-I SRS traceability: SRS-21 (a push is sent to nearby hunters — the
-multicast token/title/body/data assertions) and SRS-22 (owner exclusion is
+Progress-I SRS traceability: SRS-24 (a push is sent to nearby hunters — the
+multicast token/title/body/data assertions) and SRS-25 (owner exclusion is
 enforced upstream by get_nearby_hunters; see integration/test_get_nearby_hunters).
 
 Boundary rule (per db-testing-seams): the DB is reached only through the

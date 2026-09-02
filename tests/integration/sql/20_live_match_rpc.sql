@@ -16,7 +16,7 @@
 -- SUPERSEDED IN THE HARNESS: the 2026_08_21 and 2026-09-01 migrations both
 -- CREATE OR REPLACE this same overload later in the apply order (see conftest),
 -- so the version actually exercised is the one from 2026-09-01 (it filters
--- `mp.expires_at > NOW()` for SRS-85). This file is kept only as the pre-expiry
+-- `mp.expires_at > NOW()` for SRS-87). This file is kept only as the pre-expiry
 -- historical baseline; it deliberately still has NO age predicate, because it
 -- is applied before the migration that adds `missing_pets.expires_at` and a
 -- plpgsql body referencing that column would fail to validate here.

@@ -1,4 +1,4 @@
-"""Report service — a user flagging a sighting for moderator review (MD-39).
+"""Report service — a user flagging a sighting for moderator review (MD-43).
 
 "Flag" is deliberate terminology (see report_repository): a row of `reports` is
 one user's complaint about a *sighting*, never a missing-pet report.
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class ReportService:
-    """Write side of the moderation queue (SRS-67, UD-15)."""
+    """Write side of the moderation queue (SRS-72, UD-15)."""
 
     def __init__(
         self, repo: ReportRepository, sighting_repo: SightingRepository
@@ -33,7 +33,7 @@ class ReportService:
         self, sighting_id: str, reason: str, reporter_id: str
     ) -> dict:
         """
-        MD-39 / SRS-67 — record a flag against a sighting.
+        MD-43 / SRS-72 — record a flag against a sighting.
 
         The reason is validated BEFORE anything is read or written, so a bad
         reason costs no round-trip and can never reach the enum cast. The target

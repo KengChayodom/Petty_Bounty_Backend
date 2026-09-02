@@ -3,13 +3,13 @@ Unit tests for app/core/auth.py — the Feature #1 (Authentication) server-side
 trust boundary.
 
 Covered (per test_plan.md / test_traceability.md):
-  * UTC-01 _strip_bearer                  (MD-05, SRS-44)
-  * UTC-02 _resolve_user_id               (MD-07, SRS-44)
+  * UTC-01 _strip_bearer                  (MD-05, SRS-21)
+  * UTC-02 _resolve_user_id               (MD-07, SRS-21)
   * UTC-03 get_current_user_id            (MD-02, SRS-13) + auth-guard e2e
-  * UTC-04 get_current_user_id_optional   (MD-03, SRS-44)
-  * UTC-05 require_admin                  (MD-04, SRS-45)
+  * UTC-04 get_current_user_id_optional   (MD-03, SRS-21)
+  * UTC-05 require_admin                  (MD-04, SRS-22)
 
-SRS-44 = extract & validate the JWT to authorize requests; SRS-45 = role-based
+SRS-21 = extract & validate the JWT to authorize requests; SRS-22 = role-based
 access control restricting admin functions; SRS-13 = maintain the authenticated
 session.
 

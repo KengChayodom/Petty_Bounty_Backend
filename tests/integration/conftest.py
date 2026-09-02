@@ -38,6 +38,8 @@ SM_UNIQUE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_sighting_mat
 PENALTY_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_20_flag_penalty_not_ban.sql"
 OWNER_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_21_owner_driven_resolution.sql"
 EXPIRES_AT_MIGRATION = BACKEND_ROOT / "migrations" / "2026-09-01_post_expires_at.sql"
+ROLE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_role_assignment.sql"
+OWNER_DETAIL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_pet_owner_details.sql"
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -79,6 +81,8 @@ def _apply_schema(dsn: str) -> None:
         SQL_DIR / "20_live_match_rpc.sql",
         OWNER_MIGRATION,             # owner_decide_sighting + the de-fanged resolve
         EXPIRES_AT_MIGRATION,        # missing_pets.expires_at; read paths filter it
+        ROLE_MIGRATION,
+        OWNER_DETAIL_MIGRATION,              # role_changes + find_user_by_email + assign_user_role
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:

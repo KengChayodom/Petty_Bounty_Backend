@@ -27,7 +27,7 @@ POST_STATUS_RESCUED = "Rescued"    # the owner closed the search
 # resolve RPC; 'Found' is what the owner's End Search button writes.
 _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
 
-# SRS-85: a post stops reaching new hunters once it passes its `expires_at`.
+# SRS-87: a post stops reaching new hunters once it passes its `expires_at`.
 # The read paths (`match_missing_pets`, `get_nearby_missing_pets`) filter
 # `mp.expires_at > NOW()`, and the badge below reads the same column — one
 # source of truth, no duplicated interval. The seven-day grant lives only in
@@ -44,7 +44,7 @@ def build_missing_pet_payload(pet, *, feature_vector) -> dict:
     seeded to 'Searching', and the CLIP feature vector attached.
 
     `expires_at` is deliberately absent: the column DEFAULT (`NOW() + INTERVAL
-    '7 days'`) is the single source of the seven-day grant (SRS-85).
+    '7 days'`) is the single source of the seven-day grant (SRS-87).
     """
     location_point = create_postgis_point(pet.latitude, pet.longitude)
     return {
@@ -93,7 +93,7 @@ def _parse_timestamp(value) -> datetime | None:
 
 
 def is_post_expired(expires_at, *, now: datetime | None = None) -> bool:
-    """Whether a report has passed its `expires_at` (SRS-85).
+    """Whether a report has passed its `expires_at` (SRS-87).
 
     The comparison mirrors the SQL predicate exactly. The read paths keep a post
     while `expires_at > NOW()`, so expiry is the negation of that and the
@@ -129,7 +129,7 @@ def derive_post_status(
       was recovered after the post expired. Those sightings are how it got home,
       not an argument that it is still missing.
     * **SPOTTED** — at least one sighting has come in.
-    * **EXPIRED** — nothing has come in AND the post has aged out (SRS-85): it
+    * **EXPIRED** — nothing has come in AND the post has aged out (SRS-87): it
       no longer matches new sightings and is off the map, so the owner is
       waiting on something that can no longer happen.
     * **PENDING** — nothing has come in yet, but the post is still live.

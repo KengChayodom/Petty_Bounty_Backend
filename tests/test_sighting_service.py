@@ -14,22 +14,22 @@ the sighting_matches on-conflict/idempotency contract) are NOT asserted here —
 they belong to the adapter integration suite (TEST_PLAN §4 #5).
 
 Progress-I SRS traceability:
-  * SRS-30 — the server refuses to save when no cat/dog/bird is detected
+  * SRS-33 — the server refuses to save when no cat/dog/bird is detected
     (TestProcessAndSaveCacheMiss::test_miss_yolo_finds_nothing_raises_and_skips_insert).
-  * SRS-31 — the sighting save persists the USER-confirmed species + the cached
+  * SRS-34 — the sighting save persists the USER-confirmed species + the cached
     vector, returns the ranked matches (with their cosine similarity scores,
-    SRS-35), and links candidate pets via sighting_matches
+    SRS-38), and links candidate pets via sighting_matches
     (TestProcessAndSaveCacheHit::{test_persists_user_species_and_cached_vector_not_yolo,
     test_persists_matches_into_sighting_matches}, TestGetMatches, TestPersistMatches).
-  * SRS-50 — the TARGETED flow: the hunter reports one known pet straight to its
+  * SRS-49 — the TARGETED flow: the hunter reports one known pet straight to its
     owner (pet-detail "Report Sighting"). It stores initial_target_pet_id, skips
     the CLIP vector + match RPC, and goes through the dedicated
     save_targeted_sighting method (its own endpoint POST /sightings/targeted),
     NOT a skip_matching flag (TestSaveTargetedSighting).
-  * SRS-43 — the species-correction dropdown ("No" -> pick correct species) is a
+  * SRS-46 — the species-correction dropdown ("No" -> pick correct species) is a
     DISCOVERY re-submit: the client calls createSightingWithMatch, which goes
     through process_and_save_sighting (matching runs again with the corrected
-    species). It has no target pet, so it is distinct from SRS-50
+    species). It has no target pet, so it is distinct from SRS-49
     (TestProcessAndSaveCacheHit::test_persists_user_species_and_cached_vector_not_yolo).
 """
 import asyncio
@@ -316,7 +316,7 @@ class TestProcessAndSaveCacheHit:
 
 
 # --------------------------------------------------------------------------- #
-# save_targeted_sighting — the pet-detail TARGETED path (UTC-28, MD-33). The
+# save_targeted_sighting — the pet-detail TARGETED path (UTC-26, MD-36). The
 # hunter reports ONE known pet straight to its owner: no CLIP vector, no match
 # RPC, initial_target_pet_id set, matches always empty. Its own method + its
 # own endpoint (POST /sightings/targeted), NOT a skip_matching flag.
@@ -484,7 +484,7 @@ class TestProcessAndSaveCacheMiss:
         assert "expected_species" not in kwargs
 
     def test_miss_yolo_finds_nothing_raises_and_skips_insert(self):
-        # SRS-30: when no cat/dog/bird is detected the server refuses to save a
+        # SRS-33: when no cat/dog/bird is detected the server refuses to save a
         # sighting (the UI surfaces "No target animal detected, please try again").
         # embed_image reports used_full_frame -> ValueError, no row written.
         sighting = make_sighting()
@@ -615,7 +615,7 @@ class TestProcessAndSaveErrorFrames:
 
 
 # --------------------------------------------------------------------------- #
-# analyze_sighting_image (UTC-15, SRS-29/30) — the heavy first step. We test its
+# analyze_sighting_image (UTC-14, SRS-32/33) — the heavy first step. We test its
 # COORDINATION logic with a mocked AI manager + the real AnalyzeCache: the
 # success path returns the verify-screen payload and caches the full result; a
 # YOLO miss returns not_found without caching or encoding; a pipeline error
@@ -683,7 +683,7 @@ class TestAnalyzeSightingImage:
 
 
 # --------------------------------------------------------------------------- #
-# get_sighting_by_id (UTC-19) — single read with the internal feature vector
+# get_sighting_by_id (UTC-32) — single read with the internal feature vector
 # stripped; an unknown id returns None (not an error); a DB error re-raises.
 # --------------------------------------------------------------------------- #
 class TestGetSightingById:
