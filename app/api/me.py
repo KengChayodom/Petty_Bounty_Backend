@@ -18,7 +18,7 @@ from app.utils.postgis import create_postgis_point
 
 router = APIRouter(prefix="/me", tags=["Me"])
 
-# Object-Storage photo formats accepted for the profile picture (MD-42/SRS-70).
+# Object-Storage photo formats accepted for the profile picture (MD-47/SRS-75).
 _ALLOWED_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
@@ -59,14 +59,15 @@ async def update_my_location(
 
 
 class ProfileUpdateRequest(BaseModel):
-    """Profile edit payload (MD-41 username + MD-42 photo). Both fields are
+    """Profile edit payload (MD-46 username + MD-47 photo). Both fields are
     optional so the client can save either one alone or both together, but at
     least one must be present — an empty PATCH is rejected. `display_name`
-    carries the username (stored in the users.display_name column, SRS-69);
-    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-70).
+    carries the username (stored in the users.display_name column, SRS-74);
+    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-75).
     """
     display_name: str | None = None
     photo_url: str | None = None
+    phone: str | None = None
 
 
 @router.patch("", response_model=StandardResponse)
@@ -75,7 +76,7 @@ async def update_my_profile(
     repo: UserRepository = Depends(get_user_repository),
     user_id: str = Depends(get_current_user_id),
 ):
-    """Edit the caller's own profile — username (MD-41) and/or photo (MD-42).
+    """Edit the caller's own profile — username (MD-46) and/or photo (MD-47).
 
     Caller identity comes solely from the JWT; the update is self-scoped to that
     row in `users`. Validation mirrors UD-17: a blank username -> 400, an
@@ -99,6 +100,9 @@ async def update_my_profile(
                 detail="Unsupported file format. Please upload JPG, JPEG, or PNG.",
             )
         patch["profile_image_url"] = photo_url
+
+    if payload.phone is not None:
+        patch["phone"] = payload.phone.strip()
 
     if not patch:
         raise HTTPException(

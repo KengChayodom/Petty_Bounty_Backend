@@ -9,9 +9,9 @@ Python wrapper.
 
 All DB access goes through repository ports (app/repositories/); this service
 holds zero supabase-py calls. `AdminRepository` covers verification / timeline /
-resolution; flag review additionally needs the queue itself (`ReportRepository`),
-which is an optional constructor argument so the rest of this service keeps its
-one-argument construction.
+resolution; flag review additionally needs the queue itself (`ReportRepository`)
+and role assignment needs `UserRepository`. Both are optional constructor
+arguments so the rest of this service keeps its one-argument construction.
 
 **Scope of admin power (decided 2026-08-17, extended 2026-08-20, narrowed
 2026-08-21).** An administrator moderates by REMOVING things — dismissing a
@@ -33,6 +33,18 @@ confirming the rescue is what distributes the clue scores (see
 already closed. `verify_sighting` survives for the moderation half of the same
 column — an upheld flag writes 'Dismissed' — and nothing writes 'Verified' any
 more.
+
+**Role assignment (added 2026-09-02, MD-58 to MD-60).** The one thing here that
+does touch an account: an administrator may grant another account administrator
+access and withdraw it again. Read that against the paragraph above rather than
+as an exception to it. It changes what an account may do inside the CONSOLE,
+never whether the account may use the product, so it is access control and not a
+sanction, and neither reason for the 2026-08-21 withdrawal reaches it. The role
+written is the existing `user_role` enum, so no account-state column is invented;
+`require_admin` already re-reads that role on every request, so a withdrawal
+lands without the per-request check that made a ban expensive; and no appeal
+process is owed because nobody loses access to the product. There is still no
+way to list, filter, suspend, deactivate, or delete an account.
 """
 import asyncio
 import logging
@@ -45,12 +57,18 @@ from app.repositories.report_repository import (
     ReportNotFound,
     ReportRepository,
 )
+from app.repositories.user_repository import (
+    RoleAssignmentRefused,
+    UserAccountNotFound,
+    UserRepository,
+)
 from app.services.moderation_logic import (
     DECISION_UPHOLD,
     normalize_flag_decision,
     normalize_flag_status_filter,
     resolve_penalty_points,
 )
+from app.services.role_logic import ROLE_ADMIN, normalize_email, normalize_role
 from app.services.sighting_logic import strip_feature_vector
 
 logger = logging.getLogger(__name__)
@@ -63,9 +81,11 @@ class AdminService:
         self,
         repo: AdminRepository,
         report_repo: Optional[ReportRepository] = None,
+        user_repo: Optional[UserRepository] = None,
     ):
         self.repo = repo
         self.report_repo = report_repo
+        self.user_repo = user_repo
 
     async def verify_sighting(
         self, sighting_id: str, verification_status: str,
@@ -174,7 +194,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-47 — read the moderation flag queue (the listing MD-40 acts from)
+    # MD-52 — read the moderation flag queue (the listing MD-44 acts from)
     # ---------------------------------------------------------------- #
     async def list_reports(
         self, status: str | None = None, limit: int = 20, offset: int = 0,
@@ -185,7 +205,7 @@ class AdminService:
         Returns the page AND the queue depth for the filter, which is what a
         moderator actually wants to know and what numbered pages are drawn from.
 
-        Exists because `review_report` (MD-40) takes a `report_id` an
+        Exists because `review_report` (MD-44) takes a `report_id` an
         administrator previously had no way to obtain: the flag queue could be
         written to and decided on, but never enumerated.
 
@@ -212,7 +232,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-40 — review a moderation flag (SRS-68, UD-16)
+    # MD-44 — review a moderation flag (SRS-73, UD-16)
     # ---------------------------------------------------------------- #
     async def review_report(
         self,
@@ -349,3 +369,168 @@ class AdminService:
             reason=flag.get("reason"),
             penalised_by=admin_id,
         )
+
+    # ---------------------------------------------------------------- #
+    # MD-58 — resolve one account from its exact email address (SRS-94)
+    # ---------------------------------------------------------------- #
+    async def find_user_by_email(self, email: str) -> dict:
+        """
+        Return the one account holding this address: id, username, role.
+
+        Exists because MD-59 takes an account identifier that an administrator
+        has no way to obtain. They know their colleague's email address and
+        nothing else, the identifier being a value no person handles.
+
+        Deliberately one account or none, never a page. Returning a listing here
+        would rebuild the account browse struck on 2026-08-21 under a different
+        name, so the address is matched in full and a near miss is a 404 that
+        discloses nothing about the accounts that did not match.
+
+        The address is normalised **before** any I/O, so an obvious typo is a
+        400 at the edge and costs no round trip.
+
+        Raises:
+            ValueError: the address is missing or malformed (API -> 400).
+            UserAccountNotFound: no account holds it (API -> 404).
+        """
+        normalized = normalize_email(email)
+        return await asyncio.to_thread(self._find_user_by_email_sync, normalized)
+
+    def _find_user_by_email_sync(self, email: str) -> dict:
+        try:
+            row = self.user_repo.find_by_email(email)
+        except Exception as e:
+            logger.error("Error looking up an account by address: %s", e)
+            raise
+        if not row:
+            raise UserAccountNotFound(email)
+        return row
+
+    # ---------------------------------------------------------------- #
+    # MD-59 — grant or withdraw administrator access (SRS-95..98, UD-23)
+    # ---------------------------------------------------------------- #
+    async def assign_user_role(
+        self, target_user_id: str, role: str, admin_id: str,
+    ) -> dict:
+        """
+        Set one account's role, and record the change.
+
+        This is the only supported way `users.role` is written. Before it
+        existed an administrator could be created only by hand-editing the row,
+        and the console that reads the column had no screen that could set it.
+
+        **It grants and withdraws console access, and does nothing else to the
+        account.** Nobody is suspended, deactivated, or deleted; those were
+        struck on 2026-08-21 and stay struck (see the module docstring). An
+        account that is no longer an administrator is an ordinary account, which
+        is what every account starts as — so no appeal process is owed, which is
+        the reason this passes where suspension did not.
+
+        Withdrawal needs no session work: `require_admin` re-reads `users.role`
+        on every request and never trusts the role claimed by the token, so the
+        change takes effect on the affected account's next request with no
+        revocation list and no token lifetime to shorten (SRS-98).
+
+        Both refusals of SRS-96 are enforced inside the `assign_user_role`
+        procedure, not here. Evaluated in Python ahead of the write, the
+        administrator count is a read another transaction can invalidate before
+        the write lands, so two administrators withdrawing each other's access
+        at the same moment would each see the other and leave the console
+        unreachable. The self-demotion check below is a duplicate of the
+        procedure's, kept only so the commonest mistake costs no round trip and
+        reads as a sentence rather than a database error.
+
+        Assigning a role the account already holds is not an error: it comes
+        back `changed=False` with no audit row written, so a retried request
+        cannot pad the history.
+
+        Raises:
+            ValueError: role outside the `user_role` enum (API -> 400).
+            RoleAssignmentRefused: a guard of SRS-96 refused it (API -> 409).
+            UserAccountNotFound: no such account (API -> 404).
+        """
+        normalized = normalize_role(role)
+        if target_user_id == admin_id and normalized != ROLE_ADMIN:
+            raise RoleAssignmentRefused(
+                "You cannot withdraw your own administrator access. "
+                "Ask another administrator to do it."
+            )
+        return await asyncio.to_thread(
+            self._assign_user_role_sync, target_user_id, normalized, admin_id,
+        )
+
+    def _assign_user_role_sync(
+        self, target_user_id: str, role: str, admin_id: str,
+    ) -> dict:
+        try:
+            result = self.user_repo.assign_user_role(
+                target_user_id, role, admin_id,
+            )
+        except (RoleAssignmentRefused, UserAccountNotFound):
+            raise
+        except Exception as e:
+            logger.error(
+                "Error assigning role %s to account %s: %s",
+                role, target_user_id, e,
+            )
+            raise
+        logger.warning(
+            "Admin %s set account %s role %s -> %s (changed=%s)",
+            admin_id, target_user_id,
+            result.get("role_before"), result.get("role_after"),
+            result.get("changed"),
+        )
+        return result
+
+    # ---------------------------------------------------------------- #
+    # MD-60 — read the role-change history (SRS-97, the reading half)
+    # ---------------------------------------------------------------- #
+    async def list_role_changes(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        target_user_id: str | None = None,
+    ) -> Page:
+        """
+        Paginated read of `role_changes`, newest first, with the total.
+
+        Append-only: nothing in the design edits or deletes a row, so an
+        account's access history is complete for as long as the table is kept.
+
+        Behind the admin gate rather than shown to the affected user, because
+        the record names the administrator who acted — that is information about
+        the console, not about the account.
+        """
+        return await asyncio.to_thread(
+            self._list_role_changes_sync, limit, offset, target_user_id,
+        )
+
+    def _list_role_changes_sync(
+        self, limit: int, offset: int, target_user_id: str | None,
+    ) -> Page:
+        try:
+            return self.user_repo.list_role_changes(
+                limit, offset, target_user_id,
+            )
+        except Exception as e:
+            logger.error("Error listing role changes: %s", e)
+            raise
+
+    # ---------------------------------------------------------------- #
+    # List current administrators — the set is always small
+    # ---------------------------------------------------------------- #
+    async def list_admins(self) -> list[dict]:
+        """Every account currently holding the admin role.
+
+        Not paginated: the admin set is a handful of people by design — scaling
+        to hundreds would require rethinking the console's trust model, not just
+        adding a LIMIT. Returns id, display_name, role sorted by display_name.
+        """
+        return await asyncio.to_thread(self._list_admins_sync)
+
+    def _list_admins_sync(self) -> list[dict]:
+        try:
+            return self.user_repo.list_admins()
+        except Exception as e:
+            logger.error("Error listing administrators: %s", e)
+            raise

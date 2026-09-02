@@ -11,9 +11,9 @@ Seams: the auth dependencies (`get_current_user_id` / `require_admin`) and the
 repository ports, swapped through FastAPI dependency_overrides — the same
 pattern as tests/test_me_profile_api.py.
 
-`POST /reports`   — MD-39: 400 bad reason, 404 unknown sighting, 500 failure
-`PATCH /admin/reports/{id}` — MD-40: 400 / 404 / 409 / 500
-`DELETE /admin/missing-pets/{id}` — MD-38: 404 / 500
+`POST /reports`   — MD-43: 400 bad reason, 404 unknown sighting, 500 failure
+`PATCH /admin/reports/{id}` — MD-44: 400 / 404 / 409 / 500
+`DELETE /admin/missing-pets/{id}` — MD-42: 404 / 500
 """
 from unittest.mock import MagicMock
 
@@ -78,7 +78,7 @@ def _async_returns(value):
 
 
 # --------------------------------------------------------------------------- #
-# POST /reports — MD-39
+# POST /reports — MD-43
 # --------------------------------------------------------------------------- #
 class TestFlagSightingRoute:
     def test_bad_reason_yields_400(self):
@@ -122,7 +122,7 @@ class TestFlagSightingRoute:
 
 
 # --------------------------------------------------------------------------- #
-# GET /admin/reports — MD-47
+# GET /admin/reports — MD-52
 # --------------------------------------------------------------------------- #
 class TestListReportsRoute:
     def test_forwards_filter_and_pagination(self):
@@ -184,7 +184,7 @@ class TestListReportsRoute:
 
 
 # --------------------------------------------------------------------------- #
-# PATCH /admin/reports/{report_id} — MD-40
+# PATCH /admin/reports/{report_id} — MD-44
 # --------------------------------------------------------------------------- #
 class TestReviewReportRoute:
     @pytest.mark.parametrize("exc,expected", [
@@ -266,7 +266,7 @@ class TestReviewReportRoute:
 
 
 # --------------------------------------------------------------------------- #
-# GET/DELETE /admin/missing-pets — MD-37, MD-38
+# GET/DELETE /admin/missing-pets — MD-41, MD-42
 # --------------------------------------------------------------------------- #
 class TestAdminMissingPetRoutes:
     def test_list_forwards_the_status_filter(self):
@@ -322,7 +322,7 @@ class TestAdminMissingPetRoutes:
 
 
 # --------------------------------------------------------------------------- #
-# GET /missing-pets/me — MD-34
+# GET /missing-pets/me — MD-38
 # --------------------------------------------------------------------------- #
 class TestMyReportsRoute:
     def _client(self, repo, user_id="u1"):

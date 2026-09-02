@@ -28,7 +28,7 @@ class TestNormalizeFlagReason:
         ("Spam", "Spam"),
         ("Not_a_pet", "Not_a_pet"),
         ("Inappropriate_image", "Inappropriate_image"),
-        # the prose spellings (MD-39's parameter table)
+        # the prose spellings (MD-43's parameter table)
         ("Not a pet", "Not_a_pet"),
         ("Inappropriate image", "Inappropriate_image"),
         # user-interface casing / padding
@@ -51,7 +51,7 @@ class TestNormalizeFlagDecision:
         ("Dismiss Flag", DECISION_DISMISS),          # UD-16's Action wording
         ("Reviewed_Penalty", DECISION_UPHOLD),
         ("Reviewed_Ban", DECISION_UPHOLD),           # pre-2026-08-20 enum name
-        ("Reviewed and banned", DECISION_UPHOLD),    # MD-40's wording
+        ("Reviewed and banned", DECISION_UPHOLD),    # MD-44's wording
         ("Uphold and Ban User", DECISION_UPHOLD),    # UD-16's Action wording
         ("Uphold and Penalise User", DECISION_UPHOLD),
     ])
@@ -88,7 +88,7 @@ class TestNormalizeFlagStatusFilter:
 
     def test_none_means_every_status_not_a_null_status(self):
         """None passes through untouched so the adapter can skip the predicate
-        entirely — the MD-37 convention. Returning a string here would filter
+        entirely — the MD-41 convention. Returning a string here would filter
         the queue down to one bucket by accident."""
         assert normalize_flag_status_filter(None) is None
 

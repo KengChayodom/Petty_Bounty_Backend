@@ -238,6 +238,11 @@ class MissingPetResponse(BaseModel):
     primary_color_hex: Optional[str] = None
     pattern_id: Optional[str] = None
 
+    # Optional owner details
+    owner_display_name: Optional[str] = None
+    owner_phone: Optional[str] = None
+    owner_profile_image_url: Optional[str] = None
+
     # Optional computed fields
     distance_meters: Optional[float] = None
     similarity: Optional[float] = None

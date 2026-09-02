@@ -70,7 +70,7 @@ class TestDerivePostStatus:
 
 
 class TestIsPostExpired:
-    """SRS-85. The predicate must agree with the SQL exactly, because the SQL
+    """SRS-87. The predicate must agree with the SQL exactly, because the SQL
     is what actually stops a post reaching hunters — disagreeing means the
     badge says one thing and the map does another."""
 

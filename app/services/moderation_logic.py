@@ -4,9 +4,9 @@ The specs and the database disagree on spelling, and this module is where that
 is reconciled once instead of at every call site:
 
   * UD-15 writes the flag reasons as "Spam", "Not_a_pet", "Inappropriate_image"
-    while MD-39 writes them as "Spam", "Not a pet", "Inappropriate image". The
+    while MD-43 writes them as "Spam", "Not a pet", "Inappropriate image". The
     `report_reason` enum only accepts the underscored form.
-  * MD-40 writes the decisions as "Dismissed" and "Reviewed and banned", UD-16
+  * MD-44 writes the decisions as "Dismissed" and "Reviewed and banned", UD-16
     as "Dismiss Flag" / "Uphold and Ban User"; the `report_status` enum only
     accepts "Dismissed" and "Reviewed_Penalty". The ban wording is kept as an
     accepted *alias* — the old spec text and the Vue admin build still use it —
@@ -72,7 +72,7 @@ MAX_PENALTY_POINTS = 100
 def normalize_flag_reason(reason: str | None) -> str:
     """Map a caller-supplied reason onto the `report_reason` enum.
 
-    Raises ValueError for anything outside the permitted set (MD-39's 400).
+    Raises ValueError for anything outside the permitted set (MD-43's 400).
     """
     key = (reason or "").strip().lower()
     normalized = _REASON_ALIASES.get(key)
@@ -103,8 +103,8 @@ def normalize_flag_status_filter(status: str | None) -> str | None:
     """Map a moderation-queue filter onto the `report_status` enum.
 
     `None` passes through and means "every status", not "a status which is
-    null" — the same convention MD-37's missing-pet browse uses. Any other
-    unrecognised value raises ValueError (MD-47's 400) rather than reaching
+    null" — the same convention MD-41's missing-pet browse uses. Any other
+    unrecognised value raises ValueError (MD-52's 400) rather than reaching
     PostgREST and failing there as an enum cast, which would surface as a 500.
     Matching is case-insensitive but exact on the enum names; the decision
     aliases are deliberately not accepted, because "uphold" is an instruction
@@ -124,7 +124,7 @@ def normalize_flag_status_filter(status: str | None) -> str | None:
 def build_flag_payload(
     sighting_id: str, reason: str, reporter_id: str
 ) -> dict:
-    """The `reports` INSERT contract for MD-39.
+    """The `reports` INSERT contract for MD-43.
 
     `reporter_id` is always the verified JWT identity handed in by the route —
     the request body never carries it — and the status is always Pending, so a
@@ -155,7 +155,7 @@ def resolve_penalty_points(
 
     Raises:
         ValueError: custom_points negative or above MAX_PENALTY_POINTS
-            (MD-40's 400).
+            (MD-44's 400).
     """
     if custom_points is not None:
         if custom_points < 0:

@@ -28,7 +28,7 @@ def _by_id(conn, pet_id):
             "SELECT id, owner_id, pet_name, species, characteristics, "
             "       bounty_amount, latitude, longitude, last_seen_time, "
             "       image_url, status, created_at, expires_at, "
-            "       primary_color_hex, pattern_id "
+            "       primary_color_hex, pattern_id, owner_display_name, owner_phone, owner_profile_image_url "
             "FROM get_missing_pet_by_id(%s)",
             (pet_id,),
         )

@@ -50,7 +50,7 @@ class ResolveMissingPetRequest(BaseModel):
 
 class ReviewReportRequest(BaseModel):
     """
-    Body of PATCH /admin/reports/{report_id} (MD-40).
+    Body of PATCH /admin/reports/{report_id} (MD-44).
 
     `decision` is a plain string rather than a Literal so an unrecognised value
     comes back as the 400 the spec calls for (raised by
@@ -81,4 +81,24 @@ class ReviewReportRequest(BaseModel):
             "withdraws the sighting without any deduction. Ignored when "
             "`decision` is 'Dismissed'."
         ),
+    )
+
+
+class AssignRoleRequest(BaseModel):
+    """
+    Body of PATCH /admin/users/{target_user_id}/role (MD-59).
+
+    `role` is a plain string rather than a Literal for the same reason
+    `ReviewReportRequest.decision` is: an unrecognised value comes back as the
+    400 the spec calls for, raised by `role_logic.normalize_role`, instead of
+    FastAPI's 422 — and it lets "administrator" be accepted alongside the enum
+    value the column actually holds.
+    """
+
+    role: str = Field(
+        ...,
+        description="'user' or 'admin' (also accepts 'administrator'). "
+                    "Setting 'admin' grants access to this console. Setting "
+                    "'user' withdraws it and does nothing else to the account: "
+                    "no account is suspended, deactivated, or deleted.",
     )

@@ -25,7 +25,7 @@ class SupabaseMissingPetRepository:
         return res.data[0] if res.data else None
 
     def get_by_owner(self, owner_id: str) -> list[dict]:
-        # MD-34 "My Reports": owner-scoped, newest first. Ordering is done in
+        # MD-38 "My Reports": owner-scoped, newest first. Ordering is done in
         # SQL, not in Python, so paging can be added without re-sorting client
         # side.
         res = (self._db.table("missing_pets")
@@ -46,7 +46,7 @@ class SupabaseMissingPetRepository:
 
           1. `sighting_matches` — what the AI matched to this pet;
           2. `sightings.initial_target_pet_id` — a hunter reporting this exact
-             pet from its detail page (the targeted flow, SRS-50), which never
+             pet from its detail page (the targeted flow, SRS-49), which never
              produces a match row and so carries no owner verdict.
 
         Deliberately NO counting, de-duplication, or filtering here: what counts
@@ -86,7 +86,7 @@ class SupabaseMissingPetRepository:
     def list_all(
         self, status: str | None, species: str | None, limit: int, offset: int
     ) -> Page:
-        # MD-37 admin browse. The status filter is applied ONLY when supplied —
+        # MD-41 admin browse. The status filter is applied ONLY when supplied —
         # `None` must mean "every status", not "status IS NULL".
         #
         # count="exact" makes PostgREST report the number of rows matching the
@@ -108,7 +108,7 @@ class SupabaseMissingPetRepository:
         return Page(rows, len(rows) if total is None else total)
 
     def remove(self, pet_id: str) -> dict | None:
-        # MD-38 / SRS-65: UD-14's postcondition is "removed from the database
+        # MD-42 / SRS-70: UD-14's postcondition is "removed from the database
         # and the search map", so this is a hard DELETE (FKs cascade to
         # sighting_matches). Returns the deleted row, or None when nothing
         # matched — the caller turns that into 404.

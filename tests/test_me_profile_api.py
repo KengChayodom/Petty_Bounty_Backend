@@ -1,8 +1,8 @@
 """
-Route unit tests for PATCH /me — profile edit (UTC-42/43, MD-41/42, SRS-69/70).
+Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46/47, SRS-74/75).
 
-The spec (`progress_2/method_specification.md`) maps BOTH MD-41 (username) and
-MD-42 (photo) to a single `PATCH /me`, so the two test-plan blocks exercise one
+The spec (`progress_2/method_specification.md`) maps BOTH MD-46 (username) and
+MD-47 (photo) to a single `PATCH /me`, so the two test-plan blocks exercise one
 route (`me.update_my_profile`) through its two fields rather than two functions.
 
 Boundary rule (matches the reconciled Progress-2 plan): the auth dependency and
@@ -40,11 +40,11 @@ def _repo(profile=None):
 
 
 # --------------------------------------------------------------------------- #
-# UTC-42: update the profile username (MD-41, SRS-69)
+# UTC-43: update the profile username (MD-46, SRS-74)
 # --------------------------------------------------------------------------- #
 class TestUpdateProfileName:
     def test_empty_name_yields_400_and_repo_unchanged(self):
-        """UTC-42-TC-01 — blank username is rejected before any write."""
+        """UTC-43-TC-01 — blank username is rejected before any write."""
         repo = _repo()
         r = _client(repo).patch("/me", json={"display_name": ""})
 
@@ -52,7 +52,7 @@ class TestUpdateProfileName:
         repo.update_profile.assert_not_called()
 
     def test_writes_display_name_scoped_to_self(self):
-        """UTC-42-TC-02 — the username is written to the caller's own row."""
+        """UTC-43-TC-02 — the username is written to the caller's own row."""
         updated = {"id": "u1", "display_name": "Kus"}
         repo = _repo(profile=updated)
         r = _client(repo, user_id="u1").patch("/me", json={"display_name": "Kus"})
@@ -64,7 +64,7 @@ class TestUpdateProfileName:
         repo.update_profile.assert_called_once_with("u1", {"display_name": "Kus"})
 
     def test_missing_profile_yields_404(self):
-        """UTC-42-TC-03 — no such row -> 404."""
+        """UTC-43-TC-03 — no such row -> 404."""
         repo = _repo(profile=None)
         r = _client(repo, user_id="ghost").patch(
             "/me", json={"display_name": "Kus"}
@@ -73,7 +73,7 @@ class TestUpdateProfileName:
         assert r.status_code == 404
 
     def test_database_error_yields_500(self):
-        """UTC-42-TC-04 — an unexpected repo failure surfaces as 500."""
+        """UTC-43-TC-04 — an unexpected repo failure surfaces as 500."""
         repo = _repo()
         repo.update_profile.side_effect = Exception("connection reset")
         r = _client(repo).patch("/me", json={"display_name": "Kus"})
@@ -82,11 +82,11 @@ class TestUpdateProfileName:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-43: update the profile photograph (MD-42, SRS-70)
+# UTC-44: update the profile photograph (MD-47, SRS-75)
 # --------------------------------------------------------------------------- #
 class TestUpdateProfilePhoto:
     def test_missing_or_invalid_url_yields_400_and_repo_unchanged(self):
-        """UTC-43-TC-01 — empty / unsupported photo URL is rejected pre-write."""
+        """UTC-44-TC-01 — empty / unsupported photo URL is rejected pre-write."""
         repo = _repo()
         r = _client(repo).patch("/me", json={"photo_url": ""})
 
@@ -94,7 +94,7 @@ class TestUpdateProfilePhoto:
         repo.update_profile.assert_not_called()
 
     def test_non_image_extension_yields_400(self):
-        """UTC-43-TC-01 (format arc) — a non JPG/JPEG/PNG URL is rejected."""
+        """UTC-44-TC-01 (format arc) — a non JPG/JPEG/PNG URL is rejected."""
         repo = _repo()
         r = _client(repo).patch(
             "/me", json={"photo_url": "http://x/a.gif"}
@@ -104,7 +104,7 @@ class TestUpdateProfilePhoto:
         repo.update_profile.assert_not_called()
 
     def test_writes_photo_url_scoped_to_self(self):
-        """UTC-43-TC-02 — the photo URL is written to the caller's own row."""
+        """UTC-44-TC-02 — the photo URL is written to the caller's own row."""
         updated = {"id": "u1", "profile_image_url": "http://x/a.jpg"}
         repo = _repo(profile=updated)
         r = _client(repo, user_id="u1").patch(
@@ -119,7 +119,7 @@ class TestUpdateProfilePhoto:
         )
 
     def test_missing_profile_yields_404(self):
-        """UTC-43-TC-03 — no such row -> 404 (both None and the port's own
+        """UTC-44-TC-03 — no such row -> 404 (both None and the port's own
         UserProfileNotFound map to 404)."""
         repo = _repo()
         repo.update_profile.side_effect = UserProfileNotFound("ghost")
@@ -130,7 +130,7 @@ class TestUpdateProfilePhoto:
         assert r.status_code == 404
 
     def test_database_error_yields_500(self):
-        """UTC-43-TC-04 — an unexpected repo failure surfaces as 500."""
+        """UTC-44-TC-04 — an unexpected repo failure surfaces as 500."""
         repo = _repo()
         repo.update_profile.side_effect = Exception("connection reset")
         r = _client(repo).patch("/me", json={"photo_url": "http://x/a.jpg"})
