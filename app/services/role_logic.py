@@ -1,6 +1,6 @@
 """Pure role-assignment logic — no I/O, no DB, no framework.
 
-The two edge normalisers MD-58 and MD-59 apply before any database call, so a
+The two edge normalisers MD-57 and MD-58 apply before any database call, so a
 malformed address or an unrecognised role is a 400 at the edge and never reaches
 the database as a failed enum cast or a pointless lookup.
 
@@ -50,7 +50,7 @@ def normalize_email(email: str | None) -> str:
     The shape check is deliberately minimal — one `@`, something either side of
     it, a dot in the domain. This is not address validation, which only delivery
     can actually do. It exists so that an obvious typo costs no database round
-    trip, and so that MD-58 cannot be handed a wildcard or an empty string and
+    trip, and so that MD-57 cannot be handed a wildcard or an empty string and
     turned into the account enumeration it is specified not to be.
     """
     if not isinstance(email, str) or not email.strip():

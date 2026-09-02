@@ -34,7 +34,7 @@ already closed. `verify_sighting` survives for the moderation half of the same
 column — an upheld flag writes 'Dismissed' — and nothing writes 'Verified' any
 more.
 
-**Role assignment (added 2026-09-02, MD-58 to MD-60).** The one thing here that
+**Role assignment (added 2026-09-02, MD-57 to MD-59).** The one thing here that
 does touch an account: an administrator may grant another account administrator
 access and withdraw it again. Read that against the paragraph above rather than
 as an exception to it. It changes what an account may do inside the CONSOLE,
@@ -371,13 +371,13 @@ class AdminService:
         )
 
     # ---------------------------------------------------------------- #
-    # MD-58 — resolve one account from its exact email address (SRS-94)
+    # MD-57 — resolve one account from its exact email address (SRS-94)
     # ---------------------------------------------------------------- #
     async def find_user_by_email(self, email: str) -> dict:
         """
         Return the one account holding this address: id, username, role.
 
-        Exists because MD-59 takes an account identifier that an administrator
+        Exists because MD-58 takes an account identifier that an administrator
         has no way to obtain. They know their colleague's email address and
         nothing else, the identifier being a value no person handles.
 
@@ -407,7 +407,7 @@ class AdminService:
         return row
 
     # ---------------------------------------------------------------- #
-    # MD-59 — grant or withdraw administrator access (SRS-95..98, UD-23)
+    # MD-58 — grant or withdraw administrator access (SRS-95..98, UD-23)
     # ---------------------------------------------------------------- #
     async def assign_user_role(
         self, target_user_id: str, role: str, admin_id: str,
@@ -483,7 +483,7 @@ class AdminService:
         return result
 
     # ---------------------------------------------------------------- #
-    # MD-60 — read the role-change history (SRS-97, the reading half)
+    # MD-59 — read the role-change history (SRS-97, the reading half)
     # ---------------------------------------------------------------- #
     async def list_role_changes(
         self,
