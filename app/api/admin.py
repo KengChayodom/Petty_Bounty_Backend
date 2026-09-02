@@ -325,7 +325,7 @@ async def find_user_by_email(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-58 / SRS-94 — resolve ONE account from its exact email address.
+    MD-57 / SRS-94 — resolve ONE account from its exact email address.
 
     The lookup `PATCH /admin/users/{id}/role` acts from: without it an
     administrator can only change the role of an account whose identifier they
@@ -386,7 +386,7 @@ async def assign_user_role(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-59 / SRS-95-98 — grant administrator access to an account, or withdraw it.
+    MD-58 / SRS-95-98 — grant administrator access to an account, or withdraw it.
 
     **This is the only thing an administrator does to an account.** Setting
     'user' withdraws console access and leaves everything else alone — the
@@ -445,7 +445,7 @@ async def list_role_changes(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-60 / SRS-97 — the record of every role grant and withdrawal, newest first.
+    MD-59 / SRS-97 — the record of every role grant and withdrawal, newest first.
 
     Append-only: nothing edits or deletes a row, so an account's access history
     stays complete. Returns `{items, total, limit, offset}`.

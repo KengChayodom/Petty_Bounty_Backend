@@ -40,6 +40,9 @@ OWNER_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_21_owner_driven_resolut
 EXPIRES_AT_MIGRATION = BACKEND_ROOT / "migrations" / "2026-09-01_post_expires_at.sql"
 ROLE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_role_assignment.sql"
 OWNER_DETAIL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_pet_owner_details.sql"
+HUNTER_DETAIL_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_02_sighting_hunter_details.sql"
+)
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -81,8 +84,9 @@ def _apply_schema(dsn: str) -> None:
         SQL_DIR / "20_live_match_rpc.sql",
         OWNER_MIGRATION,             # owner_decide_sighting + the de-fanged resolve
         EXPIRES_AT_MIGRATION,        # missing_pets.expires_at; read paths filter it
-        ROLE_MIGRATION,
-        OWNER_DETAIL_MIGRATION,              # role_changes + find_user_by_email + assign_user_role
+        ROLE_MIGRATION,              # role_changes + find_user_by_email + assign_user_role
+        OWNER_DETAIL_MIGRATION,      # get_missing_pet_by_id projects the owner's contact
+        HUNTER_DETAIL_MIGRATION,     # sightings_for_pet projects the hunter's contact
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:
@@ -120,7 +124,14 @@ class Seeder:
     def __init__(self, conn):
         self.conn = conn
 
-    def user(self, display_name="Hunter", role="user", total_score=0) -> uuid.UUID:
+    def user(self, display_name="Hunter", role="user", total_score=0,
+             phone=None, profile_image_url=None) -> uuid.UUID:
+        """A profile row (+ its auth.users parent).
+
+        `phone` / `profile_image_url` default to NULL — the state of a real
+        account that never filled them in, which is exactly the case the read
+        RPCs have to survive.
+        """
         uid = uuid.uuid4()
         with self.conn.cursor() as cur:
             cur.execute(
@@ -128,9 +139,10 @@ class Seeder:
                 (uid, f"{uid}@test.local"),
             )
             cur.execute(
-                "INSERT INTO users (id, display_name, role, total_score) "
-                "VALUES (%s, %s, %s::user_role, %s)",
-                (uid, display_name, role, total_score),
+                "INSERT INTO users "
+                "  (id, display_name, role, total_score, phone, profile_image_url) "
+                "VALUES (%s, %s, %s::user_role, %s, %s, %s)",
+                (uid, display_name, role, total_score, phone, profile_image_url),
             )
         return uid
 

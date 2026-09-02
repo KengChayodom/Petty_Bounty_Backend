@@ -84,6 +84,80 @@ class TestUpdateProfileName:
 # --------------------------------------------------------------------------- #
 # UTC-44: update the profile photograph (MD-47, SRS-75)
 # --------------------------------------------------------------------------- #
+class TestUpdateProfilePhone:
+    """UTC-43-TC-05 to TC-08 — the phone half of MD-46 (SRS-99).
+
+    It shipped with the username field and had no test of any kind until
+    2026-09-02, which is how the requirement it realises (SRS-99) came to be
+    written in the use-case document and nowhere else.
+    """
+
+    def test_writes_phone_scoped_to_self(self):
+        """UTC-43-TC-05 — the number is written to the caller's own row."""
+        updated = {"id": "u1", "phone": "0812345678"}
+        repo = _repo(profile=updated)
+        r = _client(repo, user_id="u1").patch("/me", json={"phone": "0812345678"})
+
+        assert r.status_code == 200
+        repo.update_profile.assert_called_once_with("u1", {"phone": "0812345678"})
+
+    def test_phone_alone_is_a_valid_edit(self):
+        """UTC-43-TC-06 — a phone-only PATCH is not the empty PATCH.
+
+        The three fields are independent, so saving the number without touching
+        the username or the photo must reach the write rather than fall into the
+        "nothing supplied" 400.
+        """
+        repo = _repo(profile={"id": "u1", "phone": "0899999999"})
+        r = _client(repo).patch("/me", json={"phone": "0899999999"})
+
+        assert r.status_code == 200
+        patch = repo.update_profile.call_args[0][1]
+        assert set(patch) == {"phone"}
+
+    def test_phone_is_trimmed_and_not_format_checked(self):
+        """UTC-43-TC-07 — surrounding space is stripped, the number itself is
+        taken as given.
+
+        `users.phone` is free text and no requirement specifies a format, so the
+        route deliberately applies none. Pinning that here means a format rule
+        added later has to be a decision, not a silent regression.
+        """
+        repo = _repo(profile={"id": "u1"})
+        r = _client(repo).patch("/me", json={"phone": "  +66 81 234 5678  "})
+
+        assert r.status_code == 200
+        repo.update_profile.assert_called_once_with(
+            "u1", {"phone": "+66 81 234 5678"}
+        )
+
+    def test_all_three_fields_travel_in_one_patch(self):
+        """UTC-43-TC-08 — username, phone and photo are one write, not three.
+
+        The edit dialog saves them together, so the route has to fold them into
+        a single `update_profile` call on the three real columns.
+        """
+        repo = _repo(profile={"id": "u1"})
+        r = _client(repo).patch(
+            "/me",
+            json={
+                "display_name": "Kus",
+                "phone": "0812345678",
+                "photo_url": "https://storage.test/u1.jpg",
+            },
+        )
+
+        assert r.status_code == 200
+        repo.update_profile.assert_called_once_with(
+            "u1",
+            {
+                "display_name": "Kus",
+                "profile_image_url": "https://storage.test/u1.jpg",
+                "phone": "0812345678",
+            },
+        )
+
+
 class TestUpdateProfilePhoto:
     def test_missing_or_invalid_url_yields_400_and_repo_unchanged(self):
         """UTC-44-TC-01 — empty / unsupported photo URL is rejected pre-write."""

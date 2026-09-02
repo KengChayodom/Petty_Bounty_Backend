@@ -1,6 +1,6 @@
 """
 Integration tests for the role-assignment procedures — find_user_by_email() and
-assign_user_role() (SRS-94 to SRS-98, MD-58/MD-59,
+assign_user_role() (SRS-94 to SRS-98, MD-57/MD-58,
 migrations/2026_09_02_role_assignment.sql).
 
 Everything worth testing here lives in the database and is invisible to the unit
@@ -15,7 +15,7 @@ suite, which stops at the repository port:
     which is what stops a replayed request padding the history (and is why
     `role_changes` carries a CHECK that the two roles differ);
   * `find_user_by_email` reaching across into `auth.users`, matching the whole
-    address and never a prefix — the line between MD-58 and the account search
+    address and never a prefix — the line between MD-57 and the account search
     struck on 2026-08-21.
 
 The one property NOT covered: that the guards hold when two administrators act
@@ -96,7 +96,7 @@ def _set_email(conn, user_id, email):
 
 
 # --------------------------------------------------------------------------- #
-# find_user_by_email — MD-58 / SRS-94
+# find_user_by_email — MD-57 / SRS-94
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_resolves_the_exact_address(self, conn, seed):
@@ -144,7 +144,7 @@ class TestFindUserByEmail:
 
 
 # --------------------------------------------------------------------------- #
-# assign_user_role — MD-59 / SRS-95, SRS-96, SRS-97
+# assign_user_role — MD-58 / SRS-95, SRS-96, SRS-97
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_grants_the_role_and_records_the_change(self, conn, seed):
