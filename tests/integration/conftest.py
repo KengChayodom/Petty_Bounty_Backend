@@ -43,6 +43,9 @@ OWNER_DETAIL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_pet_owner_det
 HUNTER_DETAIL_MIGRATION = (
     BACKEND_ROOT / "migrations" / "2026_09_02_sighting_hunter_details.sql"
 )
+DROP_PATTERN_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_05_drop_pattern_id.sql"
+)
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -77,7 +80,7 @@ def _apply_schema(dsn: str) -> None:
         SQL_DIR / "00_prelude.sql",
         REAL_MIGRATION,              # applied verbatim from the repo — not a copy
         FCM_MIGRATION,               # adds get_nearby_hunters + users.last_location
-        SQL_DIR / "10_color_pattern_columns.sql",  # prod-only cols by-id projects
+        SQL_DIR / "10_color_pattern_columns.sql",  # prod-only col by-id projects
         BYID_MIGRATION,              # adds get_missing_pet_by_id (the fixed shape)
         SM_UNIQUE_MIGRATION,         # adds sighting_matches UNIQUE (the upsert arbiter)
         PENALTY_MIGRATION,           # renames Reviewed_Ban, adds score_penalties + RPC
@@ -87,6 +90,11 @@ def _apply_schema(dsn: str) -> None:
         ROLE_MIGRATION,              # role_changes + find_user_by_email + assign_user_role
         OWNER_DETAIL_MIGRATION,      # get_missing_pet_by_id projects the owner's contact
         HUNTER_DETAIL_MIGRATION,     # sightings_for_pet projects the hunter's contact
+        DROP_PATTERN_MIGRATION,      # drops missing_pets.pattern_id, rebuilding the
+                                     # two RPCs that projected it. MUST stay last of
+                                     # the two by-id/nearby definitions, or an earlier
+                                     # migration re-creates a function selecting a
+                                     # column the shim no longer adds.
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:
