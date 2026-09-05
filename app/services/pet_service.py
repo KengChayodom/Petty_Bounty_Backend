@@ -128,7 +128,7 @@ class PetService:
         repo: MissingPetRepository, owner_id: str
     ) -> list[dict]:
         """
-        MD-38 / SRS-68 — the owner's "My Reports" list.
+        MD-38 / SRS-67 — the owner's "My Reports" list.
 
         Scoping is structural: the port takes an owner_id, so there is no query
         shape here that could return another owner's reports. Newest-first

@@ -100,7 +100,7 @@ async def get_my_missing_pets(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    MD-38 / SRS-68 — the owner's "My Reports" list, newest first.
+    MD-38 / SRS-67 — the owner's "My Reports" list, newest first.
 
     ⚠️  Declared BEFORE `/{pet_id}`: FastAPI matches routes in declaration
     order, so with the parameterised route first, "me" would be captured as a
