@@ -232,7 +232,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-44 — review a moderation flag (SRS-73, UD-16)
+    # MD-44 — review a moderation flag (UD-16)
     # ---------------------------------------------------------------- #
     async def review_report(
         self,
@@ -371,7 +371,7 @@ class AdminService:
         )
 
     # ---------------------------------------------------------------- #
-    # MD-57 — resolve one account from its exact email address (SRS-94)
+    # MD-57 — resolve one account from its exact email address
     # ---------------------------------------------------------------- #
     async def find_user_by_email(self, email: str) -> dict:
         """
@@ -407,7 +407,7 @@ class AdminService:
         return row
 
     # ---------------------------------------------------------------- #
-    # MD-58 — grant or withdraw administrator access (SRS-95..98, UD-23)
+    # MD-58 — grant or withdraw administrator access (UD-23)
     # ---------------------------------------------------------------- #
     async def assign_user_role(
         self, target_user_id: str, role: str, admin_id: str,
@@ -429,9 +429,9 @@ class AdminService:
         Withdrawal needs no session work: `require_admin` re-reads `users.role`
         on every request and never trusts the role claimed by the token, so the
         change takes effect on the affected account's next request with no
-        revocation list and no token lifetime to shorten (SRS-98).
+        revocation list and no token lifetime to shorten.
 
-        Both refusals of SRS-96 are enforced inside the `assign_user_role`
+        The self-demotion and last-administrator refusals are enforced inside the `assign_user_role`
         procedure, not here. Evaluated in Python ahead of the write, the
         administrator count is a read another transaction can invalidate before
         the write lands, so two administrators withdrawing each other's access
@@ -446,7 +446,7 @@ class AdminService:
 
         Raises:
             ValueError: role outside the `user_role` enum (API -> 400).
-            RoleAssignmentRefused: a guard of SRS-96 refused it (API -> 409).
+            RoleAssignmentRefused: a self-demotion or last-administrator guard refused it (API -> 409).
             UserAccountNotFound: no such account (API -> 404).
         """
         normalized = normalize_role(role)
@@ -483,7 +483,7 @@ class AdminService:
         return result
 
     # ---------------------------------------------------------------- #
-    # MD-59 — read the role-change history (SRS-97, the reading half)
+    # MD-59 — read the role-change history (the reading half)
     # ---------------------------------------------------------------- #
     async def list_role_changes(
         self,

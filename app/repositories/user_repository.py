@@ -46,7 +46,7 @@ class UserAccountNotFound(ValueError):
 
 
 class RoleAssignmentRefused(ValueError):
-    """A guard of SRS-96 refused the change — MD-58's 409.
+    """A self-demotion or last-administrator guard refused the change — MD-58's 409.
 
     Two cases, both raised by the `assign_user_role` procedure and translated
     here: an administrator withdrawing their own access, and a change that would

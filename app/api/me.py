@@ -18,7 +18,7 @@ from app.utils.postgis import create_postgis_point
 
 router = APIRouter(prefix="/me", tags=["Me"])
 
-# Object-Storage photo formats accepted for the profile picture (MD-47/SRS-75).
+# Object-Storage photo formats accepted for the profile picture (MD-47).
 _ALLOWED_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
@@ -62,8 +62,8 @@ class ProfileUpdateRequest(BaseModel):
     """Profile edit payload (MD-46 username + phone, MD-47 photo). Every field
     is optional so the client can save any one alone or all three together, but
     at least one must be present — an empty PATCH is rejected. `display_name`
-    carries the username (stored in the users.display_name column, SRS-74);
-    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-75);
+    carries the username (stored in the users.display_name column, SRS-73);
+    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-74);
     `phone` is the mobile number (users.phone, SRS-99).
 
     `phone` carries no format rule on purpose. The column is free text, the

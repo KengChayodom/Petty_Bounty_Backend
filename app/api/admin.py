@@ -121,7 +121,7 @@ async def list_all_missing_pets(
     repo: MissingPetRepository = Depends(get_missing_pet_repository),
     admin_id: str = Depends(require_admin),
 ):
-    """MD-41 / SRS-71 — browse every missing-pet report for moderation.
+    """MD-41 / SRS-70 — browse every missing-pet report for moderation.
 
     Returns `{items, total, limit, offset}`. `total` counts every report
     matching `status`, not just this page, so the console can draw numbered
@@ -163,7 +163,7 @@ async def remove_missing_pet(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-42 / SRS-70 — remove a report that violates the platform guidelines.
+    MD-42 / SRS-69 — remove a report that violates the platform guidelines.
 
     UD-14's postcondition is "removed from the database and the search map", so
     the row is deleted outright; the moderation action is recorded in the log.
@@ -232,7 +232,7 @@ async def review_report(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-44 / SRS-73 — dismiss a flag, or uphold it and deduct the hunter's score.
+    MD-44 / SRS-72 — dismiss a flag, or uphold it and deduct the hunter's score.
 
     Upholding sets the flagged sighting to Dismissed and subtracts score from
     the hunter who submitted it (UD-16 steps 4-5). **No account is banned or
@@ -309,7 +309,7 @@ async def resolve_missing_pet(
 
 
 # ---------------------------------------------------------------------- #
-# Role assignment — UD-23 / SRS-94..98. Access control, not moderation:
+# Role assignment — UD-23 / SRS-93..98. Access control, not moderation:
 # nothing below can suspend, deactivate, or delete an account. Listing is
 # limited to the current admin set (always small); there is no route that
 # lists or searches all user accounts.
@@ -325,7 +325,7 @@ async def find_user_by_email(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-57 / SRS-94 — resolve ONE account from its exact email address.
+    MD-57 / SRS-93 — resolve ONE account from its exact email address.
 
     The lookup `PATCH /admin/users/{id}/role` acts from: without it an
     administrator can only change the role of an account whose identifier they
