@@ -70,10 +70,6 @@ class MissingPetCreate(BaseModel):
         None,
         description="Primary coat color in hex format (e.g., #000000)"
     )
-    pattern_id: Optional[str] = Field(
-        None,
-        description="Coat pattern identifier (solid, tabby, calico, etc.)"
-    )
 
     @field_validator('species')
     @classmethod
@@ -102,18 +98,6 @@ class MissingPetCreate(BaseModel):
         if not re.match(r'^#[0-9A-Fa-f]{6}$', v):
             raise ValueError("Invalid hex color format. Use #RRGGBB format.")
         return v.upper()
-
-    @field_validator('pattern_id')
-    @classmethod
-    def validate_pattern_id(cls, v: Optional[str]) -> Optional[str]:
-        """Validate pattern identifier."""
-        if v is None:
-            return v
-        valid_patterns = {'solid', 'tabby', 'calico', 'tuxedo', 'spotted',
-                          'striped', 'bicolor', 'tricolor', 'merle', 'brindle'}
-        if v.lower() not in valid_patterns:
-            raise ValueError(f"Invalid pattern. Must be one of {valid_patterns}")
-        return v.lower()
 
     class Config:
         json_schema_extra = {
@@ -166,10 +150,6 @@ class MissingPetUpdate(BaseModel):
     primary_color_hex: Optional[str] = Field(
         None,
         description="Updated primary coat color in hex format"
-    )
-    pattern_id: Optional[str] = Field(
-        None,
-        description="Updated coat pattern identifier"
     )
 
     # The only two `pet_status` values an OWNER may write through this route.
@@ -234,9 +214,8 @@ class MissingPetResponse(BaseModel):
     status: str
     created_at: datetime
 
-    # Optional color and pattern fields
+    # Optional color field
     primary_color_hex: Optional[str] = None
-    pattern_id: Optional[str] = None
 
     # Optional owner details
     owner_display_name: Optional[str] = None

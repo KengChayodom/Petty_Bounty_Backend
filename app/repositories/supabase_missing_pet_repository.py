@@ -46,7 +46,7 @@ class SupabaseMissingPetRepository:
 
           1. `sighting_matches` — what the AI matched to this pet;
           2. `sightings.initial_target_pet_id` — a hunter reporting this exact
-             pet from its detail page (the targeted flow, SRS-49), which never
+             pet from its detail page (the targeted flow), which never
              produces a match row and so carries no owner verdict.
 
         Deliberately NO counting, de-duplication, or filtering here: what counts
@@ -108,7 +108,7 @@ class SupabaseMissingPetRepository:
         return Page(rows, len(rows) if total is None else total)
 
     def remove(self, pet_id: str) -> dict | None:
-        # MD-42 / SRS-70: UD-14's postcondition is "removed from the database
+        # MD-42: UD-14's postcondition is "removed from the database
         # and the search map", so this is a hard DELETE (FKs cascade to
         # sighting_matches). Returns the deleted row, or None when nothing
         # matched — the caller turns that into 404.

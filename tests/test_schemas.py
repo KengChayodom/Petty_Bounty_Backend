@@ -50,16 +50,6 @@ class TestMissingPetCreateValidators:
         with pytest.raises(ValidationError):
             MissingPetCreate(**_create(primary_color_hex="red"))
 
-    def test_pattern_none_passes_through(self):
-        assert MissingPetCreate(**_create(pattern_id=None)).pattern_id is None
-
-    def test_pattern_valid_is_lowercased(self):
-        assert MissingPetCreate(**_create(pattern_id="Tabby")).pattern_id == "tabby"
-
-    def test_pattern_unknown_rejected(self):
-        with pytest.raises(ValidationError):
-            MissingPetCreate(**_create(pattern_id="polkadot"))
-
 
 class TestMissingPetUpdateValidators:
     def test_status_none_passes_through(self):
