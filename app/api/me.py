@@ -18,7 +18,7 @@ from app.utils.postgis import create_postgis_point
 
 router = APIRouter(prefix="/me", tags=["Me"])
 
-# Object-Storage photo formats accepted for the profile picture (MD-42/SRS-70).
+# Object-Storage photo formats accepted for the profile picture (MD-47).
 _ALLOWED_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
@@ -59,14 +59,21 @@ async def update_my_location(
 
 
 class ProfileUpdateRequest(BaseModel):
-    """Profile edit payload (MD-41 username + MD-42 photo). Both fields are
-    optional so the client can save either one alone or both together, but at
-    least one must be present — an empty PATCH is rejected. `display_name`
-    carries the username (stored in the users.display_name column, SRS-69);
-    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-70).
+    """Profile edit payload (MD-46 username + phone, MD-47 photo). Every field
+    is optional so the client can save any one alone or all three together, but
+    at least one must be present — an empty PATCH is rejected. `display_name`
+    carries the username (stored in the users.display_name column, SRS-73);
+    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-74);
+    `phone` is the mobile number (users.phone, SRS-99).
+
+    `phone` carries no format rule on purpose. The column is free text, the
+    project has never specified one (the sign-up form does not check a format
+    either), and inventing one here would reject numbers the same account could
+    already have registered with.
     """
     display_name: str | None = None
     photo_url: str | None = None
+    phone: str | None = None
 
 
 @router.patch("", response_model=StandardResponse)
@@ -75,10 +82,11 @@ async def update_my_profile(
     repo: UserRepository = Depends(get_user_repository),
     user_id: str = Depends(get_current_user_id),
 ):
-    """Edit the caller's own profile — username (MD-41) and/or photo (MD-42).
+    """Edit the caller's own profile — username and phone (MD-46) and/or photo
+    (MD-47).
 
     Caller identity comes solely from the JWT; the update is self-scoped to that
-    row in `users`. Validation mirrors UD-15: a blank username -> 400, an
+    row in `users`. Validation mirrors UD-17: a blank username -> 400, an
     unsupported photo format -> 400, a missing profile row -> 404.
     """
     patch: dict = {}
@@ -100,10 +108,13 @@ async def update_my_profile(
             )
         patch["profile_image_url"] = photo_url
 
+    if payload.phone is not None:
+        patch["phone"] = payload.phone.strip()
+
     if not patch:
         raise HTTPException(
             status_code=400,
-            detail="Provide a username or a photo to update.",
+            detail="Provide a username, a phone number, or a photo to update.",
         )
 
     try:

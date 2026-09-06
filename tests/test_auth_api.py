@@ -1,7 +1,7 @@
 """
-Route unit test for GET /auth/me  (UTC-06, MD-08, SRS-46).
+Route unit test for GET /auth/me  (UTC-06, MD-08, SRS-23).
 
-SRS-46 = allow authenticated users to retrieve their own profile securely: the
+SRS-23 = allow authenticated users to retrieve their own profile securely: the
 read is scoped to the JWT user id on the `users` table.
 
 Boundary rule: the auth dependency and the Supabase client are the boundaries,

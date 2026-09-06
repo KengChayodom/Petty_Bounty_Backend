@@ -27,7 +27,8 @@ def _by_id(conn, pet_id):
         cur.execute(
             "SELECT id, owner_id, pet_name, species, characteristics, "
             "       bounty_amount, latitude, longitude, last_seen_time, "
-            "       image_url, status, created_at, primary_color_hex, pattern_id "
+            "       image_url, status, created_at, expires_at, "
+            "       primary_color_hex, owner_display_name, owner_phone, owner_profile_image_url "
             "FROM get_missing_pet_by_id(%s)",
             (pet_id,),
         )
@@ -59,12 +60,18 @@ def test_projects_numeric_lat_lng_and_bounty(conn, seed):
     assert not isinstance(rec["bounty_amount"], str)
     assert rec["bounty_amount"] == Decimal("1500")
 
-    # Sanity: identity + species projected, and the prod-only color/pattern
-    # columns are present in the result shape (NULL is fine here).
+    # Sanity: identity + species projected, and the prod-only colour column is
+    # present in the result shape (NULL is fine here).
     assert rec["id"] == pid
     assert rec["pet_name"] == "Mochi"
     assert rec["species"] == "Cat"
-    assert "primary_color_hex" in rec and "pattern_id" in rec
+    assert "primary_color_hex" in rec
+
+    # expires_at is projected so the owner's "Expired" badge (pet_logic) has a
+    # value to read on the single-pet path, not just the list path.
+    from datetime import datetime
+    assert isinstance(rec["expires_at"], datetime)
+    assert rec["expires_at"] > rec["created_at"]
 
 
 def test_lat_lng_are_not_swapped(conn, seed):

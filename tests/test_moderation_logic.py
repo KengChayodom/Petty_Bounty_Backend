@@ -24,11 +24,11 @@ from app.services.moderation_logic import (
 
 class TestNormalizeFlagReason:
     @pytest.mark.parametrize("supplied,expected", [
-        # the enum spellings (UD-14's Input Specification)
+        # the enum spellings (UD-16's Input Specification)
         ("Spam", "Spam"),
         ("Not_a_pet", "Not_a_pet"),
         ("Inappropriate_image", "Inappropriate_image"),
-        # the prose spellings (MD-39's parameter table)
+        # the prose spellings (MD-43's parameter table)
         ("Not a pet", "Not_a_pet"),
         ("Inappropriate image", "Inappropriate_image"),
         # user-interface casing / padding
@@ -48,11 +48,11 @@ class TestNormalizeFlagReason:
 class TestNormalizeFlagDecision:
     @pytest.mark.parametrize("supplied,expected", [
         ("Dismissed", DECISION_DISMISS),
-        ("Dismiss Flag", DECISION_DISMISS),          # UD-14's Action wording
+        ("Dismiss Flag", DECISION_DISMISS),          # UD-16's Action wording
         ("Reviewed_Penalty", DECISION_UPHOLD),
         ("Reviewed_Ban", DECISION_UPHOLD),           # pre-2026-08-20 enum name
-        ("Reviewed and banned", DECISION_UPHOLD),    # MD-40's wording
-        ("Uphold and Ban User", DECISION_UPHOLD),    # UD-14's Action wording
+        ("Reviewed and banned", DECISION_UPHOLD),    # MD-44's wording
+        ("Uphold and Ban User", DECISION_UPHOLD),    # UD-16's Action wording
         ("Uphold and Penalise User", DECISION_UPHOLD),
     ])
     def test_maps_onto_the_enum(self, supplied, expected):
@@ -88,7 +88,7 @@ class TestNormalizeFlagStatusFilter:
 
     def test_none_means_every_status_not_a_null_status(self):
         """None passes through untouched so the adapter can skip the predicate
-        entirely — the MD-37 convention. Returning a string here would filter
+        entirely — the MD-41 convention. Returning a string here would filter
         the queue down to one bucket by accident."""
         assert normalize_flag_status_filter(None) is None
 

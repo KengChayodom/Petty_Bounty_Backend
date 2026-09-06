@@ -1,5 +1,5 @@
 """
-UTC-41 — flag_sighting (MD-39, SRS-67): a user reporting a sighting for review.
+UTC-42 — flag_sighting (MD-43, SRS-72): a user reporting a sighting for review.
 
 Boundary rule: both DB dependencies are repository ports, doubled with
 MagicMock(spec=...) — `ReportRepository` for the `reports` write and
@@ -41,7 +41,7 @@ def _service(sighting={"id": "s1", "hunter_id": "h1"}):
 
 class TestFlagSighting:
     def test_rejects_reason_outside_the_set(self):
-        """UTC-41-TC-01 — bad reason => ValueError (API maps it to 400), and
+        """UTC-42-TC-01 — bad reason => ValueError (API maps it to 400), and
         nothing is read or written."""
         service, repo, sighting_repo = _service()
 
@@ -53,7 +53,7 @@ class TestFlagSighting:
 
     @pytest.mark.parametrize("reason", FLAG_REASONS)
     def test_accepts_each_valid_reason(self, reason):
-        """UTC-41-TC-02 — every permitted reason inserts exactly one flag."""
+        """UTC-42-TC-02 — every permitted reason inserts exactly one flag."""
         service, repo, _ = _service()
 
         out = run(service.flag_sighting("s1", reason, "r1"))
@@ -66,7 +66,7 @@ class TestFlagSighting:
         ("Inappropriate image", "Inappropriate_image"),
     ])
     def test_accepts_the_spec_spellings(self, supplied, stored):
-        """MD-39 spells two reasons with spaces; the enum does not. They must
+        """MD-43 spells two reasons with spaces; the enum does not. They must
         still be accepted, and stored in the enum's spelling."""
         service, repo, _ = _service()
 
@@ -75,7 +75,7 @@ class TestFlagSighting:
         assert repo.create_flag.call_args.args[0]["reason"] == stored
 
     def test_inserts_pending_with_reporter_from_the_token(self):
-        """UTC-41-TC-03 — status Pending and reporter_id from the caller."""
+        """UTC-42-TC-03 — status Pending and reporter_id from the caller."""
         service, repo, _ = _service()
 
         run(service.flag_sighting("s1", "Spam", "r1"))
@@ -86,7 +86,7 @@ class TestFlagSighting:
         assert payload["sighting_id"] == "s1"
 
     def test_unknown_target_sighting_raises_not_found(self):
-        """UTC-41-TC-04 — no such sighting => FlagTargetNotFound (API -> 404),
+        """UTC-42-TC-04 — no such sighting => FlagTargetNotFound (API -> 404),
         and no orphan row is written."""
         service, repo, _ = _service(sighting=None)
 
@@ -96,7 +96,7 @@ class TestFlagSighting:
         repo.create_flag.assert_not_called()
 
     def test_db_error_propagates(self):
-        """UTC-41-TC-05 — insert failure surfaces (API maps it to 500)."""
+        """UTC-42-TC-05 — insert failure surfaces (API maps it to 500)."""
         service, repo, _ = _service()
         repo.create_flag.side_effect = RuntimeError("db down")
 
