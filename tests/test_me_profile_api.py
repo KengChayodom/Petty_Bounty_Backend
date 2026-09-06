@@ -1,5 +1,6 @@
 """
-Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46/47, SRS-74/75).
+Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46/47,
+SRS-73 username, SRS-74 photograph, SRS-99 phone).
 
 The spec (`progress_2/method_specification.md`) maps BOTH MD-46 (username) and
 MD-47 (photo) to a single `PATCH /me`, so the two test-plan blocks exercise one
@@ -168,7 +169,7 @@ class TestUpdateProfilePhoto:
         repo.update_profile.assert_not_called()
 
     def test_non_image_extension_yields_400(self):
-        """UTC-44-TC-01 (format arc) — a non JPG/JPEG/PNG URL is rejected."""
+        """UTC-44-TC-02 — a non JPG/JPEG/PNG URL is rejected."""
         repo = _repo()
         r = _client(repo).patch(
             "/me", json={"photo_url": "http://x/a.gif"}
@@ -178,7 +179,7 @@ class TestUpdateProfilePhoto:
         repo.update_profile.assert_not_called()
 
     def test_writes_photo_url_scoped_to_self(self):
-        """UTC-44-TC-02 — the photo URL is written to the caller's own row."""
+        """UTC-44-TC-03 — the photo URL is written to the caller's own row."""
         updated = {"id": "u1", "profile_image_url": "http://x/a.jpg"}
         repo = _repo(profile=updated)
         r = _client(repo, user_id="u1").patch(
@@ -193,7 +194,7 @@ class TestUpdateProfilePhoto:
         )
 
     def test_missing_profile_yields_404(self):
-        """UTC-44-TC-03 — no such row -> 404 (both None and the port's own
+        """UTC-44-TC-04 — no such row means 404 (both None and the port's own
         UserProfileNotFound map to 404)."""
         repo = _repo()
         repo.update_profile.side_effect = UserProfileNotFound("ghost")
@@ -204,7 +205,7 @@ class TestUpdateProfilePhoto:
         assert r.status_code == 404
 
     def test_database_error_yields_500(self):
-        """UTC-44-TC-04 — an unexpected repo failure surfaces as 500."""
+        """UTC-44-TC-05 — an unexpected repo failure surfaces as 500."""
         repo = _repo()
         repo.update_profile.side_effect = Exception("connection reset")
         r = _client(repo).patch("/me", json={"photo_url": "http://x/a.jpg"})
@@ -216,6 +217,8 @@ class TestUpdateProfilePhoto:
 # Empty patch — neither field supplied is a 400 (no-op writes are refused).
 # --------------------------------------------------------------------------- #
 def test_empty_patch_yields_400():
+    """UTC-43-TC-09 — a PATCH supplying none of the three fields is refused
+    before any write, so a no-op edit cannot reach the database."""
     repo = _repo()
     r = _client(repo).patch("/me", json={})
 
