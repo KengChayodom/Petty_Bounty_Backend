@@ -1,6 +1,6 @@
 """
 Integration tests for apply_score_penalty() — the RPC behind an upheld flag
-(SRS-68, migrations/2026_08_20_flag_penalty_not_ban.sql).
+(SRS-73, migrations/2026_08_20_flag_penalty_not_ban.sql).
 
 Everything worth testing here lives in the database and is invisible to the
 unit suite, which stops at the repository port:
@@ -12,7 +12,7 @@ unit suite, which stops at the repository port:
   * atomicity — the audit row and the balance change are one unit;
   * the enum rename — 'Reviewed_Ban' is gone and 'Reviewed_Penalty' exists.
 
-Progress-II SRS traceability: SRS-68 (review a flag; uphold now deducts score
+Progress-II SRS traceability: SRS-73 (review a flag; uphold now deducts score
 rather than banning the reported user).
 """
 import json

@@ -144,3 +144,53 @@ def test_a_targeted_report_is_still_targeted_once_it_has_a_queue_row(conn, seed)
     assert rows[targeted][1] == "targeted"
     assert rows[targeted][2] is None
     assert rows[targeted][0] == "Pending"
+
+
+# --------------------------------------------------------------------------- #
+# hunter contact details — added 2026-09-02
+# --------------------------------------------------------------------------- #
+def _hunter_details(conn, pet_id):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, hunter_display_name, hunter_phone, "
+            "       hunter_profile_image_url "
+            "FROM sightings_for_pet(%s, 50, 0, FALSE)",
+            (pet_id,),
+        )
+        return {r[0]: r[1:] for r in cur.fetchall()}
+
+
+def test_returns_the_hunters_phone_and_photo(conn, seed):
+    """The owner's timeline card says "who reported this". The name alone is
+    not enough to act on: the owner has to be able to ring the person holding
+    their pet, and the card wants their face, not a grey icon."""
+    owner = seed.user()
+    hunter = seed.user(
+        display_name="Somchai",
+        phone="0812345678",
+        profile_image_url="https://storage.test/hunters/somchai.jpg",
+    )
+    pet = seed.missing_pet(owner_id=owner)
+    sighting = seed.sighting(hunter_id=hunter, initial_target_pet_id=pet)
+
+    row = _hunter_details(conn, pet)[sighting]
+
+    assert row == (
+        "Somchai",
+        "0812345678",
+        "https://storage.test/hunters/somchai.jpg",
+    )
+
+
+def test_hunter_details_are_null_when_the_profile_never_set_them(conn, seed):
+    """Phone and photo are optional on `users`, so the RPC has to answer NULL
+    rather than fail — the card then omits the phone line and draws the avatar
+    placeholder instead of inventing a number."""
+    owner = seed.user()
+    hunter = seed.user(display_name="Anon")
+    pet = seed.missing_pet(owner_id=owner)
+    sighting = seed.sighting(hunter_id=hunter, initial_target_pet_id=pet)
+
+    row = _hunter_details(conn, pet)[sighting]
+
+    assert row == ("Anon", None, None)

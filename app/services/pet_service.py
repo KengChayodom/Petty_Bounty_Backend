@@ -55,33 +55,23 @@ class PetService:
             Exception: If feature extraction or the DB operation fails
         """
         try:
-            # Step 1: AI Feature Extraction — same mask-isolated pipeline the
-            # live /sightings/ POST uses, so missing_pets and sightings vectors
-            # remain directly comparable for pgvector similarity.
+            # Feature extraction runs the one shared embed pipeline
+            # (AIManager.embed_image), so missing_pets and sightings vectors
+            # stay directly comparable for pgvector similarity.
             logger.info(f"Extracting features from pet image: {pet.image_url}")
-            image = await AIManager.download_image(str(pet.image_url))
-            results = await AIManager.run_yolo_seg(image)
-            # Off-thread for the same reason sighting_service does it: a
-            # full-frame numpy pass on the event loop stalls every concurrent
-            # request in the process.
-            iso = await asyncio.to_thread(
-                AIManager.isolate_subject,
-                image, results, expected_species=pet.species,
+            embedding = await AIManager.embed_image(
+                str(pet.image_url), expected_species=pet.species,
             )
-            if iso is None:
+            if embedding.used_full_frame:
                 logger.warning(
-                    "YOLO found no %s in %s; falling back to full-frame embedding",
+                    "YOLO found no %s in %s; used a full-frame embedding",
                     pet.species, pet.image_url,
                 )
-                target_image = image
-            else:
-                target_image, _, _, _ = iso
-            feature_vector = await AIManager.clip_encode(target_image)
 
-            # Step 2 + 3: build the payload (PostGIS point + status) ...
-            data = build_missing_pet_payload(pet, feature_vector=feature_vector)
+            data = build_missing_pet_payload(
+                pet, feature_vector=embedding.feature_vector,
+            )
 
-            # Step 4: Insert via the repository
             logger.info(f"Registering missing pet: {pet.pet_name}")
             created = await asyncio.to_thread(repo.insert_missing_pet, data)
             logger.info(f"Missing pet registered successfully: {created['id']}")
@@ -138,7 +128,7 @@ class PetService:
         repo: MissingPetRepository, owner_id: str
     ) -> list[dict]:
         """
-        MD-34 / SRS-65 — the owner's "My Reports" list.
+        MD-38 — the owner's "My Reports" list.
 
         Scoping is structural: the port takes an owner_id, so there is no query
         shape here that could return another owner's reports. Newest-first
@@ -183,7 +173,7 @@ class PetService:
         species: str | None = None,
     ) -> Page:
         """
-        MD-37 / SRS-64 — platform-wide browse for moderation.
+        MD-41 — platform-wide browse for moderation.
 
         `status=None` means "every status", not "status IS NULL"; the filter is
         applied by the repository only when one was supplied. The admin gate
@@ -256,7 +246,7 @@ class PetService:
         repo: MissingPetRepository, pet_id: str, admin_id: str
     ) -> dict:
         """
-        MD-38 / SRS-66 — remove a report that violates the guidelines.
+        MD-42 — remove a report that violates the guidelines.
 
         UD-14's postcondition is "removed from the database and the search map",
         so this is a hard delete rather than a hidden flag. The moderation

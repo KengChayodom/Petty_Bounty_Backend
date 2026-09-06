@@ -37,6 +37,15 @@ BYID_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_get_missing_pet_b
 SM_UNIQUE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_06_10_fix_sighting_matches_unique.sql"
 PENALTY_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_20_flag_penalty_not_ban.sql"
 OWNER_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_21_owner_driven_resolution.sql"
+EXPIRES_AT_MIGRATION = BACKEND_ROOT / "migrations" / "2026-09-01_post_expires_at.sql"
+ROLE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_role_assignment.sql"
+OWNER_DETAIL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_pet_owner_details.sql"
+HUNTER_DETAIL_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_02_sighting_hunter_details.sql"
+)
+DROP_PATTERN_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_05_drop_pattern_id.sql"
+)
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -71,12 +80,21 @@ def _apply_schema(dsn: str) -> None:
         SQL_DIR / "00_prelude.sql",
         REAL_MIGRATION,              # applied verbatim from the repo — not a copy
         FCM_MIGRATION,               # adds get_nearby_hunters + users.last_location
-        SQL_DIR / "10_color_pattern_columns.sql",  # prod-only cols by-id projects
+        SQL_DIR / "10_color_pattern_columns.sql",  # prod-only col by-id projects
         BYID_MIGRATION,              # adds get_missing_pet_by_id (the fixed shape)
         SM_UNIQUE_MIGRATION,         # adds sighting_matches UNIQUE (the upsert arbiter)
         PENALTY_MIGRATION,           # renames Reviewed_Ban, adds score_penalties + RPC
         SQL_DIR / "20_live_match_rpc.sql",
         OWNER_MIGRATION,             # owner_decide_sighting + the de-fanged resolve
+        EXPIRES_AT_MIGRATION,        # missing_pets.expires_at; read paths filter it
+        ROLE_MIGRATION,              # role_changes + find_user_by_email + assign_user_role
+        OWNER_DETAIL_MIGRATION,      # get_missing_pet_by_id projects the owner's contact
+        HUNTER_DETAIL_MIGRATION,     # sightings_for_pet projects the hunter's contact
+        DROP_PATTERN_MIGRATION,      # drops missing_pets.pattern_id, rebuilding the
+                                     # two RPCs that projected it. MUST stay last of
+                                     # the two by-id/nearby definitions, or an earlier
+                                     # migration re-creates a function selecting a
+                                     # column the shim no longer adds.
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:
@@ -114,7 +132,14 @@ class Seeder:
     def __init__(self, conn):
         self.conn = conn
 
-    def user(self, display_name="Hunter", role="user", total_score=0) -> uuid.UUID:
+    def user(self, display_name="Hunter", role="user", total_score=0,
+             phone=None, profile_image_url=None) -> uuid.UUID:
+        """A profile row (+ its auth.users parent).
+
+        `phone` / `profile_image_url` default to NULL — the state of a real
+        account that never filled them in, which is exactly the case the read
+        RPCs have to survive.
+        """
         uid = uuid.uuid4()
         with self.conn.cursor() as cur:
             cur.execute(
@@ -122,9 +147,10 @@ class Seeder:
                 (uid, f"{uid}@test.local"),
             )
             cur.execute(
-                "INSERT INTO users (id, display_name, role, total_score) "
-                "VALUES (%s, %s, %s::user_role, %s)",
-                (uid, display_name, role, total_score),
+                "INSERT INTO users "
+                "  (id, display_name, role, total_score, phone, profile_image_url) "
+                "VALUES (%s, %s, %s::user_role, %s, %s, %s)",
+                (uid, display_name, role, total_score, phone, profile_image_url),
             )
         return uid
 
@@ -147,9 +173,11 @@ class Seeder:
     def missing_pet(self, *, owner_id=None, species="Cat", status="Searching",
                     lat=13.7563, lon=100.5018, vector=None, bounty=1000,
                     pet_name="Pet", age_days=0) -> uuid.UUID:
-        # age_days backdates created_at: posts expire out of the match RPC and
-        # the map query after 7 days (2026-08-21 migration), and that rule is
-        # only testable if a test can seed a post older than "now".
+        # age_days backdates BOTH created_at and expires_at: the match RPC and
+        # the map query filter `expires_at > NOW()` (2026-09-01 migration), and
+        # expires_at is granted 7 days from filing, so a post seeded age_days
+        # old expires 7 - age_days from now — negative once age_days > 7. This
+        # is the only way a test can seed a post that has already aged out.
         pid = uuid.uuid4()
         vec = vec_literal(vector) if vector is not None else None
         with self.conn.cursor() as cur:
@@ -157,13 +185,14 @@ class Seeder:
                 "INSERT INTO missing_pets "
                 "(id, owner_id, pet_name, species, characteristics, bounty_amount, "
                 " last_seen_location, last_seen_time, image_url, feature_vector, status, "
-                " created_at) "
+                " created_at, expires_at) "
                 "VALUES (%s, %s, %s, %s::pet_species, '{}'::jsonb, %s, "
                 "        ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, NOW(), "
                 "        %s, %s::vector, %s::pet_status, "
-                "        NOW() - make_interval(days => %s))",
+                "        NOW() - make_interval(days => %s), "
+                "        NOW() - make_interval(days => %s) + INTERVAL '7 days')",
                 (pid, owner_id, pet_name, species, bounty, lon, lat,
-                 "http://img/pet.jpg", vec, status, age_days),
+                 "http://img/pet.jpg", vec, status, age_days, age_days),
             )
         return pid
 

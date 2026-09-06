@@ -13,6 +13,7 @@ on disk are now unused — keep or delete at your discretion.
 import asyncio
 import io
 import logging
+from dataclasses import dataclass
 
 import httpx
 import numpy as np
@@ -21,6 +22,25 @@ from sentence_transformers import SentenceTransformer
 from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EmbedResult:
+    """The output of the one shared embed pipeline (`AIManager.embed_image`).
+
+    On a YOLO hit every field is populated. On a YOLO miss the full frame is
+    encoded instead: `feature_vector` still holds a vector, `used_full_frame`
+    is True, and `species` / `confidence` / `bbox` / `isolated_image` /
+    `primary_color_hex` are all None. A caller that must refuse a miss checks
+    `used_full_frame`.
+    """
+    feature_vector: list[float]
+    species: str | None = None
+    confidence: float | None = None
+    bbox: list[float] | None = None
+    isolated_image: Image.Image | None = None
+    primary_color_hex: str | None = None
+    used_full_frame: bool = False
 
 
 class AIManager:
@@ -159,6 +179,55 @@ class AIManager:
         model = cls.get_clip()
         vector = await asyncio.to_thread(model.encode, image)
         return vector.tolist()
+
+    @classmethod
+    async def embed_image(
+        cls,
+        image_url: str,
+        *,
+        expected_species: str | None = None,
+        with_color: bool = False,
+    ) -> EmbedResult:
+        """Download → YOLO-seg → mask-isolate → CLIP-encode — the ONE pipeline
+        every caller shares (`register_missing_pet`, `analyze_sighting_image`,
+        the `process_and_save_sighting` cache-miss re-run, and
+        `seed_embeddings.py`), so seed and live vectors stay comparable by
+        construction rather than by a parity test.
+
+        `expected_species` constrains subject selection to that one species; pass
+        None for the "forgiving" behaviour (highest-confidence target animal).
+        `with_color` also runs the coat-colour extraction, which is only
+        meaningful on a genuine isolated crop and is skipped on a full-frame
+        fallback.
+
+        On a YOLO miss the full frame is CLIP-encoded so a vector always exists
+        (`used_full_frame=True`); a caller that must refuse a miss inspects that
+        flag itself — this method never raises for "no animal found".
+        """
+        image = await cls.download_image(image_url)
+        results = await cls.run_yolo_seg(image)
+        iso = await asyncio.to_thread(
+            cls.isolate_subject, image, results,
+            expected_species=expected_species,
+        )
+        if iso is None:
+            return EmbedResult(
+                feature_vector=await cls.clip_encode(image),
+                used_full_frame=True,
+            )
+        isolated, species, confidence, bbox = iso
+        return EmbedResult(
+            feature_vector=await cls.clip_encode(isolated),
+            species=species,
+            confidence=confidence,
+            bbox=bbox,
+            isolated_image=isolated,
+            primary_color_hex=(
+                await asyncio.to_thread(cls.extract_coat_color_hex, isolated)
+                if with_color else None
+            ),
+            used_full_frame=False,
+        )
 
     # Coat-colour extraction tunables. A mask-isolated crop has a BLACK
     # background, so foreground = pixels bright enough to not be that black

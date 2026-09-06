@@ -1,7 +1,7 @@
 """
 End-to-end auth-guard wiring test.
 
-Progress-I SRS traceability: SRS-44 + SRS-13 (the JWT is extracted & validated to
+Progress-I SRS traceability: SRS-21 + SRS-13 (the JWT is extracted & validated to
 authorize the request — a valid bearer token resolves to the user and the route
 runs, honouring the authenticated session; a missing/invalid token is rejected
 with 401). The login UI itself (SRS-11/12/14) is exercised manually.

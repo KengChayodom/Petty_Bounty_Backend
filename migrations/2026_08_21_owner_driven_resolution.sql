@@ -61,7 +61,7 @@
 BEGIN;
 
 -- ---------- 1. backfill: give targeted sightings a queue row ----------
--- A targeted report (SRS-50: "I am looking at this pet's page and I see it")
+-- A targeted report (SRS-49: "I am looking at this pet's page and I see it")
 -- carries `initial_target_pet_id` and no `sighting_matches` row, because it
 -- skips the AI match entirely. That was harmless while the owner's verdict did
 -- nothing. Now the verdict IS the currency: with no row there is nothing to

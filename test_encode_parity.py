@@ -10,8 +10,9 @@ vector and a Flutter-uploaded sighting of the SAME source image, the drift
 comes from one of three places:
 
     1. A preprocessing step in the backend (e.g. cropping to a YOLO bbox,
-       resizing, color-space change) — fix is to make the path match
-       seed_embeddings.py::get_image_embedding exactly.
+       resizing, color-space change) — every path now runs the single
+       `AIManager.embed_image` pipeline, so a mismatch here means that method
+       itself changed.
     2. The Flutter client re-encoding / down-sampling the image before
        upload — cosine vs the seed image bytes will land in 0.95-0.99.
     3. An entirely different photo of the same cat (different lighting,
@@ -24,9 +25,10 @@ Usage:
     # Compare two URLs: e.g. seed image vs the URL the Flutter app uploaded.
     python test_encode_parity.py <seed_url> <flutter_upload_url>
 
-If (a) the backend now mirrors seed_embeddings.py and (b) the Flutter app
-uploads byte-identical bytes, end-to-end similarity for the same source
-image should be ~1.0. A value like 0.87 indicates either (1) or (2).
+If (a) the backend runs the shared `AIManager.embed_image` pipeline (seed and
+live both do) and (b) the Flutter app uploads byte-identical bytes, end-to-end
+similarity for the same source image should be ~1.0. A value like 0.87
+indicates either (1) or (2).
 """
 import io
 import sys
@@ -44,7 +46,8 @@ DEFAULT_URL = (
 
 
 def encode(model: SentenceTransformer, url: str) -> np.ndarray:
-    """Mirror of seed_embeddings.py::get_image_embedding."""
+    """Raw CLIP on the full frame — isolates CLIP determinism from the
+    YOLO-isolate step that AIManager.embed_image adds on top."""
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
     img = Image.open(io.BytesIO(resp.content)).convert("RGB")

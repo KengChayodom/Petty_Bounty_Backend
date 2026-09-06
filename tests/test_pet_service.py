@@ -1,10 +1,10 @@
 """
 Unit tests for app/services/pet_service.py:
 
-  * UTC-12  get_nearby_missing_pets (MD-15, SRS-24) — Home Map proximity query:
+  * UTC-12  get_nearby_missing_pets (MD-15, SRS-27) — Home Map proximity query:
     WKT centre in POINT(lng lat) form, km->m conversion, limit passthrough,
     empty-result normalisation, transport-error re-raise.
-  * UTC-13  register_missing_pet (MD-11, SRS-47, trigger of SRS-21) — owner
+  * UTC-33  register_missing_pet (MD-37, SRS-56–65, trigger of SRS-24) — owner
     report runs the same mask-isolate + CLIP path as the live sighting save
     (full-frame fallback on a YOLO miss), builds the PostGIS point, inserts with
     status "Searching" and the feature vector; a no-row insert raises.
@@ -27,7 +27,7 @@ from app.repositories.missing_pet_repository import (
 )
 from app.repositories.pagination import Page
 from app.schemas.missing_pets import MissingPetCreate
-from app.services.ai_service import AIManager
+from app.services.ai_service import AIManager, EmbedResult
 from app.services.pet_service import PetService
 
 
@@ -80,7 +80,7 @@ class TestGetNearbyMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-13  register_missing_pet
+# UTC-33  register_missing_pet
 # --------------------------------------------------------------------------- #
 def _make_pet(**overrides):
     data = {
@@ -98,23 +98,22 @@ def _make_pet(**overrides):
     return MissingPetCreate(**data)
 
 
-def _patch_ai(monkeypatch, *, isolate_return, vector):
-    """Mock the AIManager pipeline at the class boundary.
-    download/yolo/clip are awaited; isolate_subject is synchronous."""
-    monkeypatch.setattr(AIManager, "download_image", AsyncMock(return_value="SRC_IMG"))
-    monkeypatch.setattr(AIManager, "run_yolo_seg", AsyncMock(return_value="YOLO_RESULTS"))
-    monkeypatch.setattr(AIManager, "isolate_subject", MagicMock(return_value=isolate_return))
-    monkeypatch.setattr(AIManager, "clip_encode", AsyncMock(return_value=vector))
+def _patch_embed(monkeypatch, *, result):
+    """Mock the one shared embed pipeline at the class boundary. The individual
+    download → YOLO → isolate → CLIP wiring is asserted in test_ai_service.py."""
+    monkeypatch.setattr(
+        AIManager, "embed_image", AsyncMock(return_value=result)
+    )
 
 
 class TestRegisterMissingPet:
     def test_success_inserts_isolated_vector(self, monkeypatch):
         vector = [0.1, 0.2, 0.3]
-        _patch_ai(
-            monkeypatch,
-            isolate_return=("CROP_IMG", "Dog", 0.9, [1.0, 2.0, 3.0, 4.0]),
-            vector=vector,
-        )
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=vector, species="Dog", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+            used_full_frame=False,
+        ))
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
@@ -127,31 +126,29 @@ class TestRegisterMissingPet:
         assert payload["status"] == "Searching"
         assert payload["species"] == "Dog"
         assert payload["last_seen_location"] == "POINT(100.5018 13.7563)"
-        # isolate constrained to the user-confirmed species; CLIP encodes the crop
-        AIManager.isolate_subject.assert_called_once_with(
-            "SRC_IMG", "YOLO_RESULTS", expected_species="Dog"
+        # embed is constrained to the user-confirmed species
+        AIManager.embed_image.assert_awaited_once_with(
+            "https://img.example/pet.jpg", expected_species="Dog"
         )
-        AIManager.clip_encode.assert_awaited_once_with("CROP_IMG")
 
     def test_yolo_miss_falls_back_to_full_frame(self, monkeypatch):
         vector = [0.4, 0.5]
-        _patch_ai(monkeypatch, isolate_return=None, vector=vector)
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=vector, used_full_frame=True,
+        ))
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
         run(PetService.register_missing_pet(repo, _make_pet()))
 
-        # On a YOLO miss CLIP encodes the original downloaded frame, and that
-        # vector is what gets inserted.
-        AIManager.clip_encode.assert_awaited_once_with("SRC_IMG")
+        # On a YOLO miss embed_image full-frame-encodes; that vector is inserted.
         assert repo.insert_missing_pet.call_args.args[0]["feature_vector"] == vector
 
     def test_insert_returning_no_row_raises_valueerror(self, monkeypatch):
-        _patch_ai(
-            monkeypatch,
-            isolate_return=("CROP_IMG", "Dog", 0.9, [1.0, 2.0, 3.0, 4.0]),
-            vector=[0.1],
-        )
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=[0.1], species="Dog", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+        ))
         repo = _repo()
         # The adapter raises MissingPetNotSaved (a ValueError) on an empty insert.
         repo.insert_missing_pet.side_effect = MissingPetNotSaved({})
@@ -163,7 +160,7 @@ class TestRegisterMissingPet:
         # A NON-ValueError from the AI pipeline is caught and re-raised as a
         # generic Exception carrying context (distinct from the ValueError path).
         monkeypatch.setattr(
-            AIManager, "download_image", AsyncMock(side_effect=RuntimeError("net")))
+            AIManager, "embed_image", AsyncMock(side_effect=RuntimeError("net")))
         repo = _repo()
 
         with pytest.raises(Exception) as ei:
@@ -264,7 +261,7 @@ class TestGetSightingsForPet:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-29  get_my_missing_pets (MD-34, SRS-65) — the owner's "My Reports" list.
+# UTC-34  get_my_missing_pets (MD-38, SRS-68) — the owner's "My Reports" list.
 #
 # As-built note: the test plan writes this as `PetService(pet_repo)
 # .get_my_missing_pets(owner_id)`, but PetService is a static-method service
@@ -278,7 +275,7 @@ class TestGetSightingsForPet:
 # --------------------------------------------------------------------------- #
 class TestGetMyMissingPets:
     def test_returns_only_the_callers_reports(self):
-        """UTC-29-TC-01 — the caller's own id is what reaches the repo."""
+        """UTC-34-TC-01 — the caller's own id is what reaches the repo."""
         repo = _repo()
         repo.get_by_owner.side_effect = lambda owner_id: {
             "u1": [{"id": "pet-1", "owner_id": "u1", "status": "Searching"}],
@@ -292,7 +289,7 @@ class TestGetMyMissingPets:
         repo.get_by_owner.assert_called_once_with("u1")
 
     def test_empty_when_owner_has_none(self):
-        """UTC-29-TC-02 — an owner with no reports gets [], not None, and no
+        """UTC-34-TC-02 — an owner with no reports gets [], not None, and no
         count query is fired for an empty list of ids."""
         repo = _repo()
         repo.get_by_owner.return_value = []
@@ -301,7 +298,7 @@ class TestGetMyMissingPets:
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
-        """UTC-29-TC-03 — DB failure propagates (API maps it to 500)."""
+        """UTC-34-TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.get_by_owner.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
@@ -374,7 +371,7 @@ class TestGetMyMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-31  list_all_missing_pets (MD-37, SRS-64) — admin browse.
+# UTC-36  list_all_missing_pets (MD-41, SRS-71) — admin browse.
 #
 # The distinction that matters is "no filter" vs "filter on None": passing
 # status=None must mean every status, never `status IS NULL`. Both TC-01 and
@@ -387,7 +384,7 @@ class TestGetMyMissingPets:
 # --------------------------------------------------------------------------- #
 class TestListAllMissingPets:
     def test_applies_status_filter_when_given(self):
-        """UTC-31-TC-01 — a supplied status is forwarded verbatim."""
+        """UTC-36-TC-01 — a supplied status is forwarded verbatim."""
         repo = _repo()
         repo.list_all.return_value = Page(
             [{"id": "pet-1", "status": "Searching"}], 1,
@@ -401,7 +398,7 @@ class TestListAllMissingPets:
         repo.list_all.assert_called_once_with("Searching", None, limit=10000, offset=0)
 
     def test_no_status_filter_when_none(self):
-        """UTC-31-TC-02 — status=None reaches the repo as None (= no filter)."""
+        """UTC-36-TC-02 — status=None reaches the repo as None (= no filter)."""
         repo = _repo()
         repo.list_all.return_value = Page([{"id": "pet-1"}, {"id": "pet-2"}], 2)
 
@@ -411,21 +408,21 @@ class TestListAllMissingPets:
         repo.list_all.assert_called_once_with(None, None, 20, 0)
 
     def test_error_is_reraised(self):
-        """UTC-31-TC-03 — DB failure propagates (API maps it to 500)."""
+        """UTC-36-TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.list_all.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(PetService.list_all_missing_pets(repo))
 
     def test_empty_page_returns_empty_list(self):
-        """UTC-31-TC-04 — an empty page is [], not None."""
+        """UTC-36-TC-04 — an empty page is [], not None."""
         repo = _repo()
         repo.list_all.return_value = Page([], 0)
         out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
         assert out.items == [] and out.total == 0
 
     def test_total_is_the_filter_count_not_the_page_length(self):
-        """UTC-31-TC-05 — a full page of a larger result carries the real total.
+        """UTC-36-TC-05 — a full page of a larger result carries the real total.
 
         This is the whole point of the count: page 1 of 57 reports must say 57,
         because that is what tells the console pages 2 and 3 exist.
@@ -440,7 +437,7 @@ class TestListAllMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-32  remove_missing_pet (MD-38, SRS-66) — admin removal.
+# UTC-37  remove_missing_pet (MD-42, SRS-70) — admin removal.
 #
 # UD-14's postcondition is "removed from the database and the search map", so
 # the deletion is real; "no row deleted" is the not-found signal, which the
@@ -448,7 +445,7 @@ class TestListAllMissingPets:
 # --------------------------------------------------------------------------- #
 class TestRemoveMissingPet:
     def test_removes_the_report(self):
-        """UTC-32-TC-01 — the row is deleted and the deleted row returned."""
+        """UTC-37-TC-01 — the row is deleted and the deleted row returned."""
         repo = _repo()
         repo.remove.return_value = {"id": "p1", "pet_name": "Mochi"}
 
@@ -458,21 +455,21 @@ class TestRemoveMissingPet:
         repo.remove.assert_called_once_with("p1")
 
     def test_not_found_raises_valueerror(self):
-        """UTC-32-TC-02 — nothing deleted => ValueError (API maps it to 404)."""
+        """UTC-37-TC-02 — nothing deleted => ValueError (API maps it to 404)."""
         repo = _repo()
         repo.remove.return_value = None
         with pytest.raises(ValueError):
             run(PetService.remove_missing_pet(repo, "ghost", "a1"))
 
     def test_error_is_reraised(self):
-        """UTC-32-TC-03 — DB failure propagates (API maps it to 500)."""
+        """UTC-37-TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.remove.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(PetService.remove_missing_pet(repo, "p1", "a1"))
 
     def test_removal_is_audit_logged_with_the_admin(self, caplog):
-        """The moderation action is recorded — MD-38 says the removal is a
+        """The moderation action is recorded — MD-42 says the removal is a
         recorded action, and the log line is where that record lives."""
         repo = _repo()
         repo.remove.return_value = {"id": "p1"}
