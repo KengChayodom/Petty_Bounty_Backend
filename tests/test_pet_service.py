@@ -169,6 +169,25 @@ class TestRegisterMissingPet:
         assert "Failed to register missing pet" in str(ei.value)
         repo.insert_missing_pet.assert_not_called()
 
+    def test_insert_failure_is_wrapped_with_the_same_context(self, monkeypatch):
+        """UTC-33-TC-05 [error] - the insert category has two error choices and
+        they answer differently: storing no row is a ValueError the route reads
+        as a failed creation, while a transport failure is wrapped as the
+        generic error the route reads as a server fault. Framing only the first
+        left the wrapping clause untested from the repository side."""
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=[0.1], species="Dog", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+        ))
+        repo = _repo()
+        repo.insert_missing_pet.side_effect = RuntimeError("db down")
+
+        with pytest.raises(Exception) as ei:
+            run(PetService.register_missing_pet(repo, _make_pet()))
+
+        assert "Failed to register missing pet" in str(ei.value)
+        assert not isinstance(ei.value, ValueError)
+
 
 # --------------------------------------------------------------------------- #
 # get_missing_pet_by_id — the row PLUS the derived badge the list endpoint
@@ -369,6 +388,26 @@ class TestGetMyMissingPets:
         with pytest.raises(RuntimeError):
             run(PetService.get_my_missing_pets(repo, "u1"))
 
+    def test_an_aged_out_report_with_no_sighting_reads_expired(self):
+        """UTC-34-TC-09 [single] - the fourth badge, and the boundary of the
+        expiry column. A report that aged out with nothing to show for it is
+        no longer matched by the read paths, so the owner is waiting on
+        something that can no longer happen and the card must say so. The
+        badge rule itself is tested in test_pet_logic.py; what is framed here
+        is that this list passes `expires_at` through to it at all."""
+        repo = _repo()
+        repo.get_by_owner.return_value = [{
+            "id": "p1",
+            "status": "Searching",
+            "expires_at": "2020-01-01T00:00:00Z",
+        }]
+        repo.get_sighting_links_for_pets.return_value = []
+
+        out = run(PetService.get_my_missing_pets(repo, "u1"))
+
+        assert out[0]["post_status"] == "Expired"
+        assert out[0]["sighting_count"] == 0
+
 
 # --------------------------------------------------------------------------- #
 # UTC-36  list_all_missing_pets (MD-41, SRS-71) — admin browse.
@@ -434,6 +473,100 @@ class TestListAllMissingPets:
 
         assert len(out.items) == 20
         assert out.total == 57
+
+    def test_a_stored_status_is_forwarded_with_the_window(self):
+        """UTC-36-TC-06 - the database path. Found and Resolved are stored
+        values, so the predicate and the window both go to the query and the
+        total the database reports is already correct. This is the choice
+        TC-01 was believed to frame until the audit of 07/09/2026 found that
+        Searching takes the other path entirely."""
+        repo = _repo()
+        repo.list_all.return_value = Page([{"id": "pet-1", "status": "Found"}], 1)
+
+        out = run(PetService.list_all_missing_pets(
+            repo, limit=20, offset=0, status="Found",
+        ))
+
+        assert out.total == 1
+        repo.list_all.assert_called_once_with("Found", None, 20, 0)
+
+    def test_spotted_keeps_only_the_reports_that_have_a_sighting(self):
+        """UTC-36-TC-07 [property DERIVED] - Spotted is not a stored value.
+        Both Spotted and Searching sit in the database as status='Searching',
+        and only the sighting count separates them, so the service reads the
+        whole Searching bucket, counts, and filters. Nothing framed this
+        branch before 07/09/2026."""
+        repo = _repo()
+        repo.list_all.return_value = Page([
+            {"id": "p1", "status": "Searching"},
+            {"id": "p2", "status": "Searching"},
+        ], 2)
+        repo.get_sighting_links_for_pets.return_value = [
+            {"pet_id": "p2", "sighting_id": "s1", "owner_status": None},
+        ]
+
+        out = run(PetService.list_all_missing_pets(
+            repo, limit=20, offset=0, status="Spotted",
+        ))
+
+        assert [p["id"] for p in out.items] == ["p2"]
+        assert out.total == 1
+        repo.list_all.assert_called_once_with(
+            "Searching", None, limit=10_000, offset=0,
+        )
+
+    def test_searching_keeps_only_the_reports_that_have_none(self):
+        """UTC-36-TC-08 [property DERIVED] - the other half of the same split.
+        A console asking for Searching wants the reports nobody has answered
+        yet, so a report carrying a sighting belongs to the Spotted bucket and
+        must not appear in both."""
+        repo = _repo()
+        repo.list_all.return_value = Page([
+            {"id": "p1", "status": "Searching"},
+            {"id": "p2", "status": "Searching"},
+        ], 2)
+        repo.get_sighting_links_for_pets.return_value = [
+            {"pet_id": "p2", "sighting_id": "s1", "owner_status": None},
+        ]
+
+        out = run(PetService.list_all_missing_pets(
+            repo, limit=20, offset=0, status="Searching",
+        ))
+
+        assert [p["id"] for p in out.items] == ["p1"]
+        assert out.total == 1
+
+    def test_the_derived_page_is_sliced_after_the_filter(self):
+        """UTC-36-TC-09 [if DERIVED] - the window cannot be applied by the
+        query on this path, because the filter that decides membership runs
+        after the rows come back. The total is therefore the depth of the
+        filtered result and the page is cut from it here, which is what keeps
+        the console's page arithmetic correct."""
+        repo = _repo()
+        repo.list_all.return_value = Page(
+            [{"id": f"p{i}", "status": "Searching"} for i in range(5)], 5,
+        )
+        repo.get_sighting_links_for_pets.return_value = []
+
+        out = run(PetService.list_all_missing_pets(
+            repo, limit=2, offset=2, status="Searching",
+        ))
+
+        assert [p["id"] for p in out.items] == ["p2", "p3"]
+        assert out.total == 5
+
+    def test_the_species_filter_is_forwarded(self):
+        """UTC-36-TC-10 - the second filter of this browse, unframed until
+        07/09/2026. It is independent of the status filter, so a console
+        narrowing to one species must not silently widen the status."""
+        repo = _repo()
+        repo.list_all.return_value = Page([{"id": "p1"}], 1)
+
+        run(PetService.list_all_missing_pets(
+            repo, limit=20, offset=0, species="Cat",
+        ))
+
+        repo.list_all.assert_called_once_with(None, "Cat", 20, 0)
 
 
 # --------------------------------------------------------------------------- #

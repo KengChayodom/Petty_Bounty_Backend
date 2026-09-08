@@ -778,9 +778,6 @@ class TestGetHunterActivity:
         repo.get_awards_for_hunter.return_value = []
         repo.get_penalties_for_hunter.return_value = [
             {"sighting_id": "s2", "points": 10, "reason": "Not_a_pet"},
-            # sighting_id is ON DELETE SET NULL, so a deduction can outlive the
-            # sighting it punished — it must not crash the assembly.
-            {"sighting_id": None, "points": 5, "reason": "Spam"},
         ]
         svc = SightingService(repo, ai_manager=None)
 
@@ -791,8 +788,29 @@ class TestGetHunterActivity:
             "sighting_id": "s2", "points": 10, "reason": "Not_a_pet",
         }
 
+    def test_a_penalty_that_outlived_its_sighting_is_left_out_here(self):
+        """UTC-45-TC-04 - a deduction carrying no sighting is a separate choice
+        of the same category and was sharing TC-03's test method until
+        2026-09-07. `sighting_id` is ON DELETE SET NULL, so a deduction can
+        outlive what it punished; it must not crash the assembly and it must
+        not attach itself to an unrelated sighting. It is still counted in the
+        cumulative summary of UTC-46."""
+        repo = _repo()
+        repo.count_sightings_for_hunter.return_value = 1
+        repo.list_sightings_for_hunter.return_value = [{"id": "s1"}]
+        repo.get_matches_for_sightings.return_value = []
+        repo.get_awards_for_hunter.return_value = []
+        repo.get_penalties_for_hunter.return_value = [
+            {"sighting_id": None, "points": 5, "reason": "Spam"},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        s1 = run(svc.get_hunter_activity("hunter-1"))["sightings"][0]
+
+        assert s1["score_penalty"] is None
+
     def test_a_sighting_can_carry_both_an_award_and_a_penalty(self):
-        """They are independent records: a sighting that earned points on one
+        """UTC-45-TC-06 - they are independent records: a sighting that earned points on one
         case can still have been flagged and upheld."""
         repo = _repo()
         repo.count_sightings_for_hunter.return_value = 1
@@ -890,6 +908,27 @@ class TestGetHunterStats:
         svc = SightingService(repo, ai_manager=None)
 
         assert run(svc.get_hunter_stats("hunter-1"))["total_score"] == 0
+
+    def test_a_deduction_with_no_points_counts_as_zero(self):
+        """UTC-46-TC-06 [single] - the boundary of the summed column. A
+        deduction row whose points figure is absent must count as nothing
+        rather than fail the whole card, which is a stats screen the hunter
+        opens far more often than any administrator opens the queue."""
+        repo = _repo()
+        repo.get_user.return_value = {"total_score": 10}
+        repo.count_sightings_for_hunter.return_value = 1
+        repo.count_owner_confirmed_sightings_for_hunter.return_value = 0
+        repo.count_contributions_for_hunter.return_value = 0
+        repo.get_penalties_for_hunter.return_value = [
+            {"sighting_id": "s1", "points": None},
+            {"sighting_id": "s2", "points": 5},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        out = run(svc.get_hunter_stats("hunter-1"))
+
+        assert out["penalties_received"] == 2
+        assert out["penalty_points_total"] == 5
 
     def test_repo_error_is_reraised(self):
         repo = _repo()
@@ -1058,6 +1097,21 @@ class TestConfirmSightingAction:
         svc, repo = self._svc(row=None)
         with pytest.raises(LookupError):
             run(svc.confirm_sighting_action("ghost", "hunter-1", "Caught"))
+        repo.set_sighting_action_type.assert_not_called()
+
+    def test_a_database_failure_is_not_a_missing_sighting(self):
+        """UTC-47-TC-10 [error] - the read has two error choices and only one
+        was framed until 2026-09-07. A read that finds nothing is a missing
+        sighting, which the route reports as 404, and a read that fails is a
+        server fault, which it reports as 500. Collapsing the two would tell a
+        hunter their own sighting had gone away every time the database was
+        unreachable."""
+        svc, repo = self._svc()
+        repo.get_sighting_for_action.side_effect = RuntimeError("db down")
+
+        with pytest.raises(RuntimeError):
+            run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
         repo.set_sighting_action_type.assert_not_called()
 
     def test_row_vanishing_between_read_and_write_is_not_found(self):

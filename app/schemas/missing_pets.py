@@ -184,6 +184,37 @@ class MissingPetUpdate(BaseModel):
             )
         return normalized
 
+    # Same rule as MissingPetCreate. Without it an edit could blank the column
+    # that carries the coat description, where a create is held to a non-empty
+    # object: one column, two contracts, and an owner who sends an empty object
+    # loses the description of their own lost pet.
+    @field_validator('characteristics')
+    @classmethod
+    def characteristics_must_not_be_empty(
+        cls, v: Optional[dict]
+    ) -> Optional[dict]:
+        """Validate that characteristics dictionary is not empty."""
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("Characteristics cannot be empty")
+        return v
+
+    # Same rule and same normalisation as MissingPetCreate. Without it the
+    # column could be written '#ffffff' or an unparseable string by an edit
+    # while a create is held to '#RRGGBB' upper case — one column, two
+    # contracts, and the colour re-ranking (sighting_logic.color_similarity)
+    # silently loses the candidate whose hex it cannot parse.
+    @field_validator('primary_color_hex')
+    @classmethod
+    def validate_hex_color(cls, v: Optional[str]) -> Optional[str]:
+        """Validate hex color format."""
+        if v is None:
+            return v
+        if not re.match(r'^#[0-9A-Fa-f]{6}$', v):
+            raise ValueError("Invalid hex color format. Use #RRGGBB format.")
+        return v.upper()
+
     class Config:
         json_schema_extra = {
             "example": {

@@ -77,6 +77,34 @@ class TestVerifySighting:
         with pytest.raises(RuntimeError):
             run(AdminService(repo).verify_sighting("s1", "Dismissed"))
 
+    def test_dismissed_is_written_as_the_withdrawal(self):
+        """UTC-41-TC-05 - the other value of the permitted pair, and the only
+        one production actually writes: nothing writes Verified any more, so
+        framing that choice alone left the withdrawal itself unframed."""
+        repo = _repo()
+        repo.update_sighting_verification.return_value = {
+            "id": "s1", "verification_status": "Dismissed",
+        }
+
+        out = run(AdminService(repo).verify_sighting("s1", "Dismissed"))
+
+        assert out["verification_status"] == "Dismissed"
+        repo.update_sighting_verification.assert_called_once_with(
+            "s1", "Dismissed",
+        )
+
+    def test_the_change_is_recorded(self, caplog):
+        """UTC-41-TC-06 - a moderation action leaves a record, the same
+        convention remove_missing_pet follows. Without it the withdrawal of a
+        sighting cannot be questioned afterwards."""
+        repo = _repo()
+        repo.update_sighting_verification.return_value = {"id": "s1"}
+
+        with caplog.at_level("WARNING"):
+            run(AdminService(repo).verify_sighting("s1", "Dismissed"))
+
+        assert "s1" in caplog.text and "Dismissed" in caplog.text
+
 
 # --------------------------------------------------------------------------- #
 # get_sighting_timeline
@@ -406,6 +434,31 @@ class TestReviewReport:
         report_repo.update_report.return_value = None
         with pytest.raises(ReportNotFound):
             run(service.review_report("r1", "Dismissed", "a1"))
+
+    def test_a_reason_outside_the_tariff_charges_the_mildest_default(self):
+        """UTC-40-TC-18 - the reason column selects the default deduction, and
+        a value the tariff table does not carry is the one choice of that
+        category nothing framed. It must charge the mildest default rather
+        than raise: the reason was already validated when the flag was
+        written, so an unknown value here means the enumeration grew a member
+        the table has not caught up with, and refusing to moderate the queue
+        is worse than under-charging one hunter."""
+        service, repo, report_repo = _moderation_service(
+            flag={
+                "id": "r1", "sighting_id": "s1", "status": "Pending",
+                "reason": "Something_new",
+            },
+            sighting={"id": "s1", "hunter_id": "h9"},
+        )
+
+        run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        assert repo.apply_score_penalty.call_args.kwargs["points"] == min(
+            PENALTY_POINTS_BY_REASON.values()
+        )
+        report_repo.update_report.assert_called_once_with(
+            "r1", {"status": "Reviewed_Penalty"}
+        )
 
 
 # --------------------------------------------------------------------------- #
