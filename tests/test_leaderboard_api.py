@@ -241,3 +241,14 @@ class TestLeaderboardBounties:
         app.include_router(lb.router)
         app.dependency_overrides[get_supabase_client] = lambda: _Supabase()
         assert TestClient(app).get("/leaderboard/bounties").status_code == 401
+
+    @pytest.mark.parametrize("qs", ["limit=0", "limit=101", "offset=-1"])
+    def test_tc07_out_of_range_paging_is_refused_before_any_query(self, qs):
+        """UTC-51-TC-07 [error] - this board declares the same bounds as the
+        hunter board and had no case for them until 2026-09-07, so the two
+        blocks disagreed about which choices of the window category were
+        framed while the two routes enforce the identical rule."""
+        fake = _Supabase()  # nothing queued: a query would raise IndexError
+        r = _client(fake).get(f"/leaderboard/bounties?{qs}")
+        assert r.status_code == 422
+        assert fake.log == []

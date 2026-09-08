@@ -71,17 +71,6 @@ class TestFindUserByEmail:
         assert not isinstance(result, list)
         assert set(result) >= {"id", "display_name", "role"}
 
-    def test_tc02_address_is_matched_in_full(self):
-        service, repo = _service()
-        repo.find_by_email.return_value = None  # nothing holds the near miss
-
-        with pytest.raises(UserAccountNotFound):
-            run(service.find_user_by_email("hunter@example.co"))
-
-        # The near-matching account is not disclosed: the port was asked for the
-        # address as typed, and nothing came back.
-        repo.find_by_email.assert_called_once_with("hunter@example.co")
-
     def test_tc03_case_is_ignored(self):
         service, repo = _service()
         repo.find_by_email.return_value = ACCOUNT
@@ -92,11 +81,21 @@ class TestFindUserByEmail:
         assert result == ACCOUNT
 
     def test_tc04_unknown_address(self):
+        """UTC-52-TC-03 [error] - an address nobody holds is a missing account,
+        and the port was asked for it exactly as typed, so no near miss is
+        expanded into a prefix and no account is disclosed by having nearly
+        matched.
+
+        Absorbed a struck duplicate on 2026-09-07: it took this same [error]
+        choice of the lookup and asserted the same forwarding, differing only
+        in whether the address it sent was described as a near miss."""
         service, repo = _service()
         repo.find_by_email.return_value = None
 
         with pytest.raises(UserAccountNotFound):
-            run(service.find_user_by_email("ghost@example.com"))
+            run(service.find_user_by_email("hunter@example.co"))
+
+        repo.find_by_email.assert_called_once_with("hunter@example.co")
 
     @pytest.mark.parametrize(
         "address",
