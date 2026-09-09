@@ -532,7 +532,7 @@ class AdminService:
 
         Not paginated: the admin set is a handful of people by design — scaling
         to hundreds would require rethinking the console's trust model, not just
-        adding a LIMIT. Returns id, display_name, role sorted by display_name.
+        adding a LIMIT. Returns id, username, role sorted by username.
         """
         return await asyncio.to_thread(self._list_admins_sync)
 

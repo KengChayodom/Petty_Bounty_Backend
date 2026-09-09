@@ -289,7 +289,7 @@ class PetService:
         Owner-facing chronological list. Delegates to the `sightings_for_pet`
         RPC which unions AI-matched (sighting_matches.missing_pet_id) with
         explicitly-targeted (sightings.initial_target_pet_id) and joins the
-        hunter display name. Doing it in SQL means a single round-trip and
+        hunter username. Doing it in SQL means a single round-trip and
         no client-side dedupe.
 
         `owner_id` scopes the read to one account's own report. It is what makes

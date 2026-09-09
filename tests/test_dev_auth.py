@@ -219,21 +219,21 @@ class TestDevRegister:
         assert r.status_code == 200
         assert r.json() == body
 
-    def test_display_name_is_sent_as_user_metadata(self, client, gotrue):
+    def test_username_is_sent_as_user_metadata(self, client, gotrue):
         gotrue["resp"] = _FakeResponse(200, json_data={"user": {"id": "u"}})
 
         client.post(
             "/dev/register",
-            json={"email": "a@b.co", "password": "longpw", "display_name": "Ken"},
+            json={"email": "a@b.co", "password": "longpw", "username": "Ken"},
         )
 
         sent = gotrue["calls"][0]
-        # Guards the handle_new_user trigger contract: display_name must land in
+        # Guards the handle_new_user trigger contract: username must land in
         # `data` (→ user_metadata), not be dropped.
         assert sent["url"] == "https://proj.supabase.co/auth/v1/signup"
-        assert sent["json"]["data"] == {"display_name": "Ken"}
+        assert sent["json"]["data"] == {"username": "Ken"}
 
-    def test_no_display_name_omits_data_key(self, client, gotrue):
+    def test_no_username_omits_data_key(self, client, gotrue):
         gotrue["resp"] = _FakeResponse(200, json_data={"user": {"id": "u"}})
 
         client.post(

@@ -100,14 +100,14 @@ def _set_email(conn, user_id, email):
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_resolves_the_exact_address(self, conn, seed):
-        uid = seed.user(display_name="Kus", role="user")
+        uid = seed.user(username="Kus", role="user")
         _set_email(conn, uid, "kus@example.com")
 
         row = _lookup(conn, "kus@example.com")
 
         assert row is not None
         assert uuid.UUID(row["id"]) == uid
-        assert row["display_name"] == "Kus"
+        assert row["username"] == "Kus"
         assert row["role"] == "user"
 
     def test_address_matching_is_case_insensitive(self, conn, seed):
@@ -148,8 +148,8 @@ class TestFindUserByEmail:
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_grants_the_role_and_records_the_change(self, conn, seed):
-        boss = seed.user(display_name="Boss", role="admin")
-        target = seed.user(display_name="Kus", role="user")
+        boss = seed.user(username="Boss", role="admin")
+        target = seed.user(username="Kus", role="user")
 
         out = _assign(conn, target=target, role="admin", changed_by=boss)
 

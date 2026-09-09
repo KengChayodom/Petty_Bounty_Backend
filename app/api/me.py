@@ -61,8 +61,8 @@ async def update_my_location(
 class ProfileUpdateRequest(BaseModel):
     """Profile edit payload (MD-46 username + phone, MD-47 photo). Every field
     is optional so the client can save any one alone or all three together, but
-    at least one must be present — an empty PATCH is rejected. `display_name`
-    carries the username (stored in the users.display_name column, SRS-73);
+    at least one must be present — an empty PATCH is rejected. `username`
+    carries the username (stored in the users.username column, SRS-73);
     `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-74);
     `phone` is the mobile number (users.phone, SRS-99).
 
@@ -71,7 +71,7 @@ class ProfileUpdateRequest(BaseModel):
     either), and inventing one here would reject numbers the same account could
     already have registered with.
     """
-    display_name: str | None = None
+    username: str | None = None
     photo_url: str | None = None
     phone: str | None = None
 
@@ -91,13 +91,13 @@ async def update_my_profile(
     """
     patch: dict = {}
 
-    if payload.display_name is not None:
-        display_name = payload.display_name.strip()
-        if not display_name:
+    if payload.username is not None:
+        username = payload.username.strip()
+        if not username:
             raise HTTPException(
                 status_code=400, detail="Username cannot be empty."
             )
-        patch["display_name"] = display_name
+        patch["username"] = username
 
     if payload.photo_url is not None:
         photo_url = payload.photo_url.strip()

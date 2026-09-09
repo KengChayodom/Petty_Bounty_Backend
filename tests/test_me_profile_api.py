@@ -48,22 +48,22 @@ class TestUpdateProfileName:
     def test_empty_name_yields_400_and_repo_unchanged(self):
         """UTC-43-TC-01 — blank username is rejected before any write."""
         repo = _repo()
-        r = _client(repo).patch("/me", json={"display_name": ""})
+        r = _client(repo).patch("/me", json={"username": ""})
 
         assert r.status_code == 400
         repo.update_profile.assert_not_called()
 
-    def test_writes_display_name_scoped_to_self(self):
+    def test_writes_username_scoped_to_self(self):
         """UTC-43-TC-02 — the username is written to the caller's own row."""
-        updated = {"id": "u1", "display_name": "Kus"}
+        updated = {"id": "u1", "username": "Kus"}
         repo = _repo(profile=updated)
-        r = _client(repo, user_id="u1").patch("/me", json={"display_name": "Kus"})
+        r = _client(repo, user_id="u1").patch("/me", json={"username": "Kus"})
 
         assert r.status_code == 200
         assert r.json()["data"] == updated
         # Scoping is structural: user_id comes from the JWT, and the patch
-        # carries the new username on the display_name column.
-        repo.update_profile.assert_called_once_with("u1", {"display_name": "Kus"})
+        # carries the new username on the username column.
+        repo.update_profile.assert_called_once_with("u1", {"username": "Kus"})
 
     def test_the_username_is_trimmed(self):
         """UTC-43-TC-09 — surrounding space is stripped before the write, the
@@ -71,16 +71,16 @@ class TestUpdateProfileName:
         which left the strip that decides whether a name is blank asserted on
         the refusal path only."""
         repo = _repo(profile={"id": "u1"})
-        r = _client(repo).patch("/me", json={"display_name": "  Kus  "})
+        r = _client(repo).patch("/me", json={"username": "  Kus  "})
 
         assert r.status_code == 200
-        repo.update_profile.assert_called_once_with("u1", {"display_name": "Kus"})
+        repo.update_profile.assert_called_once_with("u1", {"username": "Kus"})
 
     def test_missing_profile_yields_404(self):
         """UTC-43-TC-03 — no such row -> 404."""
         repo = _repo(profile=None)
         r = _client(repo, user_id="ghost").patch(
-            "/me", json={"display_name": "Kus"}
+            "/me", json={"username": "Kus"}
         )
 
         assert r.status_code == 404
@@ -89,7 +89,7 @@ class TestUpdateProfileName:
         """UTC-43-TC-04 — an unexpected repo failure surfaces as 500."""
         repo = _repo()
         repo.update_profile.side_effect = Exception("connection reset")
-        r = _client(repo).patch("/me", json={"display_name": "Kus"})
+        r = _client(repo).patch("/me", json={"username": "Kus"})
 
         assert r.status_code == 500
 
@@ -145,7 +145,7 @@ class TestUpdateProfilePhone:
         r = _client(repo).patch(
             "/me",
             json={
-                "display_name": "Kus",
+                "username": "Kus",
                 "phone": "0812345678",
                 "photo_url": "https://storage.test/u1.jpg",
             },
@@ -155,7 +155,7 @@ class TestUpdateProfilePhone:
         repo.update_profile.assert_called_once_with(
             "u1",
             {
-                "display_name": "Kus",
+                "username": "Kus",
                 "profile_image_url": "https://storage.test/u1.jpg",
                 "phone": "0812345678",
             },
