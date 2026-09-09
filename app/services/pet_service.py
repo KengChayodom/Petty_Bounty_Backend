@@ -193,7 +193,7 @@ class PetService:
         """
         # Normalised BEFORE any I/O, so an unrecognised filter is a 400 at the
         # edge rather than a failed enumeration cast surfacing as a 500 — the
-        # same rule MD-52's queue listing follows.
+        # same rule MD-51's queue listing follows.
         status = normalize_browse_status(status)
         species = normalize_browse_species(species)
         try:

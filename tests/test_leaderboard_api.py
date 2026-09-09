@@ -1,8 +1,8 @@
 """
 Route unit tests for the Rank List boards.
 
-  UTC-50  GET /leaderboard/users     (MD-55, SRS-91/92)
-  UTC-51  GET /leaderboard/bounties  (MD-56, SRS-93)
+  UTC-50  GET /leaderboard/users     (MD-54, SRS-91/92)
+  UTC-51  GET /leaderboard/bounties  (MD-55, SRS-93)
 
 These two are the one documented exception to the repository seam — they are
 straight ordered reads with no schema of their own, so they live in the route
@@ -115,7 +115,7 @@ def _user(uid, score, name=None):
 
 # ----------------------------------------------------------------- UTC-50 ---
 class TestLeaderboardUsers:
-    """UTC-50 · MD-55 `leaderboard_users` · SRS-91, SRS-92."""
+    """UTC-50 · MD-54 `leaderboard_users` · SRS-91, SRS-92."""
 
     def test_tc01_ranks_run_from_one_and_follow_the_offset(self):
         page = [_user("a", 90), _user("b", 80), _user("c", 70)]
@@ -190,7 +190,7 @@ class TestLeaderboardUsers:
 
 # ----------------------------------------------------------------- UTC-51 ---
 class TestLeaderboardBounties:
-    """UTC-51 · MD-56 `leaderboard_bounties` · SRS-93."""
+    """UTC-51 · MD-55 `leaderboard_bounties` · SRS-93."""
 
     @staticmethod
     def _pet(pid, amount):

@@ -86,7 +86,7 @@ class ReviewReportRequest(BaseModel):
 
 class AssignRoleRequest(BaseModel):
     """
-    Body of PATCH /admin/users/{target_user_id}/role (MD-58).
+    Body of PATCH /admin/users/{target_user_id}/role (MD-57).
 
     `role` is a plain string rather than a Literal for the same reason
     `ReviewReportRequest.decision` is: an unrecognised value comes back as the

@@ -292,7 +292,7 @@ VERIFICATION_PENDING = "Pending"
 
 # The withdrawal, and the ONLY value that freezes a hunter's action_type. The
 # third value of the enum, 'Verified', is written solely to reverse a withdrawal
-# (MD-51) and deliberately does not freeze anything: a reversal puts the sighting
+# (MD-50) and deliberately does not freeze anything: a reversal puts the sighting
 # back on the owner's timeline and back in their queue, so leaving the hunter
 # locked out would make it a partial undo. See `SightingActionLocked`.
 VERIFICATION_DISMISSED = "Dismissed"

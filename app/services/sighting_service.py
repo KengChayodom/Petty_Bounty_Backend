@@ -385,7 +385,7 @@ class SightingService:
             )
 
         # Only 'Dismissed' locks. 'Verified' is written solely to REVERSE a
-        # dismissal (MD-51), and a reversal restores the sighting completely —
+        # dismissal (MD-50), and a reversal restores the sighting completely —
         # back on the owner's timeline, back in their queue — so freezing the
         # hunter out of it would make the undo a partial one. A row whose
         # verification_status is missing is treated as Pending: the column is

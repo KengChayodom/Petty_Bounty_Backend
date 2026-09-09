@@ -37,7 +37,7 @@ class SightingActionLocked(ValueError):
     flip 'Spotted' to 'Caught' afterwards would re-shape a report somebody has
     already ruled on, so the column is frozen for as long as the withdrawal
     stands. 'Verified' does NOT lock: it is written only to reverse a
-    withdrawal (MD-51), and the reversal restores the sighting completely.
+    withdrawal (MD-50), and the reversal restores the sighting completely.
 
     Subclasses ValueError like the moderation errors do, so route handlers MUST
     catch it before their generic `except ValueError` 400 (see
