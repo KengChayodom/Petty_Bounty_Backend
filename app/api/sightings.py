@@ -212,19 +212,34 @@ async def get_my_activity(
         )
 
 
-@router.get("/{sighting_id}/matches")
+@router.get("/{sighting_id}/matches", response_model=StandardResponse)
 async def get_ranking(
     sighting_id: str,
     limit: int = 5,
     threshold: float = 0.0,
     service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
 ):
-    """Re-query matches for a previously stored sighting."""
+    """Re-query matches for a previously stored sighting.
+
+    Authenticated since 2026-09-09. It was the one sighting read reachable
+    anonymously, and a match names a missing pet and the strength of the
+    resemblance, which is not public information.
+
+    Answers 400, not 404, for a malformed request. `get_matches` raises
+    ValueError for a sighting that cannot be matched — one carrying no feature
+    vector, for instance — which is a bad request rather than a missing row, and
+    reporting it as 404 told the caller the sighting did not exist when it did.
+    """
     try:
         matches = await service.get_matches(sighting_id, limit, threshold)
-        return {"status": "success", "matches": matches}
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(matches)} matches.",
+            data={"matches": matches},
+        )
     except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve))
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ranking query failed: {e}")
 
@@ -233,8 +248,14 @@ async def get_ranking(
 async def get_sighting(
     sighting_id: str,
     service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
 ):
-    """Fetch a single sighting record (feature_vector stripped)."""
+    """Fetch a single sighting record (feature_vector stripped).
+
+    Authenticated since 2026-09-09. The row carries where an animal was seen and
+    who reported it, which the owner timeline endpoint has always refused to
+    serve anonymously for that reason; this one had been left open.
+    """
     try:
         sighting = await service.get_sighting_by_id(sighting_id)
         if not sighting:

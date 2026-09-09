@@ -50,7 +50,10 @@ import asyncio
 import logging
 from typing import Optional
 
-from app.repositories.admin_repository import AdminRepository
+from app.repositories.admin_repository import (
+    AdminRepository,
+    SightingNotFound,
+)
 from app.repositories.pagination import Page
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
@@ -108,7 +111,7 @@ class AdminService:
                 sighting_id, verification_status
             )
             if not row:
-                raise ValueError(f"Sighting {sighting_id} not found")
+                raise SightingNotFound(sighting_id)
             row = strip_feature_vector(row)
             logger.warning(
                 "Admin set sighting %s verification_status=%s",

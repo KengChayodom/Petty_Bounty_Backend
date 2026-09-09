@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.auth import require_admin
 from app.core.database import get_supabase_client
 from app.repositories.missing_pet_repository import MissingPetRepository
+from app.repositories.admin_repository import SightingNotFound
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
@@ -71,8 +72,13 @@ async def verify_sighting(
             message=f"Sighting marked {payload.verification_status}.",
             data=row,
         )
+    except SightingNotFound as nf:
+        raise HTTPException(status_code=404, detail=str(nf))
     except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve))
+        # A state outside the permitted pair is a malformed request, not a
+        # missing row. Both were 404 until 2026-09-09, which told a caller who
+        # mistyped the state that the sighting did not exist.
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to verify sighting: {e}"
@@ -112,11 +118,13 @@ async def list_all_missing_pets(
     offset: int = Query(0, ge=0),
     status: str | None = Query(
         None,
-        description="Optional filter: Searching, Spotted, Found, or Resolved.",
+        description="Optional filter: Searching, Spotted, Found, or Resolved. "
+                    "Anything else is a 400.",
     ),
     species: str | None = Query(
         None,
-        description="Optional filter: Cat, Dog, Bird, or Other.",
+        description="Optional filter: Cat, Dog, Bird, or Other. "
+                    "Anything else is a 400.",
     ),
     repo: MissingPetRepository = Depends(get_missing_pet_repository),
     admin_id: str = Depends(require_admin),
@@ -126,6 +134,12 @@ async def list_all_missing_pets(
     Returns `{items, total, limit, offset}`. `total` counts every report
     matching `status`, not just this page, so the console can draw numbered
     pages instead of guessing whether another page exists.
+
+    Both filters are normalised before any I/O, so an unrecognised value is a
+    400 rather than a failed enumeration cast surfacing as a 500. `Pending`,
+    `Expired` and `Rescued` are refused on purpose: they are badge names
+    `derive_post_status` produces for a card, not buckets this endpoint
+    implements.
     """
     try:
         page = await PetService.list_all_missing_pets(
@@ -139,6 +153,11 @@ async def list_all_missing_pets(
                 limit=limit, offset=offset,
             ),
         )
+    except ValueError as ve:
+        # An unrecognised filter, refused before any I/O. This handler must
+        # precede the generic one below, which would otherwise report a
+        # caller's typo as a server fault.
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to list missing pets: {e}"

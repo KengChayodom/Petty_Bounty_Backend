@@ -23,6 +23,52 @@ POST_STATUS_SPOTTED = "Spotted"    # search open, at least one sighting exists
 POST_STATUS_EXPIRED = "Expired"    # aged out with no sighting to show for it
 POST_STATUS_RESCUED = "Rescued"    # the owner closed the search
 
+# The values `GET /admin/missing-pets` accepts as its `status` filter, and the
+# only ones its route description advertises. Two of them are stored (`Found`,
+# `Resolved`) and two are derived from the sighting count over the one stored
+# bucket `Searching`, which is why the browse splits on them rather than passing
+# them straight to the query.
+#
+# `Pending`, `Expired` and `Rescued` are deliberately NOT here. They are badge
+# names produced by derive_post_status for a card, not filters this endpoint
+# implements, and accepting them would mean silently returning the wrong bucket.
+BROWSE_STATUS_FILTERS = ("Searching", "Spotted", "Found", "Resolved")
+
+# `pet_species` (sql.txt:7). The browse forwards this straight to the query.
+BROWSE_SPECIES_FILTERS = ("Cat", "Dog", "Bird", "Other")
+
+
+def _normalize_filter(value, permitted, name):
+    """Map a caller-supplied filter onto its enumeration, or raise.
+
+    `None` passes through and means "every value", not "a value which is null",
+    the convention MD-41 and MD-52 share. Anything else unrecognised raises
+    ValueError so the route answers 400, rather than reaching PostgREST and
+    failing there as an enumeration cast, which surfaces as a 500. Matching is
+    case-insensitive but exact on the names, the same rule
+    moderation_logic.normalize_flag_status_filter follows.
+    """
+    if value is None:
+        return None
+    key = value.strip().lower()
+    for permitted_value in permitted:
+        if permitted_value.lower() == key:
+            return permitted_value
+    raise ValueError(
+        f"{name} must be one of {', '.join(permitted)}; got {value!r}"
+    )
+
+
+def normalize_browse_status(status):
+    """MD-41's `status` filter. See _normalize_filter."""
+    return _normalize_filter(status, BROWSE_STATUS_FILTERS, "status")
+
+
+def normalize_browse_species(species):
+    """MD-41's `species` filter. See _normalize_filter."""
+    return _normalize_filter(species, BROWSE_SPECIES_FILTERS, "species")
+
+
 # `pet_status` values that mean the search is over. 'Resolved' is written by the
 # resolve RPC; 'Found' is what the owner's End Search button writes.
 _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})

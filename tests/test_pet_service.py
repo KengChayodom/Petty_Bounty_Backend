@@ -278,6 +278,48 @@ class TestGetSightingsForPet:
         with pytest.raises(RuntimeError):
             run(PetService.get_sightings_for_pet(repo, "pet-1"))
 
+    # --- owner scoping, added 2026-09-09 (UTC-38-TC-03 to TC-05) ------------ #
+    # Being signed in was the only check on this read until that date, so any
+    # authenticated account could pull any owner's timeline — and these rows
+    # carry where a pet was seen plus the hunter's name and telephone number.
+
+    def test_the_owners_own_report_is_read(self):
+        repo = _repo()
+        repo.get_missing_pet_by_id.return_value = {
+            "id": "pet-1", "owner_id": "owner-1"
+        }
+        repo.sightings_for_pet.return_value = [{"id": "s1"}]
+        out = run(PetService.get_sightings_for_pet(
+            repo, "pet-1", owner_id="owner-1"
+        ))
+        assert out == [{"id": "s1"}]
+
+    @pytest.mark.parametrize("pet", [
+        {"id": "pet-1", "owner_id": "somebody-else"},   # owned by another
+        None,                                          # no such report
+    ])
+    def test_a_report_the_caller_does_not_own_is_never_read(self, pet):
+        """Both answer the same missing-report error, deliberately: a caller who
+        owns nothing must not be able to tell an existing report from an absent
+        one. The timeline query must not run at all — answering after reading it
+        would leak the row count through timing and through any log."""
+        repo = _repo()
+        repo.get_missing_pet_by_id.return_value = pet
+        with pytest.raises(LookupError):
+            run(PetService.get_sightings_for_pet(
+                repo, "pet-1", owner_id="owner-1"
+            ))
+        repo.sightings_for_pet.assert_not_called()
+
+    def test_omitting_the_owner_keeps_the_unscoped_read(self):
+        """The parameter defaults to None so the signature stayed compatible.
+        A caller that omits it gets the old behaviour, which is why the route is
+        the thing that must pass it and is asserted separately."""
+        repo = _repo()
+        repo.sightings_for_pet.return_value = [{"id": "s1"}]
+        assert run(PetService.get_sightings_for_pet(repo, "pet-1")) == [{"id": "s1"}]
+        repo.get_missing_pet_by_id.assert_not_called()
+
 
 # --------------------------------------------------------------------------- #
 # UTC-34  get_my_missing_pets (MD-38, SRS-68) — the owner's "My Reports" list.

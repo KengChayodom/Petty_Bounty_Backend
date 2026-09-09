@@ -15,10 +15,13 @@ from app.services.moderation_logic import (
     DECISION_UPHOLD,
     FLAG_REASONS,
     FLAG_STATUSES,
+    MAX_PENALTY_POINTS,
+    PENALTY_POINTS_BY_REASON,
     build_flag_payload,
     normalize_flag_decision,
     normalize_flag_reason,
     normalize_flag_status_filter,
+    resolve_penalty_points,
 )
 
 
@@ -123,3 +126,62 @@ class TestBuildFlagPayload:
     def test_bad_reason_raises_before_a_payload_exists(self):
         with pytest.raises(ValueError):
             build_flag_payload("s1", "Ugly", "r1")
+
+
+class TestResolvePenaltyPoints:
+    """UTC-56 — how many points an upheld flag costs its hunter.
+
+    These were framed through AdminService.review_report until 09/09/2026, which
+    meant standing up two repository stubs, a Pending flag and a sighting
+    carrying a hunter just to read back a number this function returns on its
+    own. The rules live here; UTC-40 keeps only the seam, meaning that whatever
+    this returns is what reaches the deduction.
+    """
+
+    @pytest.mark.parametrize("reason,expected", sorted(
+        PENALTY_POINTS_BY_REASON.items()
+    ))
+    def test_each_reason_charges_its_own_tariff(self, reason, expected):
+        """Omitting the figure falls back to the tariff for the reason, and the
+        three reasons are not interchangeable: each selects a different default,
+        which is the whole point of keeping a table rather than one constant."""
+        assert resolve_penalty_points(reason, None) == expected
+
+    @pytest.mark.parametrize("custom", [1, 7, MAX_PENALTY_POINTS])
+    def test_an_administrators_figure_overrides_the_tariff(self, custom):
+        """The ruling an administrator actually made wins over the default, for
+        every reason, so the tariff is a starting point and not a cap."""
+        for reason in FLAG_REASONS:
+            assert resolve_penalty_points(reason, custom) == custom
+
+    def test_zero_is_a_figure_and_not_an_omission(self):
+        """0 must survive as a deliberate ruling: uphold the flag, withdraw the
+        sighting, charge nothing. A truthiness test here would read 0 as "not
+        supplied" and silently charge the tariff instead, which is the one
+        substitution the caller cannot detect."""
+        for reason in FLAG_REASONS:
+            assert resolve_penalty_points(reason, 0) == 0
+            assert PENALTY_POINTS_BY_REASON[reason] != 0
+
+    @pytest.mark.parametrize("bad", [-1, -100, MAX_PENALTY_POINTS + 1, 10_000])
+    def test_a_figure_outside_the_range_is_refused(self, bad):
+        """Both bounds are refused. The cap exists so a mistyped extra digit
+        cannot wipe a hunter's whole history, and the floor because a negative
+        deduction would be an award."""
+        with pytest.raises(ValueError):
+            resolve_penalty_points("Spam", bad)
+
+    @pytest.mark.parametrize("unknown", ["Harassment", "", None, "spam"])
+    def test_a_reason_the_table_does_not_hold_charges_the_mildest_figure(
+        self, unknown
+    ):
+        """It does not raise. The reason was validated by normalize_flag_reason
+        when the flag was created, so an unknown value here means the enum grew
+        a member this table has not caught up with, and refusing to moderate the
+        queue is a worse failure than under-charging one hunter. Note "spam" in
+        the wrong casing is among these: this function does not normalise, it
+        looks up, so the mildest figure is what a caller who skipped the
+        normaliser gets."""
+        assert resolve_penalty_points(unknown, None) == min(
+            PENALTY_POINTS_BY_REASON.values()
+        )
