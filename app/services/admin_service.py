@@ -310,13 +310,18 @@ class AdminService:
                 sighting = self.repo.update_sighting_verification(
                     sighting_id, "Dismissed"
                 )
-                sighting_dismissed = bool(sighting)
-                # The dismiss write hands back the row, which is the only place
-                # the offender's identity is available — the flag itself names
-                # the *reporter*, never the reported.
-                penalty = self._apply_penalty(
-                    flag, sighting, report_id, admin_id, penalty_points,
-                )
+                if not sighting:
+                    sighting_dismissed = True
+                    penalty = None
+                    logger.warning(
+                        "Flag %s upheld but sighting %s was already dismissed (or missing) — "
+                        "skipping double penalty deduction", report_id, sighting_id
+                    )
+                else:
+                    sighting_dismissed = True
+                    penalty = self._apply_penalty(
+                        flag, sighting, report_id, admin_id, penalty_points,
+                    )
             else:
                 logger.warning(
                     "Flag %s upheld but carries no sighting_id — nothing to "
