@@ -40,6 +40,9 @@ OWNER_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_21_owner_driven_resolut
 EXPIRES_AT_MIGRATION = BACKEND_ROOT / "migrations" / "2026-09-01_post_expires_at.sql"
 ROLE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_role_assignment.sql"
 OWNER_DETAIL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_pet_owner_details.sql"
+DROP_PATTERN_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_05_drop_pattern_id.sql"
+)
 HUNTER_DETAIL_MIGRATION = (
     BACKEND_ROOT / "migrations" / "2026_09_02_sighting_hunter_details.sql"
 )

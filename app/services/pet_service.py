@@ -25,6 +25,8 @@ from app.services.pet_logic import (
     attach_sighting_counts,
     build_missing_pet_payload,
     count_sightings,
+    normalize_browse_species,
+    normalize_browse_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,6 +191,11 @@ class PetService:
         console can draw numbered pages rather than infer a next page from a
         full one.
         """
+        # Normalised BEFORE any I/O, so an unrecognised filter is a 400 at the
+        # edge rather than a failed enumeration cast surfacing as a 500 — the
+        # same rule MD-52's queue listing follows.
+        status = normalize_browse_status(status)
+        species = normalize_browse_species(species)
         try:
             return await asyncio.to_thread(
                 PetService._list_all_missing_pets_sync,
@@ -275,6 +282,8 @@ class PetService:
         pet_id: str,
         limit: int = 50,
         offset: int = 0,
+        *,
+        owner_id: str | None = None,
     ) -> list[dict]:
         """
         Owner-facing chronological list. Delegates to the `sightings_for_pet`
@@ -282,13 +291,38 @@ class PetService:
         explicitly-targeted (sightings.initial_target_pet_id) and joins the
         hunter display name. Doing it in SQL means a single round-trip and
         no client-side dedupe.
+
+        `owner_id` scopes the read to one account's own report. It is what makes
+        this method owner-facing rather than merely authenticated: the rows carry
+        the place a pet was seen and the hunter's own name and telephone number,
+        so a signed-in stranger reading another owner's timeline would be reading
+        a third party's contact details and location history. A report the caller
+        does not own is answered as a missing report, never as a refusal, so the
+        endpoint cannot be used to discover which identifiers exist — the same
+        rule `update_missing_pet_owned` and `decide_match` already follow.
+
+        Passing None keeps the unscoped read for callers that have already
+        established the right to see it; today nothing does, and a caller that
+        omits it is the bug this parameter exists to prevent.
+
+        Raises:
+            LookupError: no such report, or it belongs to another account
+                (API -> 404 for both).
         """
         try:
+            if owner_id is not None:
+                pet = await asyncio.to_thread(repo.get_missing_pet_by_id, pet_id)
+                if not pet or pet.get("owner_id") != owner_id:
+                    raise LookupError(
+                        f"Missing pet {pet_id} not found or not owned by you"
+                    )
             # owner never sees Dismissed reports -> include_dismissed=False
             return await asyncio.to_thread(
                 repo.sightings_for_pet,
                 pet_id, limit, offset, include_dismissed=False,
             )
+        except LookupError:
+            raise
         except Exception as e:
             logger.error("Error fetching sightings for pet %s: %s", pet_id, e)
             raise
