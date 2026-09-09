@@ -18,7 +18,7 @@ class SupabaseUserRepository:
         try:
             res = (
                 self._db.table("users")
-                .select("id, display_name, phone, role, total_score, profile_image_url, created_at")
+                .select("id, username, phone, role, total_score, profile_image_url, created_at")
                 .eq("id", user_id)
                 .single()
                 .execute()
@@ -133,9 +133,9 @@ class SupabaseUserRepository:
         # pagination is needed and count=exact is not requested.
         res = (
             self._db.table("users")
-            .select("id, display_name, role")
+            .select("id, username, role")
             .eq("role", "admin")
-            .order("display_name")
+            .order("username")
             .execute()
         )
         return res.data or []

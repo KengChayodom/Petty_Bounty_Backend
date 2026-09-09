@@ -52,7 +52,7 @@ def _service():
     return service, user_repo
 
 
-ACCOUNT = {"id": "u2", "display_name": "Kus", "role": "user"}
+ACCOUNT = {"id": "u2", "username": "Kus", "role": "user"}
 
 
 # --------------------------------------------------------------------------- #
@@ -69,7 +69,7 @@ class TestFindUserByEmail:
         # One account, not a page: the struck account browse must not come back
         # through this method.
         assert not isinstance(result, list)
-        assert set(result) >= {"id", "display_name", "role"}
+        assert set(result) >= {"id", "username", "role"}
 
     def test_tc03_case_is_ignored(self):
         service, repo = _service()
@@ -134,7 +134,7 @@ class TestAssignUserRole:
     def test_tc01_grants_the_administrator_role(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "user", "role_after": "admin",
         }
 
@@ -147,7 +147,7 @@ class TestAssignUserRole:
     def test_tc02_withdraws_the_administrator_role(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "admin", "role_after": "user",
         }
 
@@ -182,7 +182,7 @@ class TestAssignUserRole:
         """
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": False, "id": "a1", "display_name": "Boss",
+            "changed": False, "id": "a1", "username": "Boss",
             "role_before": "admin", "role_after": "admin",
         }
 
@@ -211,7 +211,7 @@ class TestAssignUserRole:
     def test_tc07_role_already_held_writes_nothing(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": False, "id": "u2", "display_name": "Kus",
+            "changed": False, "id": "u2", "username": "Kus",
             "role_before": "admin", "role_after": "admin",
         }
 
@@ -226,7 +226,7 @@ class TestAssignUserRole:
     def test_tc08_the_acting_administrator_is_recorded(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "user", "role_after": "admin",
         }
 
@@ -247,7 +247,7 @@ class TestAssignUserRole:
         """UD-23 writes the actor as "Administrator"; the column holds 'admin'."""
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "user", "role_after": "admin",
         }
 
@@ -325,8 +325,8 @@ class TestListAdmins:
     def test_tc01_returns_every_account_holding_the_role(self):
         service, repo = _service()
         rows = [
-            {"id": "a1", "display_name": "Chaiudom", "role": "admin"},
-            {"id": "a2", "display_name": "Kus", "role": "admin"},
+            {"id": "a1", "username": "Chaiudom", "role": "admin"},
+            {"id": "a2", "username": "Kus", "role": "admin"},
         ]
         repo.list_admins.return_value = rows
 
@@ -342,12 +342,12 @@ class TestListAdmins:
         """
         service, repo = _service()
         repo.list_admins.return_value = [
-            {"id": "a1", "display_name": "Chaiudom", "role": "admin"},
+            {"id": "a1", "username": "Chaiudom", "role": "admin"},
         ]
 
         (row,) = run(service.list_admins())
 
-        assert set(row) == {"id", "display_name", "role"}
+        assert set(row) == {"id", "username", "role"}
 
     def test_tc03_no_administrators_is_a_success(self):
         """An empty roster is a page with nobody on it, not a not-found.

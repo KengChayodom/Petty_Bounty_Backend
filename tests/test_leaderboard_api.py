@@ -107,7 +107,7 @@ def _client(fake, user_id="me-1"):
 def _user(uid, score, name=None):
     return {
         "id": uid,
-        "display_name": name or uid,
+        "username": name or uid,
         "profile_image_url": None,
         "total_score": score,
     }

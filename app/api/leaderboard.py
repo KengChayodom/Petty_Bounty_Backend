@@ -36,7 +36,7 @@ async def leaderboard_users(
     try:
         res = (
             supabase.table("users")
-            .select("id, display_name, profile_image_url, total_score")
+            .select("id, username, profile_image_url, total_score")
             .order("total_score", desc=True)
             .order("id")
             .range(offset, offset + limit - 1)
@@ -60,14 +60,14 @@ async def leaderboard_users(
             entries.append({
                 "rank": current_rank,
                 "user_id": r["id"],
-                "display_name": r.get("display_name"),
+                "username": r.get("username"),
                 "profile_image_url": r.get("profile_image_url"),
                 "total_score": my_score,
             })
 
         me_res = (
             supabase.table("users")
-            .select("display_name, profile_image_url, total_score")
+            .select("username, profile_image_url, total_score")
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -83,7 +83,7 @@ async def leaderboard_users(
         me_standing = {
             "rank": (higher.count or 0) + 1,
             "user_id": user_id,
-            "display_name": me_row.get("display_name"),
+            "username": me_row.get("username"),
             "profile_image_url": me_row.get("profile_image_url"),
             "total_score": my_score,
         }

@@ -17,7 +17,7 @@ CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Penalty', 'Dismissed'); 
 -- 3. สร้างตาราง USERS
 CREATE TABLE users (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    display_name VARCHAR(255) NOT NULL,
+    username VARCHAR(255) NOT NULL,
     phone VARCHAR(20),
     role user_role DEFAULT 'user',
     total_score INTEGER DEFAULT 0,
@@ -267,7 +267,7 @@ CREATE OR REPLACE FUNCTION sightings_for_pet(
 ) RETURNS TABLE (
     id                   UUID,
     hunter_id            UUID,
-    hunter_display_name  VARCHAR,
+    hunter_username  VARCHAR,
     image_url            TEXT,
     detected_species     pet_species,
     action_type          action_type,
@@ -309,7 +309,7 @@ BEGIN
           FROM combined
          GROUP BY sighting_id
     )
-    SELECT s.id, s.hunter_id, u.display_name,
+    SELECT s.id, s.hunter_id, u.username,
            s.image_url, s.detected_species, s.action_type,
            s.sighting_status, s.verification_status,
            COALESCE(sm.owner_status, 'Pending'::owner_decision),

@@ -7,7 +7,7 @@ the route signature or its exception mapping:
   1. `GET /missing-pets/{pet_id}/sightings` took the caller's identity from the
      token and never used it, so any signed-in account could read any owner's
      sighting timeline — rows that carry where a pet was seen plus the hunter's
-     display name and telephone number.
+     username and telephone number.
   2. `GET /sightings/{sighting_id}` and `GET /sightings/{sighting_id}/matches`
      had no authentication dependency at all. They were the only sighting reads
      reachable anonymously, found by walking `app/api/` with ast rather than by
