@@ -1100,7 +1100,7 @@ class TestConfirmSightingAction:
         repo.set_sighting_action_type.assert_not_called()
 
     def test_a_database_failure_is_not_a_missing_sighting(self):
-        """UTC-47-TC-10 [error] - the read has two error choices and only one
+        """UTC-47-TC-09 [error] - the read has two error choices and only one
         was framed until 2026-09-07. A read that finds nothing is a missing
         sighting, which the route reports as 404, and a read that fails is a
         server fault, which it reports as 500. Collapsing the two would tell a
@@ -1135,7 +1135,7 @@ class TestConfirmSightingAction:
         repo.set_sighting_action_type.assert_not_called()
 
     def test_reversed_withdrawal_does_not_lock(self):
-        """'Verified' is written only to REVERSE a withdrawal (MD-51), and the
+        """'Verified' is written only to REVERSE a withdrawal (MD-50), and the
         reversal puts the sighting back on the owner's timeline and back in
         their queue. Locking the hunter out of it would make the undo a
         partial one, so 'Verified' must not be read as a standing ruling."""

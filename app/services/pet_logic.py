@@ -42,7 +42,7 @@ def _normalize_filter(value, permitted, name):
     """Map a caller-supplied filter onto its enumeration, or raise.
 
     `None` passes through and means "every value", not "a value which is null",
-    the convention MD-41 and MD-52 share. Anything else unrecognised raises
+    the convention MD-41 and MD-51 share. Anything else unrecognised raises
     ValueError so the route answers 400, rather than reaching PostgREST and
     failing there as an enumeration cast, which surfaces as a 500. Matching is
     case-insensitive but exact on the names, the same rule

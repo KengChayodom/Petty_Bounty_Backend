@@ -1,10 +1,10 @@
 """
-Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46/47,
+Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46,
 SRS-73 username, SRS-74 photograph, SRS-99 phone).
 
-The spec (`progress_2/method_specification.md`) maps BOTH MD-46 (username) and
-MD-47 (photo) to a single `PATCH /me`, so the two test-plan blocks exercise one
-route (`me.update_my_profile`) through its two fields rather than two functions.
+The spec (`progress_2/method_specification.md`) maps all three requirements onto
+MD-46, a single `PATCH /me`, so the two test-plan blocks exercise one route
+(`me.update_my_profile`) through different fields of its payload.
 
 Boundary rule (matches the reconciled Progress-2 plan): the auth dependency and
 the `UserRepository` port are the seams, replaced via FastAPI
@@ -95,7 +95,7 @@ class TestUpdateProfileName:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-44: update the profile photograph (MD-47, SRS-75)
+# UTC-44: update the profile photograph (MD-46, SRS-74)
 # --------------------------------------------------------------------------- #
 class TestUpdateProfilePhone:
     """UTC-43-TC-05 to TC-07 — the phone half of MD-46 (SRS-99).
