@@ -29,13 +29,15 @@ class SightingNotSaved(ValueError):
 
 
 class SightingActionLocked(ValueError):
-    """The hunter tried to change `action_type` on a sighting that has already
-    been adjudicated — the API's 409.
+    """The hunter tried to change `action_type` on a sighting moderation has
+    withdrawn — the API's 409.
 
-    Once an administrator has set `verification_status` away from 'Pending' the
-    report has been judged as it stands (in practice: Dismissed by moderation).
-    Letting the hunter flip 'Spotted' to 'Caught' afterwards would re-shape a
-    report somebody has already ruled on, so the column is frozen at that point.
+    Once an administrator has set `verification_status` to 'Dismissed' the
+    sighting is off every owner timeline and out of scoring. Letting the hunter
+    flip 'Spotted' to 'Caught' afterwards would re-shape a report somebody has
+    already ruled on, so the column is frozen for as long as the withdrawal
+    stands. 'Verified' does NOT lock: it is written only to reverse a
+    withdrawal (MD-51), and the reversal restores the sighting completely.
 
     Subclasses ValueError like the moderation errors do, so route handlers MUST
     catch it before their generic `except ValueError` 400 (see

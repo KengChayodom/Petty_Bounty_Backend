@@ -1036,9 +1036,9 @@ class TestDecideMatch:
 #
 # The row already exists (POST /sightings/ wrote it with the 'Spotted'
 # default), so this is a narrow, hunter-scoped update of `action_type`. What
-# the tests pin: the 404-not-403 ownership rule, the freeze once someone has
-# reviewed the sighting (409 — otherwise a Verified sighting could be
-# retro-fitted into the bounty-eligible Caught+Verified shape), and the
+# the tests pin: the 404-not-403 ownership rule, the freeze while moderation
+# has the sighting withdrawn (409 — a withdrawn report must not be re-shaped
+# after the ruling), that a REVERSED withdrawal frees it again, and the
 # no-write short circuit when nothing actually changed.
 # --------------------------------------------------------------------------- #
 class TestConfirmSightingAction:
@@ -1121,19 +1121,33 @@ class TestConfirmSightingAction:
         with pytest.raises(LookupError):
             run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
 
-    @pytest.mark.parametrize("reviewed", ["Verified", "Dismissed"])
-    def test_already_reviewed_sighting_is_locked(self, reviewed):
-        """Once an owner/admin has judged the report, flipping it to 'Caught'
-        would retro-fit it into the shape the resolve RPC pays out on."""
+    def test_withdrawn_sighting_is_locked(self):
+        """A withdrawn sighting is off every timeline and out of scoring.
+        Flipping it to 'Caught' would re-shape a report already ruled on."""
         svc, repo = self._svc(row={
             "id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
-            "verification_status": reviewed,
+            "verification_status": "Dismissed",
         })
 
         with pytest.raises(SightingActionLocked):
             run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
 
         repo.set_sighting_action_type.assert_not_called()
+
+    def test_reversed_withdrawal_does_not_lock(self):
+        """'Verified' is written only to REVERSE a withdrawal (MD-51), and the
+        reversal puts the sighting back on the owner's timeline and back in
+        their queue. Locking the hunter out of it would make the undo a
+        partial one, so 'Verified' must not be read as a standing ruling."""
+        svc, repo = self._svc(row={
+            "id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
+            "verification_status": "Verified",
+        })
+
+        out = run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+        assert out["changed"] is True
+        repo.set_sighting_action_type.assert_called_once()
 
     def test_missing_verification_status_is_treated_as_pending(self):
         """The column is NOT NULL DEFAULT 'Pending'; absence means 'not yet

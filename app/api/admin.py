@@ -58,10 +58,12 @@ async def verify_sighting(
     """Admin sets a sighting's verification_status to 'Verified' or 'Dismissed'.
 
     'Dismissed' is the live half: it withdraws a sighting from every owner
-    timeline and from scoring, and it is what upholding a flag writes. 'Verified'
-    no longer gates anything — the owner's confirmation took over both the
-    scoring (2026-08-21) and the bounty eligibility — and is kept only so an
-    administrator can undo a dismissal.
+    timeline and from scoring, and it locks the hunter out of changing its
+    action_type (see `SightingActionLocked`). Upholding a flag writes the same
+    value, though through the repository directly rather than through here.
+    'Verified' is written only to REVERSE a withdrawal and restores all three.
+    It is not a ruling: the owner's confirmation took over both the scoring
+    (2026-08-21) and the bounty eligibility, so nothing is gated on it.
     """
     try:
         row = await service.verify_sighting(
