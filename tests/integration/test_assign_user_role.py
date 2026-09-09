@@ -1,6 +1,6 @@
 """
 Integration tests for the role-assignment procedures — find_user_by_email() and
-assign_user_role() (SRS-94 to SRS-98, MD-57/MD-58,
+assign_user_role() (SRS-94 to SRS-98, MD-56/MD-57,
 migrations/2026_09_02_role_assignment.sql).
 
 Everything worth testing here lives in the database and is invisible to the unit
@@ -15,7 +15,7 @@ suite, which stops at the repository port:
     which is what stops a replayed request padding the history (and is why
     `role_changes` carries a CHECK that the two roles differ);
   * `find_user_by_email` reaching across into `auth.users`, matching the whole
-    address and never a prefix — the line between MD-57 and the account search
+    address and never a prefix — the line between MD-56 and the account search
     struck on 2026-08-21.
 
 The one property NOT covered: that the guards hold when two administrators act
@@ -96,18 +96,18 @@ def _set_email(conn, user_id, email):
 
 
 # --------------------------------------------------------------------------- #
-# find_user_by_email — MD-57 / SRS-94
+# find_user_by_email — MD-56 / SRS-94
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_resolves_the_exact_address(self, conn, seed):
-        uid = seed.user(display_name="Kus", role="user")
+        uid = seed.user(username="Kus", role="user")
         _set_email(conn, uid, "kus@example.com")
 
         row = _lookup(conn, "kus@example.com")
 
         assert row is not None
         assert uuid.UUID(row["id"]) == uid
-        assert row["display_name"] == "Kus"
+        assert row["username"] == "Kus"
         assert row["role"] == "user"
 
     def test_address_matching_is_case_insensitive(self, conn, seed):
@@ -144,12 +144,12 @@ class TestFindUserByEmail:
 
 
 # --------------------------------------------------------------------------- #
-# assign_user_role — MD-58 / SRS-95, SRS-96, SRS-97
+# assign_user_role — MD-57 / SRS-95, SRS-96, SRS-97
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_grants_the_role_and_records_the_change(self, conn, seed):
-        boss = seed.user(display_name="Boss", role="admin")
-        target = seed.user(display_name="Kus", role="user")
+        boss = seed.user(username="Boss", role="admin")
+        target = seed.user(username="Kus", role="user")
 
         out = _assign(conn, target=target, role="admin", changed_by=boss)
 

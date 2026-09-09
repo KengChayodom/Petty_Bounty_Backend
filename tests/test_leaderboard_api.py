@@ -1,8 +1,8 @@
 """
 Route unit tests for the Rank List boards.
 
-  UTC-50  GET /leaderboard/users     (MD-55, SRS-91/92)
-  UTC-51  GET /leaderboard/bounties  (MD-56, SRS-93)
+  UTC-50  GET /leaderboard/users     (MD-54, SRS-91/92)
+  UTC-51  GET /leaderboard/bounties  (MD-55, SRS-93)
 
 These two are the one documented exception to the repository seam — they are
 straight ordered reads with no schema of their own, so they live in the route
@@ -107,7 +107,7 @@ def _client(fake, user_id="me-1"):
 def _user(uid, score, name=None):
     return {
         "id": uid,
-        "display_name": name or uid,
+        "username": name or uid,
         "profile_image_url": None,
         "total_score": score,
     }
@@ -115,11 +115,11 @@ def _user(uid, score, name=None):
 
 # ----------------------------------------------------------------- UTC-50 ---
 class TestLeaderboardUsers:
-    """UTC-50 · MD-55 `leaderboard_users` · SRS-91, SRS-92."""
+    """UTC-50 · MD-54 `leaderboard_users` · SRS-91, SRS-92."""
 
     def test_tc01_ranks_run_from_one_and_follow_the_offset(self):
         page = [_user("a", 90), _user("b", 80), _user("c", 70)]
-        fake = _Supabase(_Result(page), _Result([_user("me-1", 80)]), _Result(count=1))
+        fake = _Supabase(_Result(page), _Result(count=10), _Result([_user("me-1", 80)]), _Result(count=1))
         r = _client(fake).get("/leaderboard/users?limit=3&offset=10")
         assert r.status_code == 200
         entries = r.json()["data"]["entries"]
@@ -131,24 +131,25 @@ class TestLeaderboardUsers:
     def test_tc02_my_standing_counts_who_outscores_me_not_my_page_position(self):
         # I am last on the page, but only two people in the whole table beat me.
         page = [_user("a", 90), _user("b", 85), _user("me-1", 80)]
-        fake = _Supabase(_Result(page), _Result([_user("me-1", 80)]), _Result(count=2))
+        fake = _Supabase(_Result(page), _Result(count=0), _Result([_user("me-1", 80)]), _Result(count=2))
         r = _client(fake).get("/leaderboard/users")
         me = r.json()["data"]["me"]
         assert me["rank"] == 3  # 2 strictly greater, + 1
         assert me["total_score"] == 80
         # The count query is the one that decides it, and it must be strict.
-        assert fake.calls("gt") == [(("total_score", 80), {})]
+        assert fake.calls("gt") == [(("total_score", 90), {}), (("total_score", 80), {})]
 
     def test_tc03_my_standing_is_the_same_on_a_later_page(self):
         # SRS-92: the pinned figure must not move when the page does.
         deep = [_user(f"u{i}", 10) for i in range(3)]
-        fake = _Supabase(_Result(deep), _Result([_user("me-1", 80)]), _Result(count=2))
+        fake = _Supabase(_Result(deep), _Result(count=40), _Result([_user("me-1", 80)]), _Result(count=2))
         r = _client(fake).get("/leaderboard/users?offset=40")
         assert r.json()["data"]["me"]["rank"] == 3
 
     def test_tc04_a_hunter_who_has_never_scored_reads_as_zero_not_null(self):
         fake = _Supabase(
             _Result([_user("a", None)]),
+            _Result(count=0),
             _Result([_user("me-1", None)]),
             _Result(count=0),
         )
@@ -189,7 +190,7 @@ class TestLeaderboardUsers:
 
 # ----------------------------------------------------------------- UTC-51 ---
 class TestLeaderboardBounties:
-    """UTC-51 · MD-56 `leaderboard_bounties` · SRS-93."""
+    """UTC-51 · MD-55 `leaderboard_bounties` · SRS-93."""
 
     @staticmethod
     def _pet(pid, amount):
@@ -202,7 +203,7 @@ class TestLeaderboardBounties:
 
     def test_tc01_ranks_run_from_one_and_follow_the_offset(self):
         rows = [self._pet("p1", 5000), self._pet("p2", 3000)]
-        fake = _Supabase(_Result(rows))
+        fake = _Supabase(_Result(rows), _Result(count=4))
         r = _client(fake).get("/leaderboard/bounties?limit=2&offset=4")
         assert r.status_code == 200
         entries = r.json()["data"]["entries"]
@@ -225,7 +226,7 @@ class TestLeaderboardBounties:
         assert orders[1] == (("id",), {})
 
     def test_tc04_a_missing_bounty_reads_as_zero_and_always_as_a_number(self):
-        fake = _Supabase(_Result([self._pet("p1", None), self._pet("p2", "250.50")]))
+        fake = _Supabase(_Result([self._pet("p1", None), self._pet("p2", "250.50")]), _Result(count=0))
         entries = _client(fake).get("/leaderboard/bounties").json()["data"]["entries"]
         assert entries[0]["bounty_amount"] == 0.0
         assert entries[1]["bounty_amount"] == 250.50
@@ -241,3 +242,14 @@ class TestLeaderboardBounties:
         app.include_router(lb.router)
         app.dependency_overrides[get_supabase_client] = lambda: _Supabase()
         assert TestClient(app).get("/leaderboard/bounties").status_code == 401
+
+    @pytest.mark.parametrize("qs", ["limit=0", "limit=101", "offset=-1"])
+    def test_tc07_out_of_range_paging_is_refused_before_any_query(self, qs):
+        """UTC-51-TC-07 [error] - this board declares the same bounds as the
+        hunter board and had no case for them until 2026-09-07, so the two
+        blocks disagreed about which choices of the window category were
+        framed while the two routes enforce the identical rule."""
+        fake = _Supabase()  # nothing queued: a query would raise IndexError
+        r = _client(fake).get(f"/leaderboard/bounties?{qs}")
+        assert r.status_code == 422
+        assert fake.log == []

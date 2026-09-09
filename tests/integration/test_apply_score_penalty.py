@@ -54,8 +54,8 @@ def _score(conn, user_id):
 @pytest.fixture
 def flagged(conn, seed):
     """A hunter with 30 points, their sighting, and a Pending flag against it."""
-    hunter = seed.user(display_name="Hunter", total_score=30)
-    reporter = seed.user(display_name="Reporter")
+    hunter = seed.user(username="Hunter", total_score=30)
+    reporter = seed.user(username="Reporter")
     sighting = seed.sighting(hunter_id=hunter)
     report = seed.report(sighting_id=sighting, reporter_id=reporter)
     return {"hunter": hunter, "reporter": reporter,
@@ -209,7 +209,7 @@ class TestRejections:
                                                        flagged):
         """Who was charged, for which sighting, off which flag, by which admin.
         Without the admin id a deduction cannot be questioned after the fact."""
-        admin = seed.user(display_name="Admin", role="admin")
+        admin = seed.user(username="Admin", role="admin")
         _penalise(
             conn, user_id=flagged["hunter"], sighting_id=flagged["sighting"],
             report_id=flagged["report"], points=10, admin_id=admin,

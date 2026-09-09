@@ -1,10 +1,10 @@
 """
-Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46/47,
+Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46,
 SRS-73 username, SRS-74 photograph, SRS-99 phone).
 
-The spec (`progress_2/method_specification.md`) maps BOTH MD-46 (username) and
-MD-47 (photo) to a single `PATCH /me`, so the two test-plan blocks exercise one
-route (`me.update_my_profile`) through its two fields rather than two functions.
+The spec (`progress_2/method_specification.md`) maps all three requirements onto
+MD-46, a single `PATCH /me`, so the two test-plan blocks exercise one route
+(`me.update_my_profile`) through different fields of its payload.
 
 Boundary rule (matches the reconciled Progress-2 plan): the auth dependency and
 the `UserRepository` port are the seams, replaced via FastAPI
@@ -16,6 +16,7 @@ behaviour the state-based test-plan cells describe.
 """
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -47,28 +48,39 @@ class TestUpdateProfileName:
     def test_empty_name_yields_400_and_repo_unchanged(self):
         """UTC-43-TC-01 — blank username is rejected before any write."""
         repo = _repo()
-        r = _client(repo).patch("/me", json={"display_name": ""})
+        r = _client(repo).patch("/me", json={"username": ""})
 
         assert r.status_code == 400
         repo.update_profile.assert_not_called()
 
-    def test_writes_display_name_scoped_to_self(self):
+    def test_writes_username_scoped_to_self(self):
         """UTC-43-TC-02 — the username is written to the caller's own row."""
-        updated = {"id": "u1", "display_name": "Kus"}
+        updated = {"id": "u1", "username": "Kus"}
         repo = _repo(profile=updated)
-        r = _client(repo, user_id="u1").patch("/me", json={"display_name": "Kus"})
+        r = _client(repo, user_id="u1").patch("/me", json={"username": "Kus"})
 
         assert r.status_code == 200
         assert r.json()["data"] == updated
         # Scoping is structural: user_id comes from the JWT, and the patch
-        # carries the new username on the display_name column.
-        repo.update_profile.assert_called_once_with("u1", {"display_name": "Kus"})
+        # carries the new username on the username column.
+        repo.update_profile.assert_called_once_with("u1", {"username": "Kus"})
+
+    def test_the_username_is_trimmed(self):
+        """UTC-43-TC-09 — surrounding space is stripped before the write, the
+        same rule the phone number is held to. Unframed until 2026-09-07,
+        which left the strip that decides whether a name is blank asserted on
+        the refusal path only."""
+        repo = _repo(profile={"id": "u1"})
+        r = _client(repo).patch("/me", json={"username": "  Kus  "})
+
+        assert r.status_code == 200
+        repo.update_profile.assert_called_once_with("u1", {"username": "Kus"})
 
     def test_missing_profile_yields_404(self):
         """UTC-43-TC-03 — no such row -> 404."""
         repo = _repo(profile=None)
         r = _client(repo, user_id="ghost").patch(
-            "/me", json={"display_name": "Kus"}
+            "/me", json={"username": "Kus"}
         )
 
         assert r.status_code == 404
@@ -77,16 +89,16 @@ class TestUpdateProfileName:
         """UTC-43-TC-04 — an unexpected repo failure surfaces as 500."""
         repo = _repo()
         repo.update_profile.side_effect = Exception("connection reset")
-        r = _client(repo).patch("/me", json={"display_name": "Kus"})
+        r = _client(repo).patch("/me", json={"username": "Kus"})
 
         assert r.status_code == 500
 
 
 # --------------------------------------------------------------------------- #
-# UTC-44: update the profile photograph (MD-47, SRS-75)
+# UTC-44: update the profile photograph (MD-46, SRS-74)
 # --------------------------------------------------------------------------- #
 class TestUpdateProfilePhone:
-    """UTC-43-TC-05 to TC-08 — the phone half of MD-46 (SRS-99).
+    """UTC-43-TC-05 to TC-07 — the phone half of MD-46 (SRS-99).
 
     It shipped with the username field and had no test of any kind until
     2026-09-02, which is how the requirement it realises (SRS-99) came to be
@@ -94,7 +106,12 @@ class TestUpdateProfilePhone:
     """
 
     def test_writes_phone_scoped_to_self(self):
-        """UTC-43-TC-05 — the number is written to the caller's own row."""
+        """UTC-43-TC-05 — the number is written to the caller's own row, and
+        a phone-only edit is not the empty edit.
+
+        Absorbed a struck duplicate on 2026-09-07: that case sent this identical
+        body, and the exact-call assertion below already establishes both that
+        the write happened and that the patch carries the phone alone."""
         updated = {"id": "u1", "phone": "0812345678"}
         repo = _repo(profile=updated)
         r = _client(repo, user_id="u1").patch("/me", json={"phone": "0812345678"})
@@ -102,22 +119,8 @@ class TestUpdateProfilePhone:
         assert r.status_code == 200
         repo.update_profile.assert_called_once_with("u1", {"phone": "0812345678"})
 
-    def test_phone_alone_is_a_valid_edit(self):
-        """UTC-43-TC-06 — a phone-only PATCH is not the empty PATCH.
-
-        The three fields are independent, so saving the number without touching
-        the username or the photo must reach the write rather than fall into the
-        "nothing supplied" 400.
-        """
-        repo = _repo(profile={"id": "u1", "phone": "0899999999"})
-        r = _client(repo).patch("/me", json={"phone": "0899999999"})
-
-        assert r.status_code == 200
-        patch = repo.update_profile.call_args[0][1]
-        assert set(patch) == {"phone"}
-
     def test_phone_is_trimmed_and_not_format_checked(self):
-        """UTC-43-TC-07 — surrounding space is stripped, the number itself is
+        """UTC-43-TC-06 — surrounding space is stripped, the number itself is
         taken as given.
 
         `users.phone` is free text and no requirement specifies a format, so the
@@ -133,7 +136,7 @@ class TestUpdateProfilePhone:
         )
 
     def test_all_three_fields_travel_in_one_patch(self):
-        """UTC-43-TC-08 — username, phone and photo are one write, not three.
+        """UTC-43-TC-07 — username, phone and photo are one write, not three.
 
         The edit dialog saves them together, so the route has to fold them into
         a single `update_profile` call on the three real columns.
@@ -142,7 +145,7 @@ class TestUpdateProfilePhone:
         r = _client(repo).patch(
             "/me",
             json={
-                "display_name": "Kus",
+                "username": "Kus",
                 "phone": "0812345678",
                 "photo_url": "https://storage.test/u1.jpg",
             },
@@ -152,7 +155,7 @@ class TestUpdateProfilePhone:
         repo.update_profile.assert_called_once_with(
             "u1",
             {
-                "display_name": "Kus",
+                "username": "Kus",
                 "profile_image_url": "https://storage.test/u1.jpg",
                 "phone": "0812345678",
             },
@@ -160,26 +163,23 @@ class TestUpdateProfilePhone:
 
 
 class TestUpdateProfilePhoto:
-    def test_missing_or_invalid_url_yields_400_and_repo_unchanged(self):
-        """UTC-44-TC-01 — empty / unsupported photo URL is rejected pre-write."""
-        repo = _repo()
-        r = _client(repo).patch("/me", json={"photo_url": ""})
+    @pytest.mark.parametrize("address", ["", "   ", "http://x/a.gif"])
+    def test_an_address_outside_the_accepted_formats_is_refused(self, address):
+        """UTC-44-TC-01 [error] — one check decides this, so an empty address
+        and an address ending in an unaccepted extension are one choice and
+        take one frame between them. The values are checked together rather
+        than in separate cases.
 
-        assert r.status_code == 400
-        repo.update_profile.assert_not_called()
-
-    def test_non_image_extension_yields_400(self):
-        """UTC-44-TC-02 — a non JPG/JPEG/PNG URL is rejected."""
+        Absorbed a struck duplicate on 2026-09-07, which framed the same choice
+        a second time."""
         repo = _repo()
-        r = _client(repo).patch(
-            "/me", json={"photo_url": "http://x/a.gif"}
-        )
+        r = _client(repo).patch("/me", json={"photo_url": address})
 
         assert r.status_code == 400
         repo.update_profile.assert_not_called()
 
     def test_writes_photo_url_scoped_to_self(self):
-        """UTC-44-TC-03 — the photo URL is written to the caller's own row."""
+        """UTC-44-TC-02 — the photo URL is written to the caller's own row."""
         updated = {"id": "u1", "profile_image_url": "http://x/a.jpg"}
         repo = _repo(profile=updated)
         r = _client(repo, user_id="u1").patch(
@@ -194,7 +194,7 @@ class TestUpdateProfilePhoto:
         )
 
     def test_missing_profile_yields_404(self):
-        """UTC-44-TC-04 — no such row means 404 (both None and the port's own
+        """UTC-44-TC-03 — no such row means 404 (both None and the port's own
         UserProfileNotFound map to 404)."""
         repo = _repo()
         repo.update_profile.side_effect = UserProfileNotFound("ghost")
@@ -205,7 +205,7 @@ class TestUpdateProfilePhoto:
         assert r.status_code == 404
 
     def test_database_error_yields_500(self):
-        """UTC-44-TC-05 — an unexpected repo failure surfaces as 500."""
+        """UTC-44-TC-04 — an unexpected repo failure surfaces as 500."""
         repo = _repo()
         repo.update_profile.side_effect = Exception("connection reset")
         r = _client(repo).patch("/me", json={"photo_url": "http://x/a.jpg"})
@@ -213,11 +213,25 @@ class TestUpdateProfilePhoto:
         assert r.status_code == 500
 
 
+    def test_an_accepted_extension_is_matched_whatever_its_casing(self):
+        """UTC-44-TC-05 [single] — the boundary of the format check. The
+        comparison lower-cases the address first, so a camera that names its
+        files .JPG is accepted. Unframed until 2026-09-07, which left the
+        lower-casing free to be removed without a test noticing."""
+        repo = _repo(profile={"id": "u1"})
+        r = _client(repo).patch("/me", json={"photo_url": "http://x/A.JPG"})
+
+        assert r.status_code == 200
+        repo.update_profile.assert_called_once_with(
+            "u1", {"profile_image_url": "http://x/A.JPG"}
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Empty patch — neither field supplied is a 400 (no-op writes are refused).
 # --------------------------------------------------------------------------- #
 def test_empty_patch_yields_400():
-    """UTC-43-TC-09 — a PATCH supplying none of the three fields is refused
+    """UTC-43-TC-08 — a PATCH supplying none of the three fields is refused
     before any write, so a no-op edit cannot reach the database."""
     repo = _repo()
     r = _client(repo).patch("/me", json={})

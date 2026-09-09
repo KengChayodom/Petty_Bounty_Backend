@@ -138,19 +138,27 @@ async def get_sightings_for_pet(
     tagged this pet via `initial_target_pet_id` (per product requirement).
     Newest first.
 
-    Requires authentication (Feature #6); the sighting timeline reveals who
-    spotted a pet and where, so it is not exposed anonymously.
+    Scoped to the caller's OWN report (2026-09-09). Being signed in was the only
+    check here until then, so any authenticated account could read any owner's
+    timeline — and these rows carry where a pet was seen plus the hunter's name
+    and telephone number, which is a third party's contact details. A report the
+    caller does not own answers 404 rather than 403, exactly as the owner-scoped
+    PATCH does, so the endpoint never reveals that someone else's report exists.
     """
     try:
         data = await PetService.get_sightings_for_pet(
             SupabaseMissingPetRepository(supabase),
-            pet_id, limit=limit, offset=offset,
+            pet_id, limit=limit, offset=offset, owner_id=user_id,
         )
         return StandardResponse(
             status="success",
             message=f"Retrieved {len(data)} sightings.",
             data=data,
         )
+    except LookupError as le:
+        # No such report, or it is not the caller's. Deliberately the same
+        # answer for both. Must precede the generic handler below.
+        raise HTTPException(status_code=404, detail=str(le))
     except Exception as e:
         raise HTTPException(
             status_code=500,

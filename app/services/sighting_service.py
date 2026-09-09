@@ -45,6 +45,7 @@ from app.repositories.sighting_repository import (
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
 from app.services.sighting_logic import (
+    VERIFICATION_DISMISSED,
     VERIFICATION_PENDING,
     assemble_hunter_activity,
     build_match_rows,
@@ -359,9 +360,9 @@ class SightingService:
             LookupError: no such sighting, or it belongs to another hunter
                 (API -> 404 for both — a caller who does not own the sighting
                 must not be able to tell the two apart).
-            SightingActionLocked: the sighting has already been reviewed
-                (API -> 409). Subclasses ValueError, so the route must catch it
-                FIRST.
+            SightingActionLocked: the sighting has been withdrawn by
+                moderation (API -> 409). Subclasses ValueError, so the route
+                must catch it FIRST.
         """
         # Raises ValueError (400) before any I/O, so a malformed choice never
         # costs a thread hop — same shape as decide_match.
@@ -383,11 +384,14 @@ class SightingService:
                 f"Sighting {sighting_id} not found or not reported by you"
             )
 
-        # A row whose verification_status is missing is treated as Pending —
-        # the column is NOT NULL DEFAULT 'Pending', so absence means "not yet
-        # judged", and refusing the write there would lock a fresh sighting.
+        # Only 'Dismissed' locks. 'Verified' is written solely to REVERSE a
+        # dismissal (MD-50), and a reversal restores the sighting completely —
+        # back on the owner's timeline, back in their queue — so freezing the
+        # hunter out of it would make the undo a partial one. A row whose
+        # verification_status is missing is treated as Pending: the column is
+        # NOT NULL DEFAULT 'Pending', so absence means "not withdrawn".
         verification = row.get("verification_status") or VERIFICATION_PENDING
-        if verification != VERIFICATION_PENDING:
+        if verification == VERIFICATION_DISMISSED:
             raise SightingActionLocked(sighting_id, verification)
 
         if row.get("action_type") == action_type:

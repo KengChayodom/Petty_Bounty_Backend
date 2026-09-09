@@ -54,7 +54,7 @@ CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Ban', 'Dismissed');
 -- ---- Tables (pre-Feature#2 shape) ----------------------------------------
 CREATE TABLE users (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    display_name VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,   -- renamed to `username` by RENAME_MIGRATION, last in the chain
     phone VARCHAR(20),
     role user_role DEFAULT 'user',
     total_score INTEGER DEFAULT 0,

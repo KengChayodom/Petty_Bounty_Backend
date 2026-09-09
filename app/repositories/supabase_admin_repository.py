@@ -11,6 +11,7 @@ class SupabaseAdminRepository:
         res = (self._db.table("sightings")
                        .update({"verification_status": verification_status})
                        .eq("id", sighting_id)
+                       .neq("verification_status", verification_status)
                        .execute())
         return res.data[0] if res.data else None
 

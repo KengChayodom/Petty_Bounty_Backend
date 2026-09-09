@@ -16,7 +16,7 @@ CREATE TYPE report_status AS ENUM ('Pending', 'Reviewed_Penalty', 'Dismissed'); 
 -- 3. สร้างตาราง USERS
 CREATE TABLE users (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    display_name VARCHAR(255) NOT NULL,
+    username VARCHAR(255) NOT NULL,
     phone VARCHAR(20),
     role user_role DEFAULT 'user',
     total_score INTEGER DEFAULT 0,

@@ -1,5 +1,5 @@
 """Supabase adapter for UserRepository — public.users reads, location write,
-and the administrator role assignment of MD-57 to MD-59."""
+and the administrator role assignment of MD-56 to MD-58."""
 from datetime import datetime, timezone
 
 from app.repositories.pagination import Page
@@ -18,7 +18,7 @@ class SupabaseUserRepository:
         try:
             res = (
                 self._db.table("users")
-                .select("id, display_name, phone, role, total_score, profile_image_url, created_at")
+                .select("id, username, phone, role, total_score, profile_image_url, created_at")
                 .eq("id", user_id)
                 .single()
                 .execute()
@@ -74,7 +74,7 @@ class SupabaseUserRepository:
         return self.get_user_profile(user_id)
 
     # ------------------------------------------------------------------ #
-    # Role assignment (MD-57 to MD-59)
+    # Role assignment (MD-56 to MD-58)
     # ------------------------------------------------------------------ #
     def find_by_email(self, email: str) -> dict | None:
         # An RPC and not a table read: the address lives in `auth.users`, which
@@ -117,7 +117,7 @@ class SupabaseUserRepository:
         self, limit: int, offset: int, target_user_id: str | None
     ) -> Page:
         # Newest first, and count="exact" so the console can draw numbered
-        # pages — the same shape as the moderation queue of MD-52.
+        # pages — the same shape as the moderation queue of MD-51.
         query = self._db.table("role_changes").select("*", count="exact")
         if target_user_id is not None:
             query = query.eq("target_user_id", target_user_id)
@@ -133,9 +133,9 @@ class SupabaseUserRepository:
         # pagination is needed and count=exact is not requested.
         res = (
             self._db.table("users")
-            .select("id, display_name, role")
+            .select("id, username, role")
             .eq("role", "admin")
-            .order("display_name")
+            .order("username")
             .execute()
         )
         return res.data or []

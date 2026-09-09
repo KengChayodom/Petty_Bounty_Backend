@@ -34,7 +34,7 @@ already closed. `verify_sighting` survives for the moderation half of the same
 column — an upheld flag writes 'Dismissed' — and nothing writes 'Verified' any
 more.
 
-**Role assignment (added 2026-09-02, MD-57 to MD-59).** The one thing here that
+**Role assignment (added 2026-09-02, MD-56 to MD-58).** The one thing here that
 does touch an account: an administrator may grant another account administrator
 access and withdraw it again. Read that against the paragraph above rather than
 as an exception to it. It changes what an account may do inside the CONSOLE,
@@ -50,7 +50,10 @@ import asyncio
 import logging
 from typing import Optional
 
-from app.repositories.admin_repository import AdminRepository
+from app.repositories.admin_repository import (
+    AdminRepository,
+    SightingNotFound,
+)
 from app.repositories.pagination import Page
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
@@ -108,7 +111,7 @@ class AdminService:
                 sighting_id, verification_status
             )
             if not row:
-                raise ValueError(f"Sighting {sighting_id} not found")
+                raise SightingNotFound(sighting_id)
             row = strip_feature_vector(row)
             logger.warning(
                 "Admin set sighting %s verification_status=%s",
@@ -194,7 +197,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-52 — read the moderation flag queue (the listing MD-44 acts from)
+    # MD-51 — read the moderation flag queue (the listing MD-44 acts from)
     # ---------------------------------------------------------------- #
     async def list_reports(
         self, status: str | None = None, limit: int = 20, offset: int = 0,
@@ -307,13 +310,18 @@ class AdminService:
                 sighting = self.repo.update_sighting_verification(
                     sighting_id, "Dismissed"
                 )
-                sighting_dismissed = bool(sighting)
-                # The dismiss write hands back the row, which is the only place
-                # the offender's identity is available — the flag itself names
-                # the *reporter*, never the reported.
-                penalty = self._apply_penalty(
-                    flag, sighting, report_id, admin_id, penalty_points,
-                )
+                if not sighting:
+                    sighting_dismissed = True
+                    penalty = None
+                    logger.warning(
+                        "Flag %s upheld but sighting %s was already dismissed (or missing) — "
+                        "skipping double penalty deduction", report_id, sighting_id
+                    )
+                else:
+                    sighting_dismissed = True
+                    penalty = self._apply_penalty(
+                        flag, sighting, report_id, admin_id, penalty_points,
+                    )
             else:
                 logger.warning(
                     "Flag %s upheld but carries no sighting_id — nothing to "
@@ -371,13 +379,13 @@ class AdminService:
         )
 
     # ---------------------------------------------------------------- #
-    # MD-57 — resolve one account from its exact email address
+    # MD-56 — resolve one account from its exact email address
     # ---------------------------------------------------------------- #
     async def find_user_by_email(self, email: str) -> dict:
         """
         Return the one account holding this address: id, username, role.
 
-        Exists because MD-58 takes an account identifier that an administrator
+        Exists because MD-57 takes an account identifier that an administrator
         has no way to obtain. They know their colleague's email address and
         nothing else, the identifier being a value no person handles.
 
@@ -407,7 +415,7 @@ class AdminService:
         return row
 
     # ---------------------------------------------------------------- #
-    # MD-58 — grant or withdraw administrator access (UD-23)
+    # MD-57 — grant or withdraw administrator access (UD-23)
     # ---------------------------------------------------------------- #
     async def assign_user_role(
         self, target_user_id: str, role: str, admin_id: str,
@@ -483,7 +491,7 @@ class AdminService:
         return result
 
     # ---------------------------------------------------------------- #
-    # MD-59 — read the role-change history (the reading half)
+    # MD-58 — read the role-change history (the reading half)
     # ---------------------------------------------------------------- #
     async def list_role_changes(
         self,
@@ -524,7 +532,7 @@ class AdminService:
 
         Not paginated: the admin set is a handful of people by design — scaling
         to hundreds would require rethinking the console's trust model, not just
-        adding a LIMIT. Returns id, display_name, role sorted by display_name.
+        adding a LIMIT. Returns id, username, role sorted by username.
         """
         return await asyncio.to_thread(self._list_admins_sync)
 

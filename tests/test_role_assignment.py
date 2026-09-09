@@ -1,6 +1,6 @@
 """
 Unit tests for administrator role assignment — UTC-52, UTC-53, UTC-54
-(MD-57 to MD-59, SRS-94 to SRS-98, UD-23).
+(MD-56 to MD-58, SRS-94 to SRS-98, UD-23).
 
 Written against `progress_2/test_plan.md` §3.1.14 Roles Module. The boundary is
 the `UserRepository` port, doubled with `MagicMock(spec=...)`: stubbed for return
@@ -19,10 +19,10 @@ Category-Partition highlights:
 What is deliberately NOT tested here:
   * That a withdrawn role stops working (SRS-98) is a property of
     `require_admin`, which is Feature 1's gate with its own coverage. Nothing in
-    MD-58 revokes anything, so there is no behaviour of this method to assert.
+    MD-57 revokes anything, so there is no behaviour of this method to assert.
   * That the two guards of SRS-96 hold when two administrators act at the same
     moment is a property of the `assign_user_role` procedure and belongs to
-    tests/integration/ — same reading as MD-54's rule set.
+    tests/integration/ — same reading as MD-53's rule set.
 """
 import asyncio
 from unittest.mock import MagicMock
@@ -52,11 +52,11 @@ def _service():
     return service, user_repo
 
 
-ACCOUNT = {"id": "u2", "display_name": "Kus", "role": "user"}
+ACCOUNT = {"id": "u2", "username": "Kus", "role": "user"}
 
 
 # --------------------------------------------------------------------------- #
-# UTC-52 — find_user_by_email (MD-57, SRS-94)
+# UTC-52 — find_user_by_email (MD-56, SRS-94)
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_tc01_exact_address_returns_one_account(self):
@@ -69,18 +69,7 @@ class TestFindUserByEmail:
         # One account, not a page: the struck account browse must not come back
         # through this method.
         assert not isinstance(result, list)
-        assert set(result) >= {"id", "display_name", "role"}
-
-    def test_tc02_address_is_matched_in_full(self):
-        service, repo = _service()
-        repo.find_by_email.return_value = None  # nothing holds the near miss
-
-        with pytest.raises(UserAccountNotFound):
-            run(service.find_user_by_email("hunter@example.co"))
-
-        # The near-matching account is not disclosed: the port was asked for the
-        # address as typed, and nothing came back.
-        repo.find_by_email.assert_called_once_with("hunter@example.co")
+        assert set(result) >= {"id", "username", "role"}
 
     def test_tc03_case_is_ignored(self):
         service, repo = _service()
@@ -92,11 +81,21 @@ class TestFindUserByEmail:
         assert result == ACCOUNT
 
     def test_tc04_unknown_address(self):
+        """UTC-52-TC-03 [error] - an address nobody holds is a missing account,
+        and the port was asked for it exactly as typed, so no near miss is
+        expanded into a prefix and no account is disclosed by having nearly
+        matched.
+
+        Absorbed a struck duplicate on 2026-09-07: it took this same [error]
+        choice of the lookup and asserted the same forwarding, differing only
+        in whether the address it sent was described as a near miss."""
         service, repo = _service()
         repo.find_by_email.return_value = None
 
         with pytest.raises(UserAccountNotFound):
-            run(service.find_user_by_email("ghost@example.com"))
+            run(service.find_user_by_email("hunter@example.co"))
+
+        repo.find_by_email.assert_called_once_with("hunter@example.co")
 
     @pytest.mark.parametrize(
         "address",
@@ -129,13 +128,13 @@ class TestFindUserByEmail:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-53 — assign_user_role (MD-58, SRS-95 to SRS-98)
+# UTC-53 — assign_user_role (MD-57, SRS-95 to SRS-98)
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_tc01_grants_the_administrator_role(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "user", "role_after": "admin",
         }
 
@@ -148,7 +147,7 @@ class TestAssignUserRole:
     def test_tc02_withdraws_the_administrator_role(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "admin", "role_after": "user",
         }
 
@@ -183,7 +182,7 @@ class TestAssignUserRole:
         """
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": False, "id": "a1", "display_name": "Boss",
+            "changed": False, "id": "a1", "username": "Boss",
             "role_before": "admin", "role_after": "admin",
         }
 
@@ -212,7 +211,7 @@ class TestAssignUserRole:
     def test_tc07_role_already_held_writes_nothing(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": False, "id": "u2", "display_name": "Kus",
+            "changed": False, "id": "u2", "username": "Kus",
             "role_before": "admin", "role_after": "admin",
         }
 
@@ -227,7 +226,7 @@ class TestAssignUserRole:
     def test_tc08_the_acting_administrator_is_recorded(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "user", "role_after": "admin",
         }
 
@@ -248,7 +247,7 @@ class TestAssignUserRole:
         """UD-23 writes the actor as "Administrator"; the column holds 'admin'."""
         service, repo = _service()
         repo.assign_user_role.return_value = {
-            "changed": True, "id": "u2", "display_name": "Kus",
+            "changed": True, "id": "u2", "username": "Kus",
             "role_before": "user", "role_after": "admin",
         }
 
@@ -258,7 +257,7 @@ class TestAssignUserRole:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-54 — list_role_changes (MD-59, SRS-97 reading half)
+# UTC-54 — list_role_changes (MD-58, SRS-97 reading half)
 # --------------------------------------------------------------------------- #
 class TestListRoleChanges:
     def test_tc01_returns_the_page_with_its_total(self):
@@ -313,7 +312,7 @@ class TestListRoleChanges:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-55: list the current administrators (MD-60, SRS-94 — the roster half)
+# UTC-55: list the current administrators (MD-59, SRS-94 — the roster half)
 #
 # The Roles screen pairs the blind email lookup with a roster of who holds the
 # role today, because withdrawing access from a departing administrator means
@@ -326,8 +325,8 @@ class TestListAdmins:
     def test_tc01_returns_every_account_holding_the_role(self):
         service, repo = _service()
         rows = [
-            {"id": "a1", "display_name": "Chaiudom", "role": "admin"},
-            {"id": "a2", "display_name": "Kus", "role": "admin"},
+            {"id": "a1", "username": "Chaiudom", "role": "admin"},
+            {"id": "a2", "username": "Kus", "role": "admin"},
         ]
         repo.list_admins.return_value = rows
 
@@ -337,18 +336,18 @@ class TestListAdmins:
     def test_tc02_the_roster_carries_no_email_address(self):
         """`users` holds no email column, so the roster cannot report one.
 
-        MD-60 was specified as returning an address and the adapter never
+        MD-59 was specified as returning an address and the adapter never
         selected one. Pinning the shape here keeps the two from drifting apart
         again, and keeps the roster to the three columns it can actually read.
         """
         service, repo = _service()
         repo.list_admins.return_value = [
-            {"id": "a1", "display_name": "Chaiudom", "role": "admin"},
+            {"id": "a1", "username": "Chaiudom", "role": "admin"},
         ]
 
         (row,) = run(service.list_admins())
 
-        assert set(row) == {"id", "display_name", "role"}
+        assert set(row) == {"id", "username", "role"}
 
     def test_tc03_no_administrators_is_a_success(self):
         """An empty roster is a page with nobody on it, not a not-found.

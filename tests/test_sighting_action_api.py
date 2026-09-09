@@ -80,19 +80,21 @@ class TestConfirmSightingActionRoute:
         )
         assert r.status_code == 404
 
-    def test_already_reviewed_yields_409_not_400(self):
+    def test_withdrawn_sighting_yields_409_not_400(self):
         """SightingActionLocked subclasses ValueError. If the except clauses
         are ever reordered, this test fails with 400 — which is the whole
         reason it exists: the client needs to tell "too late" apart from
         "you sent nonsense"."""
-        service = _service(_async_raises(SightingActionLocked("s1", "Verified")))
+        service = _service(
+            _async_raises(SightingActionLocked("s1", "Dismissed"))
+        )
 
         r = _client(service).patch(
             "/sightings/s1/action", json={"action_type": "Caught"},
         )
 
         assert r.status_code == 409
-        assert "Verified" in r.json()["detail"]
+        assert "Dismissed" in r.json()["detail"]
 
     def test_unknown_action_yields_400(self):
         service = _service(_async_raises(ValueError("action_type must be one of")))

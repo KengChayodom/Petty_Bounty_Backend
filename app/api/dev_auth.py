@@ -37,7 +37,7 @@ class DevLoginRequest(BaseModel):
 class DevRegisterRequest(BaseModel):
     email: str = Field(..., min_length=3)
     password: str = Field(..., min_length=6)
-    display_name: Optional[str] = None
+    username: Optional[str] = None
 
 
 def _gotrue_headers() -> dict:
@@ -105,9 +105,9 @@ async def dev_register(payload: DevRegisterRequest):
     """
     url = f"{settings.SUPABASE_URL}/auth/v1/signup"
     body: dict = {"email": payload.email, "password": payload.password}
-    if payload.display_name:
-        # Becomes user_metadata; handle_new_user reads display_name from it.
-        body["data"] = {"display_name": payload.display_name}
+    if payload.username:
+        # Becomes user_metadata; handle_new_user reads username from it.
+        body["data"] = {"username": payload.username}
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
