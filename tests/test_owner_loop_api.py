@@ -1,7 +1,12 @@
 """
 Route tests for the owner side of the sighting loop (2026-08-17).
 
-Three things live only in the route layer and are invisible to a service test:
+The report closure that used to sit here as TestEndSearchClosesSightings
+moved to tests/test_missing_pet_update_api.py on 2026-09-07. It is one
+handler and therefore one UTC-35 category-partition table, and three of
+the five tests here repeated frames that file already carried.
+
+Two things live only in the route layer and are invisible to a service test:
 
   1. `PATCH /missing-pets/{pet_id}/sightings/{sighting_id}` — which domain
      outcome becomes 400 vs 404 vs 409. Handler ORDER is load-bearing here:
@@ -9,10 +14,7 @@ Three things live only in the route layer and are invisible to a service test:
      subclass ValueError, so a generic `except ValueError` placed first would
      answer 400 and tell the owner their perfectly ordinary request was
      malformed.
-  2. Ending a search must also close that pet's sightings — and must NOT report
-     failure when only that secondary step fails, because the pet is already
-     marked Found by then.
-  3. Reporting a sighting must schedule the owner push in the BACKGROUND, so
+  2. Reporting a sighting must schedule the owner push in the BACKGROUND, so
      the hunter's response is never held up by somebody else's notification —
      and must not schedule one when nothing matched.
 
@@ -55,170 +57,6 @@ def _async_raises(exc):
     async def _inner(*a, **k):
         raise exc
     return _inner
-
-
-# --------------------------------------------------------------------------- #
-# PATCH /missing-pets/{pet_id}/sightings/{sighting_id}
-# --------------------------------------------------------------------------- #
-class TestDecideMatchRoute:
-    def _patch_service(self, monkeypatch, method):
-        service = MagicMock()
-        service.decide_match = method
-        monkeypatch.setattr(
-            pets_api, "SightingService", lambda **kwargs: service
-        )
-        return service
-
-    def test_success(self, monkeypatch):
-        self._patch_service(monkeypatch, _async_returns({
-            "pet_id": "p1", "sighting_id": "s1", "owner_status": "Confirmed",
-            "search_closed": False, "pet_status": "Searching", "awards": [],
-        }))
-        r = _client(pets_api).patch(
-            "/missing-pets/p1/sightings/s1", json={"decision": "Confirmed"},
-        )
-        assert r.status_code == 200
-        assert r.json()["data"]["owner_status"] == "Confirmed"
-        assert r.json()["message"] == "Decision recorded."
-
-    def test_a_confirmed_rescue_reports_the_closure_and_the_awards(
-        self, monkeypatch,
-    ):
-        """The client has to be able to tell "verdict recorded" from "the case
-        is over and these people were just paid" without a second round-trip:
-        it redraws the stepper and stops offering the queue."""
-        self._patch_service(monkeypatch, _async_returns({
-            "pet_id": "p1", "sighting_id": "s4", "owner_status": "Confirmed",
-            "search_closed": True, "pet_status": "Found",
-            "awards": [{"user_id": "h3", "sighting_id": "s4",
-                        "rank": 1, "points": 25}],
-        }))
-        r = _client(pets_api).patch(
-            "/missing-pets/p1/sightings/s4", json={"decision": "Confirmed"},
-        )
-        assert r.status_code == 200
-        body = r.json()
-        assert body["message"] == "Search closed; scores awarded."
-        assert body["data"]["pet_status"] == "Found"
-        assert body["data"]["awards"][0]["points"] == 25
-
-    @pytest.mark.parametrize("error", [
-        pets_api.OwnerDecisionRefused("already decided"),
-        SightingAlreadyDecided("Sighting s1 has already been decided"),
-        SightingOutOfOrder("Sighting s1 is out of order"),
-        SearchAlreadyClosed("Search for pet p1 is already closed"),
-    ])
-    def test_queue_refusals_yield_409_not_400(self, monkeypatch, error):
-        """Every one of these subclasses ValueError. If the generic 400 handler
-        ever moves above them, this is the test that fails."""
-        self._patch_service(monkeypatch, _async_raises(error))
-        r = _client(pets_api).patch(
-            "/missing-pets/p1/sightings/s1", json={"decision": "Confirmed"},
-        )
-        assert r.status_code == 409
-
-    def test_not_owned_or_unknown_yields_404(self, monkeypatch):
-        self._patch_service(
-            monkeypatch, _async_raises(LookupError("not found or not owned")),
-        )
-        r = _client(pets_api).patch(
-            "/missing-pets/p1/sightings/s1", json={"decision": "Confirmed"},
-        )
-        assert r.status_code == 404
-
-    def test_bad_decision_yields_400(self, monkeypatch):
-        self._patch_service(
-            monkeypatch, _async_raises(ValueError("decision must be one of")),
-        )
-        r = _client(pets_api).patch(
-            "/missing-pets/p1/sightings/s1", json={"decision": "Maybe"},
-        )
-        assert r.status_code == 400
-
-    def test_failure_yields_500(self, monkeypatch):
-        self._patch_service(monkeypatch, _async_raises(RuntimeError("db down")))
-        r = _client(pets_api).patch(
-            "/missing-pets/p1/sightings/s1", json={"decision": "Confirmed"},
-        )
-        assert r.status_code == 500
-
-    def test_identity_comes_from_the_token_not_the_body(self, monkeypatch):
-        """The owner id handed to the service must be the JWT's, so a client
-        cannot rule on a pet by naming a different owner."""
-        seen = {}
-
-        async def _capture(pet_id, sighting_id, owner_id, decision):
-            seen.update(
-                pet_id=pet_id, sighting_id=sighting_id,
-                owner_id=owner_id, decision=decision,
-            )
-            return {"owner_status": decision, "search_closed": False,
-                    "awards": []}
-
-        self._patch_service(monkeypatch, _capture)
-        _client(pets_api, user_id="real-owner").patch(
-            "/missing-pets/p1/sightings/s1",
-            json={"decision": "Rejected", "owner_id": "somebody-else"},
-        )
-        assert seen == {
-            "pet_id": "p1", "sighting_id": "s1",
-            "owner_id": "real-owner", "decision": "Rejected",
-        }
-
-
-# --------------------------------------------------------------------------- #
-# PATCH /missing-pets/{pet_id} — ending the search closes its sightings
-# --------------------------------------------------------------------------- #
-class TestEndSearchClosesSightings:
-    def _repo(self, monkeypatch, updated={"id": "p1", "status": "Found"}):
-        repo = MagicMock()
-        repo.update_missing_pet_owned.return_value = updated
-        repo.close_sightings_for_pet.return_value = 2
-        monkeypatch.setattr(
-            pets_api, "SupabaseMissingPetRepository", lambda db: repo
-        )
-        return repo
-
-    def test_found_closes_the_pets_sightings(self, monkeypatch):
-        repo = self._repo(monkeypatch)
-        r = _client(pets_api).patch("/missing-pets/p1", json={"status": "Found"})
-        assert r.status_code == 200
-        repo.close_sightings_for_pet.assert_called_once_with("p1")
-
-    def test_an_edit_that_is_not_a_closure_leaves_sightings_alone(
-        self, monkeypatch
-    ):
-        """Renaming the pet or raising the bounty is not the end of a search."""
-        repo = self._repo(monkeypatch, updated={"id": "p1", "pet_name": "Mochi"})
-        r = _client(pets_api).patch(
-            "/missing-pets/p1", json={"pet_name": "Mochi"},
-        )
-        assert r.status_code == 200
-        repo.close_sightings_for_pet.assert_not_called()
-
-    def test_still_searching_leaves_sightings_alone(self, monkeypatch):
-        repo = self._repo(monkeypatch)
-        _client(pets_api).patch("/missing-pets/p1", json={"status": "Searching"})
-        repo.close_sightings_for_pet.assert_not_called()
-
-    def test_a_pet_not_owned_closes_nothing(self, monkeypatch):
-        """404 must short-circuit before the closure: otherwise a stranger
-        could close a pet's sightings by PATCHing it."""
-        repo = self._repo(monkeypatch, updated=None)
-        r = _client(pets_api).patch("/missing-pets/p1", json={"status": "Found"})
-        assert r.status_code == 404
-        repo.close_sightings_for_pet.assert_not_called()
-
-    def test_closure_failure_does_not_fail_the_request(self, monkeypatch):
-        """The pet IS already marked Found. Returning 500 would tell the owner
-        their closure failed when it did not."""
-        repo = self._repo(monkeypatch)
-        repo.close_sightings_for_pet.side_effect = RuntimeError("db down")
-
-        r = _client(pets_api).patch("/missing-pets/p1", json={"status": "Found"})
-
-        assert r.status_code == 200
-        assert r.json()["data"]["status"] == "Found"
 
 
 # --------------------------------------------------------------------------- #

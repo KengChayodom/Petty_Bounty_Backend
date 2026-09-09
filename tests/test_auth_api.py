@@ -68,7 +68,7 @@ class TestGetMe:
     def test_profile_returned_for_caller(self):
         profile = {
             "id": "user-1",
-            "display_name": "Jamal Johnson",
+            "username": "Jamal Johnson",
             "phone": "0812345678",
             "role": "user",
             "total_score": 0,

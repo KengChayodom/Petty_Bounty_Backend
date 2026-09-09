@@ -7,7 +7,7 @@ script, which uses the Supabase service key to:
   2. Flip the mirrored public.users row's role to 'admin'.
 
 Usage:
-    python seed_admin.py <email> <password> [display_name]
+    python seed_admin.py <email> <password> [username]
 
 Requires SUPABASE_URL and SUPABASE_SERVICE_KEY in the environment / .env.
 The service key is admin-scoped — never ship it to the client.
@@ -19,7 +19,7 @@ from supabase import create_client
 from app.core.config import settings
 
 
-def seed_admin(email: str, password: str, display_name: str) -> None:
+def seed_admin(email: str, password: str, username: str) -> None:
     client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
 
     # 1. Create a confirmed auth user. The handle_new_user trigger mirrors a
@@ -29,7 +29,7 @@ def seed_admin(email: str, password: str, display_name: str) -> None:
             "email": email,
             "password": password,
             "email_confirm": True,
-            "user_metadata": {"display_name": display_name},
+            "user_metadata": {"username": username},
         }
     )
     user_id = created.user.id
@@ -42,10 +42,10 @@ def seed_admin(email: str, password: str, display_name: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python seed_admin.py <email> <password> [display_name]")
+        print("Usage: python seed_admin.py <email> <password> [username]")
         raise SystemExit(1)
 
     email = sys.argv[1]
     password = sys.argv[2]
-    display_name = sys.argv[3] if len(sys.argv) > 3 else email.split("@")[0]
-    seed_admin(email, password, display_name)
+    username = sys.argv[3] if len(sys.argv) > 3 else email.split("@")[0]
+    seed_admin(email, password, username)

@@ -40,11 +40,17 @@ OWNER_MIGRATION = BACKEND_ROOT / "migrations" / "2026_08_21_owner_driven_resolut
 EXPIRES_AT_MIGRATION = BACKEND_ROOT / "migrations" / "2026-09-01_post_expires_at.sql"
 ROLE_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_role_assignment.sql"
 OWNER_DETAIL_MIGRATION = BACKEND_ROOT / "migrations" / "2026_09_02_pet_owner_details.sql"
+DROP_PATTERN_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_05_drop_pattern_id.sql"
+)
 HUNTER_DETAIL_MIGRATION = (
     BACKEND_ROOT / "migrations" / "2026_09_02_sighting_hunter_details.sql"
 )
 DROP_PATTERN_MIGRATION = (
     BACKEND_ROOT / "migrations" / "2026_09_05_drop_pattern_id.sql"
+)
+RENAME_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "2026_09_09_rename_display_name_to_username.sql"
 )
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
@@ -95,6 +101,11 @@ def _apply_schema(dsn: str) -> None:
                                      # the two by-id/nearby definitions, or an earlier
                                      # migration re-creates a function selecting a
                                      # column the shim no longer adds.
+        RENAME_MIGRATION,            # users.display_name -> users.username, and the
+                                     # five functions that named it. MUST BE LAST:
+                                     # every file above is applied verbatim and was
+                                     # written against the old column, so the rename
+                                     # has to land after them, exactly as in prod.
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:
@@ -132,7 +143,7 @@ class Seeder:
     def __init__(self, conn):
         self.conn = conn
 
-    def user(self, display_name="Hunter", role="user", total_score=0,
+    def user(self, username="Hunter", role="user", total_score=0,
              phone=None, profile_image_url=None) -> uuid.UUID:
         """A profile row (+ its auth.users parent).
 
@@ -148,9 +159,9 @@ class Seeder:
             )
             cur.execute(
                 "INSERT INTO users "
-                "  (id, display_name, role, total_score, phone, profile_image_url) "
+                "  (id, username, role, total_score, phone, profile_image_url) "
                 "VALUES (%s, %s, %s::user_role, %s, %s, %s)",
-                (uid, display_name, role, total_score, phone, profile_image_url),
+                (uid, username, role, total_score, phone, profile_image_url),
             )
         return uid
 

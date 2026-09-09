@@ -152,7 +152,7 @@ def test_a_targeted_report_is_still_targeted_once_it_has_a_queue_row(conn, seed)
 def _hunter_details(conn, pet_id):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, hunter_display_name, hunter_phone, "
+            "SELECT id, hunter_username, hunter_phone, "
             "       hunter_profile_image_url "
             "FROM sightings_for_pet(%s, 50, 0, FALSE)",
             (pet_id,),
@@ -166,7 +166,7 @@ def test_returns_the_hunters_phone_and_photo(conn, seed):
     their pet, and the card wants their face, not a grey icon."""
     owner = seed.user()
     hunter = seed.user(
-        display_name="Somchai",
+        username="Somchai",
         phone="0812345678",
         profile_image_url="https://storage.test/hunters/somchai.jpg",
     )
@@ -187,7 +187,7 @@ def test_hunter_details_are_null_when_the_profile_never_set_them(conn, seed):
     rather than fail — the card then omits the phone line and draws the avatar
     placeholder instead of inventing a number."""
     owner = seed.user()
-    hunter = seed.user(display_name="Anon")
+    hunter = seed.user(username="Anon")
     pet = seed.missing_pet(owner_id=owner)
     sighting = seed.sighting(hunter_id=hunter, initial_target_pet_id=pet)
 

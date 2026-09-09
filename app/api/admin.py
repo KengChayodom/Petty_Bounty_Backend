@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.auth import require_admin
 from app.core.database import get_supabase_client
 from app.repositories.missing_pet_repository import MissingPetRepository
+from app.repositories.admin_repository import SightingNotFound
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
@@ -57,10 +58,12 @@ async def verify_sighting(
     """Admin sets a sighting's verification_status to 'Verified' or 'Dismissed'.
 
     'Dismissed' is the live half: it withdraws a sighting from every owner
-    timeline and from scoring, and it is what upholding a flag writes. 'Verified'
-    no longer gates anything — the owner's confirmation took over both the
-    scoring (2026-08-21) and the bounty eligibility — and is kept only so an
-    administrator can undo a dismissal.
+    timeline and from scoring, and it locks the hunter out of changing its
+    action_type (see `SightingActionLocked`). Upholding a flag writes the same
+    value, though through the repository directly rather than through here.
+    'Verified' is written only to REVERSE a withdrawal and restores all three.
+    It is not a ruling: the owner's confirmation took over both the scoring
+    (2026-08-21) and the bounty eligibility, so nothing is gated on it.
     """
     try:
         row = await service.verify_sighting(
@@ -71,8 +74,13 @@ async def verify_sighting(
             message=f"Sighting marked {payload.verification_status}.",
             data=row,
         )
+    except SightingNotFound as nf:
+        raise HTTPException(status_code=404, detail=str(nf))
     except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve))
+        # A state outside the permitted pair is a malformed request, not a
+        # missing row. Both were 404 until 2026-09-09, which told a caller who
+        # mistyped the state that the sighting did not exist.
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to verify sighting: {e}"
@@ -112,11 +120,13 @@ async def list_all_missing_pets(
     offset: int = Query(0, ge=0),
     status: str | None = Query(
         None,
-        description="Optional filter: Searching, Spotted, Found, or Resolved.",
+        description="Optional filter: Searching, Spotted, Found, or Resolved. "
+                    "Anything else is a 400.",
     ),
     species: str | None = Query(
         None,
-        description="Optional filter: Cat, Dog, Bird, or Other.",
+        description="Optional filter: Cat, Dog, Bird, or Other. "
+                    "Anything else is a 400.",
     ),
     repo: MissingPetRepository = Depends(get_missing_pet_repository),
     admin_id: str = Depends(require_admin),
@@ -126,6 +136,12 @@ async def list_all_missing_pets(
     Returns `{items, total, limit, offset}`. `total` counts every report
     matching `status`, not just this page, so the console can draw numbered
     pages instead of guessing whether another page exists.
+
+    Both filters are normalised before any I/O, so an unrecognised value is a
+    400 rather than a failed enumeration cast surfacing as a 500. `Pending`,
+    `Expired` and `Rescued` are refused on purpose: they are badge names
+    `derive_post_status` produces for a card, not buckets this endpoint
+    implements.
     """
     try:
         page = await PetService.list_all_missing_pets(
@@ -139,6 +155,11 @@ async def list_all_missing_pets(
                 limit=limit, offset=offset,
             ),
         )
+    except ValueError as ve:
+        # An unrecognised filter, refused before any I/O. This handler must
+        # precede the generic one below, which would otherwise report a
+        # caller's typo as a server fault.
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to list missing pets: {e}"
@@ -196,7 +217,7 @@ async def list_reports(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-52 — browse the moderation flag queue.
+    MD-51 — browse the moderation flag queue.
 
     The listing `PATCH /admin/reports/{report_id}` acts from: without it an
     administrator can only review a flag whose identifier they already hold,
@@ -325,7 +346,7 @@ async def find_user_by_email(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-57 / SRS-93 — resolve ONE account from its exact email address.
+    MD-56 / SRS-93 — resolve ONE account from its exact email address.
 
     The lookup `PATCH /admin/users/{id}/role` acts from: without it an
     administrator can only change the role of an account whose identifier they
@@ -386,7 +407,7 @@ async def assign_user_role(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-58 / SRS-95-98 — grant administrator access to an account, or withdraw it.
+    MD-57 / SRS-95-98 — grant administrator access to an account, or withdraw it.
 
     **This is the only thing an administrator does to an account.** Setting
     'user' withdraws console access and leaves everything else alone — the
@@ -445,7 +466,7 @@ async def list_role_changes(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-59 / SRS-97 — the record of every role grant and withdrawal, newest first.
+    MD-58 / SRS-97 — the record of every role grant and withdrawal, newest first.
 
     Append-only: nothing edits or deletes a row, so an account's access history
     stays complete. Returns `{items, total, limit, offset}`.

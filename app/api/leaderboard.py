@@ -36,26 +36,38 @@ async def leaderboard_users(
     try:
         res = (
             supabase.table("users")
-            .select("id, display_name, profile_image_url, total_score")
+            .select("id, username, profile_image_url, total_score")
             .order("total_score", desc=True)
             .order("id")
             .range(offset, offset + limit - 1)
             .execute()
         )
-        entries = [
-            {
-                "rank": offset + i + 1,
+        entries = []
+        current_rank = 1
+        for i, r in enumerate(res.data or []):
+            my_score = r.get("total_score") or 0
+            if i == 0:
+                higher = (
+                    supabase.table("users")
+                    .select("id", count="exact")
+                    .gt("total_score", my_score)
+                    .execute()
+                )
+                current_rank = (higher.count or 0) + 1
+            elif my_score < (res.data[i-1].get("total_score") or 0):
+                current_rank = offset + i + 1
+            
+            entries.append({
+                "rank": current_rank,
                 "user_id": r["id"],
-                "display_name": r.get("display_name"),
+                "username": r.get("username"),
                 "profile_image_url": r.get("profile_image_url"),
-                "total_score": r.get("total_score") or 0,
-            }
-            for i, r in enumerate(res.data or [])
-        ]
+                "total_score": my_score,
+            })
 
         me_res = (
             supabase.table("users")
-            .select("display_name, profile_image_url, total_score")
+            .select("username, profile_image_url, total_score")
             .eq("id", user_id)
             .limit(1)
             .execute()
@@ -71,7 +83,7 @@ async def leaderboard_users(
         me_standing = {
             "rank": (higher.count or 0) + 1,
             "user_id": user_id,
-            "display_name": me_row.get("display_name"),
+            "username": me_row.get("username"),
             "profile_image_url": me_row.get("profile_image_url"),
             "total_score": my_score,
         }
@@ -111,16 +123,29 @@ async def leaderboard_bounties(
             .range(offset, offset + limit - 1)
             .execute()
         )
-        entries = [
-            {
-                "rank": offset + i + 1,
+        entries = []
+        current_rank = 1
+        for i, r in enumerate(res.data or []):
+            my_score = float(r.get("bounty_amount") or 0)
+            if i == 0:
+                higher = (
+                    supabase.table("missing_pets")
+                    .select("id", count="exact")
+                    .not_.in_("status", ["Found", "Resolved"])
+                    .gt("bounty_amount", my_score)
+                    .execute()
+                )
+                current_rank = (higher.count or 0) + 1
+            elif my_score < float(res.data[i-1].get("bounty_amount") or 0):
+                current_rank = offset + i + 1
+            
+            entries.append({
+                "rank": current_rank,
                 "pet_id": r["id"],
                 "pet_name": r.get("pet_name"),
                 "image_url": r.get("image_url"),
-                "bounty_amount": float(r.get("bounty_amount") or 0),
-            }
-            for i, r in enumerate(res.data or [])
-        ]
+                "bounty_amount": my_score,
+            })
         return StandardResponse(
             status="success",
             message=f"Retrieved {len(entries)} bounties.",

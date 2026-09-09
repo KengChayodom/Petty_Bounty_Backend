@@ -3,7 +3,7 @@
 Covers the `public.users` reads outside the service layer — the caller's own
 profile (GET /auth/me) and the server-side admin role check (require_admin) —
 and, since 2026-09-02, the administrator's assignment of the role that gate
-reads (MD-57 to MD-59).
+reads (MD-56 to MD-58).
 
 NOTE: JWT validation via Supabase Auth/GoTrue (`client.auth.get_user`) is a
 SEPARATE identity boundary, not a DB read — it is intentionally NOT part of this
@@ -33,7 +33,7 @@ class UserProfileNotFound(Exception):
 
 
 class UserAccountNotFound(ValueError):
-    """No account matched — the 404 of MD-57 (by address) and MD-58 (by id).
+    """No account matched — the 404 of MD-56 (by address) and MD-57 (by id).
 
     Distinct from `UserProfileNotFound`, which means the CALLER's own profile
     could not be read. This one is about the account being looked up or acted
@@ -46,7 +46,7 @@ class UserAccountNotFound(ValueError):
 
 
 class RoleAssignmentRefused(ValueError):
-    """A self-demotion or last-administrator guard refused the change — MD-58's 409.
+    """A self-demotion or last-administrator guard refused the change — MD-57's 409.
 
     Two cases, both raised by the `assign_user_role` procedure and translated
     here: an administrator withdrawing their own access, and a change that would
@@ -68,7 +68,7 @@ class UserRepository(Protocol):
         self, user_id: str, patch: dict
     ) -> dict | None: ...
 
-    # -- role assignment (MD-57 to MD-59) ------------------------------- #
+    # -- role assignment (MD-56 to MD-58) ------------------------------- #
     def find_by_email(self, email: str) -> dict | None: ...
     def assign_user_role(
         self, target_user_id: str, role: str, changed_by: str

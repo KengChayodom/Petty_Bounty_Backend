@@ -778,9 +778,6 @@ class TestGetHunterActivity:
         repo.get_awards_for_hunter.return_value = []
         repo.get_penalties_for_hunter.return_value = [
             {"sighting_id": "s2", "points": 10, "reason": "Not_a_pet"},
-            # sighting_id is ON DELETE SET NULL, so a deduction can outlive the
-            # sighting it punished — it must not crash the assembly.
-            {"sighting_id": None, "points": 5, "reason": "Spam"},
         ]
         svc = SightingService(repo, ai_manager=None)
 
@@ -791,8 +788,29 @@ class TestGetHunterActivity:
             "sighting_id": "s2", "points": 10, "reason": "Not_a_pet",
         }
 
+    def test_a_penalty_that_outlived_its_sighting_is_left_out_here(self):
+        """UTC-45-TC-04 - a deduction carrying no sighting is a separate choice
+        of the same category and was sharing TC-03's test method until
+        2026-09-07. `sighting_id` is ON DELETE SET NULL, so a deduction can
+        outlive what it punished; it must not crash the assembly and it must
+        not attach itself to an unrelated sighting. It is still counted in the
+        cumulative summary of UTC-46."""
+        repo = _repo()
+        repo.count_sightings_for_hunter.return_value = 1
+        repo.list_sightings_for_hunter.return_value = [{"id": "s1"}]
+        repo.get_matches_for_sightings.return_value = []
+        repo.get_awards_for_hunter.return_value = []
+        repo.get_penalties_for_hunter.return_value = [
+            {"sighting_id": None, "points": 5, "reason": "Spam"},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        s1 = run(svc.get_hunter_activity("hunter-1"))["sightings"][0]
+
+        assert s1["score_penalty"] is None
+
     def test_a_sighting_can_carry_both_an_award_and_a_penalty(self):
-        """They are independent records: a sighting that earned points on one
+        """UTC-45-TC-06 - they are independent records: a sighting that earned points on one
         case can still have been flagged and upheld."""
         repo = _repo()
         repo.count_sightings_for_hunter.return_value = 1
@@ -890,6 +908,27 @@ class TestGetHunterStats:
         svc = SightingService(repo, ai_manager=None)
 
         assert run(svc.get_hunter_stats("hunter-1"))["total_score"] == 0
+
+    def test_a_deduction_with_no_points_counts_as_zero(self):
+        """UTC-46-TC-06 [single] - the boundary of the summed column. A
+        deduction row whose points figure is absent must count as nothing
+        rather than fail the whole card, which is a stats screen the hunter
+        opens far more often than any administrator opens the queue."""
+        repo = _repo()
+        repo.get_user.return_value = {"total_score": 10}
+        repo.count_sightings_for_hunter.return_value = 1
+        repo.count_owner_confirmed_sightings_for_hunter.return_value = 0
+        repo.count_contributions_for_hunter.return_value = 0
+        repo.get_penalties_for_hunter.return_value = [
+            {"sighting_id": "s1", "points": None},
+            {"sighting_id": "s2", "points": 5},
+        ]
+        svc = SightingService(repo, ai_manager=None)
+
+        out = run(svc.get_hunter_stats("hunter-1"))
+
+        assert out["penalties_received"] == 2
+        assert out["penalty_points_total"] == 5
 
     def test_repo_error_is_reraised(self):
         repo = _repo()
@@ -997,9 +1036,9 @@ class TestDecideMatch:
 #
 # The row already exists (POST /sightings/ wrote it with the 'Spotted'
 # default), so this is a narrow, hunter-scoped update of `action_type`. What
-# the tests pin: the 404-not-403 ownership rule, the freeze once someone has
-# reviewed the sighting (409 — otherwise a Verified sighting could be
-# retro-fitted into the bounty-eligible Caught+Verified shape), and the
+# the tests pin: the 404-not-403 ownership rule, the freeze while moderation
+# has the sighting withdrawn (409 — a withdrawn report must not be re-shaped
+# after the ruling), that a REVERSED withdrawal frees it again, and the
 # no-write short circuit when nothing actually changed.
 # --------------------------------------------------------------------------- #
 class TestConfirmSightingAction:
@@ -1060,6 +1099,21 @@ class TestConfirmSightingAction:
             run(svc.confirm_sighting_action("ghost", "hunter-1", "Caught"))
         repo.set_sighting_action_type.assert_not_called()
 
+    def test_a_database_failure_is_not_a_missing_sighting(self):
+        """UTC-47-TC-09 [error] - the read has two error choices and only one
+        was framed until 2026-09-07. A read that finds nothing is a missing
+        sighting, which the route reports as 404, and a read that fails is a
+        server fault, which it reports as 500. Collapsing the two would tell a
+        hunter their own sighting had gone away every time the database was
+        unreachable."""
+        svc, repo = self._svc()
+        repo.get_sighting_for_action.side_effect = RuntimeError("db down")
+
+        with pytest.raises(RuntimeError):
+            run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+        repo.set_sighting_action_type.assert_not_called()
+
     def test_row_vanishing_between_read_and_write_is_not_found(self):
         """The read said it was theirs, the scoped write matched nothing — the
         row went away or changed hands. Same 404, never a silent success."""
@@ -1067,19 +1121,33 @@ class TestConfirmSightingAction:
         with pytest.raises(LookupError):
             run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
 
-    @pytest.mark.parametrize("reviewed", ["Verified", "Dismissed"])
-    def test_already_reviewed_sighting_is_locked(self, reviewed):
-        """Once an owner/admin has judged the report, flipping it to 'Caught'
-        would retro-fit it into the shape the resolve RPC pays out on."""
+    def test_withdrawn_sighting_is_locked(self):
+        """A withdrawn sighting is off every timeline and out of scoring.
+        Flipping it to 'Caught' would re-shape a report already ruled on."""
         svc, repo = self._svc(row={
             "id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
-            "verification_status": reviewed,
+            "verification_status": "Dismissed",
         })
 
         with pytest.raises(SightingActionLocked):
             run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
 
         repo.set_sighting_action_type.assert_not_called()
+
+    def test_reversed_withdrawal_does_not_lock(self):
+        """'Verified' is written only to REVERSE a withdrawal (MD-50), and the
+        reversal puts the sighting back on the owner's timeline and back in
+        their queue. Locking the hunter out of it would make the undo a
+        partial one, so 'Verified' must not be read as a standing ruling."""
+        svc, repo = self._svc(row={
+            "id": "s1", "hunter_id": "hunter-1", "action_type": "Spotted",
+            "verification_status": "Verified",
+        })
+
+        out = run(svc.confirm_sighting_action("s1", "hunter-1", "Caught"))
+
+        assert out["changed"] is True
+        repo.set_sighting_action_type.assert_called_once()
 
     def test_missing_verification_status_is_treated_as_pending(self):
         """The column is NOT NULL DEFAULT 'Pending'; absence means 'not yet
