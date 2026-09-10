@@ -34,6 +34,22 @@ class TestMissingPetCreateValidators:
         with pytest.raises(ValidationError):
             MissingPetCreate(**_create(species="dragon"))
 
+    def test_other_is_no_longer_a_species_a_report_may_carry(self):
+        """SRS-58 names Cat, Dog and Bird. 'Other' was accepted until
+        2026-09-10 and is not any more.
+
+        It is asserted in every casing the normaliser produces, because the
+        validator title-cases before it compares and a set that still held the
+        value would pass "other" as readily as "Other". The three permitted
+        species are asserted alongside it so this cannot pass by rejecting
+        everything.
+        """
+        for rejected in ("Other", "other", "OTHER"):
+            with pytest.raises(ValidationError):
+                MissingPetCreate(**_create(species=rejected))
+        for accepted in ("Cat", "Dog", "Bird"):
+            assert MissingPetCreate(**_create(species=accepted)).species == accepted
+
     def test_empty_characteristics_rejected(self):
         with pytest.raises(ValidationError):
             MissingPetCreate(**_create(characteristics={}))

@@ -172,7 +172,7 @@ class TestBountyAmount:
         assert _patch_sent(repo) == {"bounty_amount": 0.0}
 
     def test_a_negative_bounty_is_refused(self, client, repo):
-        """UTC-35-TC-14 [error] - just outside the lower boundary. The schema
+        """UTC-35-TC-08 [error] - just outside the lower boundary. The schema
         declares ge=0, so a negative reward is refused before any write rather
         than being stored as a debt against the finder."""
         r = client.patch("/missing-pets/p1", json={"bounty_amount": -1})
@@ -186,7 +186,7 @@ class TestBountyAmount:
 # --------------------------------------------------------------------------- #
 class TestPetName:
     def test_an_empty_name_is_refused(self, client, repo):
-        """UTC-35-TC-15 [error] - just outside the lower length boundary. The
+        """UTC-35-TC-08 [error] - just outside the lower length boundary. The
         schema declares min_length=1, so an owner who clears the field is
         refused rather than left with a nameless report on the map."""
         r = client.patch("/missing-pets/p1", json={"pet_name": ""})
@@ -195,7 +195,7 @@ class TestPetName:
         repo.update_missing_pet_owned.assert_not_called()
 
     def test_a_name_beyond_the_length_limit_is_refused(self, client, repo):
-        """UTC-35-TC-16 [error] - just outside the upper length boundary. The
+        """UTC-35-TC-08 [error] - just outside the upper length boundary. The
         schema declares max_length=255, so a name one character longer is
         refused here rather than by the column at write time."""
         r = client.patch("/missing-pets/p1", json={"pet_name": "x" * 256})
@@ -209,7 +209,7 @@ class TestPetName:
 # --------------------------------------------------------------------------- #
 class TestPrimaryColour:
     def test_an_unparseable_colour_is_rejected(self, client, repo):
-        """UTC-35-TC-07 [error] - a colour that is not #RRGGBB is refused
+        """UTC-63-TC-01 [error] - a colour that is not #RRGGBB is refused
         before any write, by the same rule the create path enforces. An
         unparseable hex in the column makes the colour re-ranking drop the
         report from its own owner's matches."""
@@ -226,7 +226,7 @@ class TestPrimaryColour:
 # --------------------------------------------------------------------------- #
 class TestCharacteristics:
     def test_an_empty_characteristics_object_is_refused(self, client, repo):
-        """UTC-35-TC-18 [error] - an empty object is not a description. The
+        """UTC-62-TC-01 [error] - an empty object is not a description. The
         create path has always refused one; the edit path did not until
         2026-09-07, so an owner could blank the coat description of their own
         lost pet with a request the schema called valid."""
@@ -243,7 +243,7 @@ class TestStatusAndClosure:
     def test_found_is_written_and_closes_the_pets_sightings(
         self, client, repo
     ):
-        """UTC-35-TC-08 [property CLOSING] - closing the search is an edit of
+        """UTC-35-TC-07 [property CLOSING] - closing the search is an edit of
         the status column like any other, so the closed status is what reaches
         the row, and the sightings of that report stop being live leads the
         moment the pet is home.
@@ -262,7 +262,7 @@ class TestStatusAndClosure:
         repo.close_sightings_for_pet.assert_called_once_with("p1")
 
     def test_still_searching_leaves_sightings_alone(self, client, repo):
-        """UTC-35-TC-12 - re-opening a search is not the end of one. The
+        """UTC-35-TC-11 - re-opening a search is not the end of one. The
         status choice differs from TC-04's absent status, which is why both
         frames exist even though both reach the same branch."""
         r = client.patch("/missing-pets/p1", json={"status": "Searching"})
@@ -272,7 +272,7 @@ class TestStatusAndClosure:
         repo.close_sightings_for_pet.assert_not_called()
 
     def test_a_permitted_status_is_accepted_in_any_casing(self, client, repo):
-        """UTC-35-TC-17 [single] - the schema capitalises the value before
+        """UTC-35-TC-13 [single] - the schema capitalises the value before
         checking it, so the casing a person types never reaches the database
         enumeration. The normalised value is also what the closure guard
         reads, so a lower-case close really does close."""
@@ -288,7 +288,7 @@ class TestStatusAndClosure:
         repo.close_sightings_for_pet.assert_called_once_with("p1")
 
     def test_a_status_an_owner_may_not_write_is_rejected(self, client, repo):
-        """UTC-35-TC-09 [error] - 'Resolved' means the bounty was settled,
+        """UTC-35-TC-08 [error] - 'Resolved' means the bounty was settled,
         which only the administrator writes. It is refused by the schema, so
         no write is attempted."""
         r = client.patch("/missing-pets/p1", json={"status": "Resolved"})
@@ -297,7 +297,7 @@ class TestStatusAndClosure:
         repo.update_missing_pet_owned.assert_not_called()
 
     def test_closure_failure_does_not_fail_the_request(self, client, repo):
-        """UTC-35-TC-13 [if CLOSING] [error] - the pet IS already marked Found
+        """UTC-35-TC-12 [if CLOSING] [error] - the pet IS already marked Found
         by the time the closure runs. Returning 500 would tell the owner their
         closure failed when it did not."""
         repo.update_missing_pet_owned.return_value = {
@@ -317,7 +317,7 @@ class TestStatusAndClosure:
 # --------------------------------------------------------------------------- #
 class TestWriteOutcome:
     def test_no_row_matched_yields_404_and_closes_nothing(self, client, repo):
-        """UTC-35-TC-10 [error] - a report that does not exist and one
+        """UTC-35-TC-09 [error] - a report that does not exist and one
         belonging to somebody else both match zero rows and both answer 404,
         so the reply never discloses that another owner's report exists. The
         frame carries the closing status because that is the combination in
@@ -336,7 +336,7 @@ class TestWriteOutcome:
         repo.close_sightings_for_pet.assert_not_called()
 
     def test_a_repository_failure_becomes_500(self, client, repo):
-        """UTC-35-TC-11 [error] - a failed write is reported as a failure,
+        """UTC-35-TC-10 [error] - a failed write is reported as a failure,
         never as a silent success on a row that did not change."""
         repo.update_missing_pet_owned.side_effect = RuntimeError("db down")
 
