@@ -359,3 +359,73 @@ class TestMyReportsRoute:
         monkeypatch.setattr(pets_api.PetService, "get_my_missing_pets", _boom)
         _, client = self._client(MagicMock())
         assert client.get("/missing-pets/me").status_code == 500
+
+
+# --------------------------------------------------------------------------- #
+# GET /admin/missing-pets/{pet_id} — MD-60 / SRS-70 (the "review" half).
+# UTC-57. The browse half is MD-41 and is covered above; this is the detail
+# read the console opens from that listing. The route is a gate plus a
+# pass-through, so what is verifiable here is that it forwards the identifier,
+# projects nothing of its own, turns an absent row into 404, does NOT turn a
+# database failure into 404, and is actually wired to the administrator gate.
+# require_admin's own logic (403 / 401) is Feature 1's and is covered by
+# tests/test_auth.py::TestRequireAdmin — it is not re-tested here.
+# --------------------------------------------------------------------------- #
+class TestAdminPetDetailRoute:
+    def test_tc01_returns_the_row_the_service_projected(self):
+        """UTC-57-TC-01 — the route reshapes nothing. The derived badge and the
+        numeric coordinates the RPC projects reach the caller untouched."""
+        repo = MagicMock(spec=MissingPetRepository)
+        repo.get_missing_pet_by_id.return_value = {
+            "id": "p1", "latitude": 13.7, "longitude": 100.5, "status": "Searching",
+        }
+        repo.get_sighting_links_for_pets.return_value = []
+
+        r = _admin_client(pet_repo=repo).get("/admin/missing-pets/p1")
+
+        assert r.status_code == 200
+        assert r.json() == {
+            "id": "p1", "latitude": 13.7, "longitude": 100.5,
+            "status": "Searching", "sighting_count": 0, "post_status": "Pending",
+        }
+        repo.get_missing_pet_by_id.assert_called_once_with("p1")
+
+    def test_tc02_unknown_identifier_yields_404(self):
+        """UTC-57-TC-02 — no row is a 404, not an empty 200."""
+        repo = MagicMock(spec=MissingPetRepository)
+        repo.get_missing_pet_by_id.return_value = None
+
+        r = _admin_client(pet_repo=repo).get("/admin/missing-pets/ghost")
+
+        assert r.status_code == 404
+        repo.get_sighting_links_for_pets.assert_not_called()
+
+    def test_tc03_a_database_failure_is_not_a_404(self):
+        """UTC-57-TC-03 — a failing read must not be reported as a missing
+        report. Answering 404 here would tell a moderator the report had been
+        deleted when the database was merely unreachable."""
+        repo = MagicMock(spec=MissingPetRepository)
+        repo.get_missing_pet_by_id.side_effect = RuntimeError("db down")
+
+        app = FastAPI()
+        app.include_router(admin_api.router)
+        app.dependency_overrides[require_admin] = lambda: "admin-1"
+        app.dependency_overrides[
+            admin_api.get_missing_pet_repository
+        ] = lambda: repo
+        r = TestClient(app, raise_server_exceptions=False).get(
+            "/admin/missing-pets/p1"
+        )
+
+        assert r.status_code == 500
+
+    def test_tc04_the_route_is_behind_the_administrator_gate(self):
+        """UTC-57-TC-04 — the gate is declared on this route. Without it the
+        detail read would expose an owner's contact details to any caller,
+        which the browse listing above is protected from."""
+        route = next(
+            r for r in admin_api.router.routes
+            if getattr(r, "path", None) == "/admin/missing-pets/{pet_id}"
+            and "GET" in getattr(r, "methods", set())
+        )
+        assert require_admin in [d.call for d in route.dependant.dependencies]
