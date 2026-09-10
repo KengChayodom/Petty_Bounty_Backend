@@ -16,13 +16,18 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.services.pet_logic import (
+    BROWSE_SPECIES_FILTERS,
+    BROWSE_STATUS_FILTERS,
     POST_STATUS_EXPIRED,
     POST_STATUS_PENDING,
     POST_STATUS_RESCUED,
     POST_STATUS_SPOTTED,
     attach_sighting_counts,
+    build_missing_pet_payload,
     derive_post_status,
     is_post_expired,
+    normalize_browse_species,
+    normalize_browse_status,
 )
 
 # A fixed "now" so the boundary is a value in the test, not the clock. The
@@ -281,3 +286,176 @@ class TestCountSightings:
         from app.services.pet_logic import count_sightings
 
         assert count_sightings([]) == {}
+
+
+# --------------------------------------------------------------------------- #
+# build_missing_pet_payload — the missing_pets INSERT contract (MD-63)
+#
+# Everything the report is stored as is decided here and nowhere else: the
+# projection the spatial queries read, the status that makes a report
+# matchable, and the shape of the timestamp. The service that calls this only
+# supplies the vector, so a defect here is invisible in a service test that
+# asserts on the vector alone.
+# --------------------------------------------------------------------------- #
+class _Pet:
+    """The fields build_missing_pet_payload reads off a MissingPetCreate."""
+
+    def __init__(self, **kw):
+        self.owner_id = kw.get("owner_id", "owner-1")
+        self.pet_name = kw.get("pet_name", "Luna")
+        self.species = kw.get("species", "Dog")
+        self.characteristics = kw.get("characteristics", {"color": "Golden"})
+        self.bounty_amount = kw.get("bounty_amount", 1000.0)
+        self.latitude = kw.get("latitude", 13.7563)
+        self.longitude = kw.get("longitude", 100.5018)
+        self.last_seen_time = kw.get(
+            "last_seen_time", datetime(2025, 1, 12, 10, 30, tzinfo=timezone.utc)
+        )
+        self.image_url = kw.get("image_url", "https://example.com/luna.jpg")
+        self.primary_color_hex = kw.get("primary_color_hex", "#AABBCC")
+
+
+class TestBuildMissingPetPayload:
+    def test_the_location_is_a_point_with_longitude_first(self):
+        """UTC-64-TC-01 — SRS-62, the projection the spatial queries read.
+
+        PostGIS takes x then y, which is longitude then latitude, and getting
+        the pair the wrong way round puts every report in the wrong hemisphere
+        without failing anything.
+        """
+        out = build_missing_pet_payload(
+            _Pet(latitude=13.7563, longitude=100.5018), feature_vector=[0.1]
+        )
+
+        assert out["last_seen_location"] == "POINT(100.5018 13.7563)"
+
+    def test_the_last_seen_time_is_stored_as_an_iso_timestamp(self):
+        """UTC-64-TC-02 — SRS-62, the time half."""
+        out = build_missing_pet_payload(
+            _Pet(last_seen_time=datetime(2025, 1, 12, 10, 30, tzinfo=timezone.utc)),
+            feature_vector=[0.1],
+        )
+
+        assert out["last_seen_time"] == "2025-01-12T10:30:00+00:00"
+
+    def test_a_new_report_opens_at_searching(self):
+        """UTC-64-TC-03 — SRS-64.
+
+        'Searching' is the status the matching RPC filters on, so a report
+        stored at any other value is created and then never matched.
+        """
+        out = build_missing_pet_payload(_Pet(), feature_vector=[0.1])
+
+        assert out["status"] == "Searching"
+
+    def test_the_vector_the_caller_supplies_is_the_one_stored(self):
+        """UTC-64-TC-04 — SRS-63's half that this function owns."""
+        out = build_missing_pet_payload(_Pet(), feature_vector=[0.25, 0.5])
+
+        assert out["feature_vector"] == [0.25, 0.5]
+
+    def test_every_other_field_travels_unchanged(self):
+        """UTC-64-TC-05 — the payload carries the report as it was given."""
+        pet = _Pet(
+            owner_id="owner-9",
+            pet_name="Mochi",
+            species="Cat",
+            characteristics={"size": "small"},
+            bounty_amount=250.0,
+            image_url="https://example.com/mochi.jpg",
+            primary_color_hex="#112233",
+        )
+
+        out = build_missing_pet_payload(pet, feature_vector=[0.1])
+
+        assert out["owner_id"] == "owner-9"
+        assert out["pet_name"] == "Mochi"
+        assert out["species"] == "Cat"
+        assert out["characteristics"] == {"size": "small"}
+        assert out["bounty_amount"] == 250.0
+        assert out["image_url"] == "https://example.com/mochi.jpg"
+        assert out["primary_color_hex"] == "#112233"
+
+    def test_the_expiry_is_left_to_the_column_default(self):
+        """UTC-64-TC-06 — SRS-86 is granted by the database, not here.
+
+        `expires_at` has a column DEFAULT of NOW() + 7 days, and that DEFAULT is
+        the single source of the grant. A payload that carried the key would
+        move the date silently, so its absence is the assertion.
+        """
+        out = build_missing_pet_payload(_Pet(), feature_vector=[0.1])
+
+        assert "expires_at" not in out
+
+
+# --------------------------------------------------------------------------- #
+# normalize_browse_status / normalize_browse_species — the admin browse filter
+# (MD-66). Both run before any I/O so an unrecognised value is a clean 400
+# rather than a failed enumeration cast surfacing as a 500.
+# --------------------------------------------------------------------------- #
+class TestNormalizeBrowseStatus:
+    """MD-73. The status half of the administrator browse filter."""
+
+    def test_no_filter_means_every_report(self):
+        """UTC-69-TC-01 — absence is not a value to refuse."""
+        assert normalize_browse_status(None) is None
+
+    @pytest.mark.parametrize("stored", BROWSE_STATUS_FILTERS)
+    def test_each_permitted_status_passes_through(self, stored):
+        """UTC-69-TC-02 — every value the column holds is accepted."""
+        assert normalize_browse_status(stored) == stored
+
+    def test_casing_and_surrounding_space_are_normalised(self):
+        """UTC-69-TC-03 — the console sends what the user typed."""
+        assert normalize_browse_status("  searching  ") == "Searching"
+
+    @pytest.mark.parametrize("bad", ["Pending", "Expired", "Rescued", "Banned", ""])
+    def test_a_bucket_the_column_does_not_hold_is_refused(self, bad):
+        """UTC-69-TC-04 — the three derived badge names are refused too.
+
+        Pending, Expired and Rescued are `derive_post_status` names, not values
+        the `status` column holds, so filtering on them would return nothing
+        rather than fail. They are refused so the caller learns why.
+        """
+        with pytest.raises(ValueError):
+            normalize_browse_status(bad)
+
+    def test_the_refusal_names_the_permitted_values(self):
+        """UTC-69-TC-05 — the message is what the 400 carries to the console."""
+        with pytest.raises(ValueError) as exc:
+            normalize_browse_status("Banned")
+
+        for permitted in BROWSE_STATUS_FILTERS:
+            assert permitted in str(exc.value)
+
+
+class TestNormalizeBrowseSpecies:
+    """MD-74. The species half of the administrator browse filter."""
+
+    def test_no_filter_means_every_report(self):
+        """UTC-70-TC-01 — absence is not a value to refuse."""
+        assert normalize_browse_species(None) is None
+
+    @pytest.mark.parametrize("stored", BROWSE_SPECIES_FILTERS)
+    def test_each_permitted_species_passes_through(self, stored):
+        """UTC-70-TC-02 — 'Other' is still a browse filter, because reports
+        created before 2026-09-10 hold it even though no new one may."""
+        assert normalize_browse_species(stored) == stored
+
+    def test_casing_and_surrounding_space_are_normalised(self):
+        """UTC-70-TC-03 — the console sends what the user typed."""
+        assert normalize_browse_species("  cat  ") == "Cat"
+
+    @pytest.mark.parametrize("bad", ["Dragon", "Rabbit", ""])
+    def test_a_species_outside_the_set_is_refused(self, bad):
+        """UTC-70-TC-04."""
+        with pytest.raises(ValueError):
+            normalize_browse_species(bad)
+
+    def test_the_refusal_names_the_permitted_values(self):
+        """UTC-70-TC-05 — the message is what the 400 carries to the console."""
+        with pytest.raises(ValueError) as exc:
+            normalize_browse_species("Dragon")
+
+        for permitted in BROWSE_SPECIES_FILTERS:
+            assert permitted in str(exc.value)

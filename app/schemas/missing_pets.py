@@ -74,11 +74,19 @@ class MissingPetCreate(BaseModel):
     @field_validator('species')
     @classmethod
     def species_must_be_valid(cls, v: str) -> str:
-        """Validate and normalize the species value."""
-        valid_species = {'Cat', 'Dog', 'Bird', 'Other'}
+        """Validate and normalize the species value (SRS-58).
+
+        'Other' was accepted until 2026-09-10 and is not any more. SRS-58 names
+        Cat, Dog and Bird and nothing else, the client's own `PetSpecies` enum
+        offers only those three, and `AIManager.TARGET_ANIMALS` cannot isolate
+        an 'Other', so such a report only ever stored a full-frame vector that
+        matched nothing. The `pet_species` database enum still carries the
+        value, which is what any legacy row holds.
+        """
+        valid_species = {'Cat', 'Dog', 'Bird'}
         normalized = v.capitalize()
         if normalized not in valid_species:
-            raise ValueError(f"Species must be one of {valid_species}")
+            raise ValueError(f"Species must be one of {sorted(valid_species)}")
         return normalized
 
     @field_validator('characteristics')
