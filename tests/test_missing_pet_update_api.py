@@ -209,10 +209,10 @@ class TestPetName:
 # --------------------------------------------------------------------------- #
 class TestPrimaryColour:
     def test_an_unparseable_colour_is_rejected(self, client, repo):
-        """UTC-63-TC-01 [error] - a colour that is not #RRGGBB is refused
-        before any write, by the same rule the create path enforces. An
-        unparseable hex in the column makes the colour re-ranking drop the
-        report from its own owner's matches."""
+        """UTC-35-TC-08 [error] - a colour the schema does not admit, refused
+        before any write like every other value the schema refuses. The rule
+        itself belongs to the schema and is asserted directly by UTC-62; what
+        this case adds is that the refusal reaches no repository call."""
         r = client.patch(
             "/missing-pets/p1", json={"primary_color_hex": "not-a-colour"},
         )
@@ -226,10 +226,11 @@ class TestPrimaryColour:
 # --------------------------------------------------------------------------- #
 class TestCharacteristics:
     def test_an_empty_characteristics_object_is_refused(self, client, repo):
-        """UTC-62-TC-01 [error] - an empty object is not a description. The
-        create path has always refused one; the edit path did not until
-        2026-09-07, so an owner could blank the coat description of their own
-        lost pet with a request the schema called valid."""
+        """UTC-35-TC-08 [error] - an empty description is a value the schema
+        does not admit, refused before any write like every other such value.
+        The rule itself belongs to the schema and is asserted directly by
+        UTC-61; what this case adds is that the refusal reaches no repository
+        call."""
         r = client.patch("/missing-pets/p1", json={"characteristics": {}})
 
         assert r.status_code == 422

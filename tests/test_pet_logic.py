@@ -317,7 +317,7 @@ class _Pet:
 
 class TestBuildMissingPetPayload:
     def test_the_location_is_a_point_with_longitude_first(self):
-        """UTC-64-TC-01 — SRS-62, the projection the spatial queries read.
+        """UTC-63-TC-01 — SRS-62, the projection the spatial queries read.
 
         PostGIS takes x then y, which is longitude then latitude, and getting
         the pair the wrong way round puts every report in the wrong hemisphere
@@ -330,7 +330,7 @@ class TestBuildMissingPetPayload:
         assert out["last_seen_location"] == "POINT(100.5018 13.7563)"
 
     def test_the_last_seen_time_is_stored_as_an_iso_timestamp(self):
-        """UTC-64-TC-02 — SRS-62, the time half."""
+        """UTC-63-TC-02 — SRS-62, the time half."""
         out = build_missing_pet_payload(
             _Pet(last_seen_time=datetime(2025, 1, 12, 10, 30, tzinfo=timezone.utc)),
             feature_vector=[0.1],
@@ -339,7 +339,7 @@ class TestBuildMissingPetPayload:
         assert out["last_seen_time"] == "2025-01-12T10:30:00+00:00"
 
     def test_a_new_report_opens_at_searching(self):
-        """UTC-64-TC-03 — SRS-64.
+        """UTC-63-TC-03 — SRS-64.
 
         'Searching' is the status the matching RPC filters on, so a report
         stored at any other value is created and then never matched.
@@ -349,13 +349,13 @@ class TestBuildMissingPetPayload:
         assert out["status"] == "Searching"
 
     def test_the_vector_the_caller_supplies_is_the_one_stored(self):
-        """UTC-64-TC-04 — SRS-63's half that this function owns."""
+        """UTC-63-TC-04 — SRS-63's half that this function owns."""
         out = build_missing_pet_payload(_Pet(), feature_vector=[0.25, 0.5])
 
         assert out["feature_vector"] == [0.25, 0.5]
 
     def test_every_other_field_travels_unchanged(self):
-        """UTC-64-TC-05 — the payload carries the report as it was given."""
+        """UTC-63-TC-05 — the payload carries the report as it was given."""
         pet = _Pet(
             owner_id="owner-9",
             pet_name="Mochi",
@@ -377,7 +377,7 @@ class TestBuildMissingPetPayload:
         assert out["primary_color_hex"] == "#112233"
 
     def test_the_expiry_is_left_to_the_column_default(self):
-        """UTC-64-TC-06 — SRS-86 is granted by the database, not here.
+        """UTC-63-TC-06 — SRS-86 is granted by the database, not here.
 
         `expires_at` has a column DEFAULT of NOW() + 7 days, and that DEFAULT is
         the single source of the grant. A payload that carried the key would
@@ -397,21 +397,21 @@ class TestNormalizeBrowseStatus:
     """MD-73. The status half of the administrator browse filter."""
 
     def test_no_filter_means_every_report(self):
-        """UTC-69-TC-01 — absence is not a value to refuse."""
+        """UTC-68-TC-01 — absence is not a value to refuse."""
         assert normalize_browse_status(None) is None
 
     @pytest.mark.parametrize("stored", BROWSE_STATUS_FILTERS)
     def test_each_permitted_status_passes_through(self, stored):
-        """UTC-69-TC-02 — every value the column holds is accepted."""
+        """UTC-68-TC-02 — every value the column holds is accepted."""
         assert normalize_browse_status(stored) == stored
 
     def test_casing_and_surrounding_space_are_normalised(self):
-        """UTC-69-TC-03 — the console sends what the user typed."""
+        """UTC-68-TC-03 — the console sends what the user typed."""
         assert normalize_browse_status("  searching  ") == "Searching"
 
     @pytest.mark.parametrize("bad", ["Pending", "Expired", "Rescued", "Banned", ""])
     def test_a_bucket_the_column_does_not_hold_is_refused(self, bad):
-        """UTC-69-TC-04 — the three derived badge names are refused too.
+        """UTC-68-TC-04 — the three derived badge names are refused too.
 
         Pending, Expired and Rescued are `derive_post_status` names, not values
         the `status` column holds, so filtering on them would return nothing
@@ -421,7 +421,7 @@ class TestNormalizeBrowseStatus:
             normalize_browse_status(bad)
 
     def test_the_refusal_names_the_permitted_values(self):
-        """UTC-69-TC-05 — the message is what the 400 carries to the console."""
+        """UTC-68-TC-05 — the message is what the 400 carries to the console."""
         with pytest.raises(ValueError) as exc:
             normalize_browse_status("Banned")
 
@@ -433,27 +433,27 @@ class TestNormalizeBrowseSpecies:
     """MD-74. The species half of the administrator browse filter."""
 
     def test_no_filter_means_every_report(self):
-        """UTC-70-TC-01 — absence is not a value to refuse."""
+        """UTC-69-TC-01 — absence is not a value to refuse."""
         assert normalize_browse_species(None) is None
 
     @pytest.mark.parametrize("stored", BROWSE_SPECIES_FILTERS)
     def test_each_permitted_species_passes_through(self, stored):
-        """UTC-70-TC-02 — 'Other' is still a browse filter, because reports
+        """UTC-69-TC-02 — 'Other' is still a browse filter, because reports
         created before 2026-09-10 hold it even though no new one may."""
         assert normalize_browse_species(stored) == stored
 
     def test_casing_and_surrounding_space_are_normalised(self):
-        """UTC-70-TC-03 — the console sends what the user typed."""
+        """UTC-69-TC-03 — the console sends what the user typed."""
         assert normalize_browse_species("  cat  ") == "Cat"
 
     @pytest.mark.parametrize("bad", ["Dragon", "Rabbit", ""])
     def test_a_species_outside_the_set_is_refused(self, bad):
-        """UTC-70-TC-04."""
+        """UTC-69-TC-04."""
         with pytest.raises(ValueError):
             normalize_browse_species(bad)
 
     def test_the_refusal_names_the_permitted_values(self):
-        """UTC-70-TC-05 — the message is what the 400 carries to the console."""
+        """UTC-69-TC-05 — the message is what the 400 carries to the console."""
         with pytest.raises(ValueError) as exc:
             normalize_browse_species("Dragon")
 

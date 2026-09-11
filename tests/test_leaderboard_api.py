@@ -1,8 +1,8 @@
 """
 Route unit tests for the Rank List boards.
 
-  UTC-50  GET /leaderboard/users     (MD-54, SRS-91/92)
-  UTC-51  GET /leaderboard/bounties  (MD-55, SRS-93)
+  UTC-49  GET /leaderboard/users     (MD-54, SRS-91/92)
+  UTC-50  GET /leaderboard/bounties  (MD-55, SRS-93)
 
 These two are the one documented exception to the repository seam — they are
 straight ordered reads with no schema of their own, so they live in the route
@@ -113,9 +113,9 @@ def _user(uid, score, name=None):
     }
 
 
-# ----------------------------------------------------------------- UTC-50 ---
+# ----------------------------------------------------------------- UTC-49 ---
 class TestLeaderboardUsers:
-    """UTC-50 · MD-54 `leaderboard_users` · SRS-91, SRS-92."""
+    """UTC-49 · MD-54 `leaderboard_users` · SRS-91, SRS-92."""
 
     def test_tc01_ranks_run_from_one_and_follow_the_offset(self):
         page = [_user("a", 90), _user("b", 80), _user("c", 70)]
@@ -188,9 +188,9 @@ class TestLeaderboardUsers:
         assert TestClient(app).get("/leaderboard/users").status_code == 401
 
 
-# ----------------------------------------------------------------- UTC-51 ---
+# ----------------------------------------------------------------- UTC-50 ---
 class TestLeaderboardBounties:
-    """UTC-51 · MD-55 `leaderboard_bounties` · SRS-93."""
+    """UTC-50 · MD-55 `leaderboard_bounties` · SRS-93."""
 
     @staticmethod
     def _pet(pid, amount):
@@ -245,7 +245,7 @@ class TestLeaderboardBounties:
 
     @pytest.mark.parametrize("qs", ["limit=0", "limit=101", "offset=-1"])
     def test_tc07_out_of_range_paging_is_refused_before_any_query(self, qs):
-        """UTC-51-TC-07 [error] - this board declares the same bounds as the
+        """UTC-50-TC-07 [error] - this board declares the same bounds as the
         hunter board and had no case for them until 2026-09-07, so the two
         blocks disagreed about which choices of the window category were
         framed while the two routes enforce the identical rule."""

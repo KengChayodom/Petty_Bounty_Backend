@@ -1,10 +1,11 @@
 """
-Route unit tests for PATCH /me — profile edit (UTC-43/44, MD-46,
+Route unit tests for PATCH /me — profile edit (UTC-43, MD-46,
 SRS-73 username, SRS-74 photograph, SRS-99 phone).
 
 The spec (`progress_2/method_specification.md`) maps all three requirements onto
-MD-46, a single `PATCH /me`, so the two test-plan blocks exercise one route
-(`me.update_my_profile`) through different fields of its payload.
+MD-46, a single `PATCH /me`, and UTC-43 is the one test-plan block for it. The
+classes below group its twelve cases by the field of the payload they exercise.
+UTC-44 held the photograph half until 2026-09-11 and is retired.
 
 Boundary rule (matches the reconciled Progress-2 plan): the auth dependency and
 the `UserRepository` port are the seams, replaced via FastAPI
@@ -42,7 +43,7 @@ def _repo(profile=None):
 
 
 # --------------------------------------------------------------------------- #
-# UTC-43: update the profile username (MD-46, SRS-74)
+# UTC-43-TC-01 to TC-04 and TC-06: the username (MD-46, SRS-73)
 # --------------------------------------------------------------------------- #
 class TestUpdateProfileName:
     def test_empty_name_yields_400_and_repo_unchanged(self):
@@ -66,7 +67,7 @@ class TestUpdateProfileName:
         repo.update_profile.assert_called_once_with("u1", {"username": "Kus"})
 
     def test_the_username_is_trimmed(self):
-        """UTC-43-TC-09 — surrounding space is stripped before the write, the
+        """UTC-43-TC-06 — surrounding space is stripped before the write, the
         same rule the phone number is held to. Unframed until 2026-09-07,
         which left the strip that decides whether a name is blank asserted on
         the refusal path only."""
@@ -95,7 +96,7 @@ class TestUpdateProfileName:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-44: update the profile photograph (MD-46, SRS-74)
+# UTC-43-TC-05 to TC-07: the phone number and the whole payload (MD-46, SRS-99)
 # --------------------------------------------------------------------------- #
 class TestUpdateProfilePhone:
     """UTC-43-TC-05 to TC-07 — the phone half of MD-46 (SRS-99).
@@ -165,7 +166,7 @@ class TestUpdateProfilePhone:
 class TestUpdateProfilePhoto:
     @pytest.mark.parametrize("address", ["", "   ", "http://x/a.gif"])
     def test_an_address_outside_the_accepted_formats_is_refused(self, address):
-        """UTC-44-TC-01 [error] — one check decides this, so an empty address
+        """UTC-43-TC-09 [error] — one check decides this, so an empty address
         and an address ending in an unaccepted extension are one choice and
         take one frame between them. The values are checked together rather
         than in separate cases.
@@ -179,7 +180,7 @@ class TestUpdateProfilePhoto:
         repo.update_profile.assert_not_called()
 
     def test_writes_photo_url_scoped_to_self(self):
-        """UTC-44-TC-02 — the photo URL is written to the caller's own row."""
+        """UTC-43-TC-10 — the photo URL is written to the caller's own row."""
         updated = {"id": "u1", "profile_image_url": "http://x/a.jpg"}
         repo = _repo(profile=updated)
         r = _client(repo, user_id="u1").patch(
@@ -194,7 +195,7 @@ class TestUpdateProfilePhoto:
         )
 
     def test_missing_profile_yields_404(self):
-        """UTC-44-TC-03 — no such row means 404 (both None and the port's own
+        """UTC-43-TC-11 — no such row means 404 (both None and the port's own
         UserProfileNotFound map to 404)."""
         repo = _repo()
         repo.update_profile.side_effect = UserProfileNotFound("ghost")
@@ -204,17 +205,12 @@ class TestUpdateProfilePhoto:
 
         assert r.status_code == 404
 
-    def test_database_error_yields_500(self):
-        """UTC-44-TC-04 — an unexpected repo failure surfaces as 500."""
-        repo = _repo()
-        repo.update_profile.side_effect = Exception("connection reset")
-        r = _client(repo).patch("/me", json={"photo_url": "http://x/a.jpg"})
-
-        assert r.status_code == 500
-
+    # The database-failure path is framed once, by UTC-43-TC-04 above. It never
+    # reads which field was sent, so a second case here asserted the same thing
+    # with a different body. Struck on 2026-09-11 with the merge of UTC-44.
 
     def test_an_accepted_extension_is_matched_whatever_its_casing(self):
-        """UTC-44-TC-05 [single] — the boundary of the format check. The
+        """UTC-43-TC-12 [single] — the boundary of the format check. The
         comparison lower-cases the address first, so a camera that names its
         files .JPG is accepted. Unframed until 2026-09-07, which left the
         lower-casing free to be removed without a test noticing."""

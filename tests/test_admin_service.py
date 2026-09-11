@@ -462,7 +462,7 @@ class TestReviewReport:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-49  list_reports (MD-51) — read the queue that UTC-40 acts from.
+# UTC-48  list_reports (MD-51) — read the queue that UTC-40 acts from.
 #
 # The gap this closes: review_report takes a report_id, and until now nothing
 # returned one. The queue was writable (MD-43) and decidable (MD-44) but never
@@ -489,27 +489,27 @@ def _queue_service(rows=None, total=None):
 
 class TestListReports:
     def test_forwards_a_valid_filter_and_pagination(self):
-        """UTC-49-TC-01 — the normalised bucket and the page reach the port."""
+        """UTC-48-TC-01 — the normalised bucket and the page reach the port."""
         service, report_repo = _queue_service(rows=[{"id": "r1"}])
         out = run(service.list_reports(status="Pending", limit=5, offset=10))
         assert out.items == [{"id": "r1"}]
         report_repo.list_reports.assert_called_once_with("Pending", 5, 10)
 
     def test_absent_filter_passes_none_meaning_every_status(self):
-        """UTC-49-TC-02 — None must survive to the adapter so the predicate is
+        """UTC-48-TC-02 — None must survive to the adapter so the predicate is
         skipped entirely. A string here would silently show one bucket only."""
         service, report_repo = _queue_service()
         run(service.list_reports())
         assert report_repo.list_reports.call_args.args[0] is None
 
     def test_filter_is_normalised_before_the_query(self):
-        """UTC-49-TC-03 — casing from a UI must not reach the enum verbatim."""
+        """UTC-48-TC-03 — casing from a UI must not reach the enum verbatim."""
         service, report_repo = _queue_service()
         run(service.list_reports(status="  reviewed_penalty  "))
         assert report_repo.list_reports.call_args.args[0] == "Reviewed_Penalty"
 
     def test_unknown_filter_raises_before_any_io(self):
-        """UTC-49-TC-04 — the 400 happens at the edge; the port is never
+        """UTC-48-TC-04 — the 400 happens at the edge; the port is never
         touched, so a bad filter cannot become a database error."""
         service, report_repo = _queue_service()
         with pytest.raises(ValueError):
@@ -517,20 +517,20 @@ class TestListReports:
         report_repo.list_reports.assert_not_called()
 
     def test_empty_queue_returns_empty_list(self):
-        """UTC-49-TC-05 — nothing to moderate is a success, not a 404."""
+        """UTC-48-TC-05 — nothing to moderate is a success, not a 404."""
         service, _ = _queue_service(rows=[])
         out = run(service.list_reports())
         assert out.items == [] and out.total == 0
 
     def test_db_error_propagates(self):
-        """UTC-49-TC-06 — a repo failure surfaces (API maps it to 500)."""
+        """UTC-48-TC-06 — a repo failure surfaces (API maps it to 500)."""
         service, report_repo = _queue_service()
         report_repo.list_reports.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(service.list_reports())
 
     def test_total_is_the_queue_depth_not_the_page_length(self):
-        """UTC-49-TC-07 — a page out of a deeper queue reports the depth.
+        """UTC-48-TC-07 — a page out of a deeper queue reports the depth.
 
         The moderator's question is "how much is waiting", and a full page
         answers it only by accident. The count is the filter's count, so a
