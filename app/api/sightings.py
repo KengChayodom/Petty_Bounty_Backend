@@ -162,9 +162,12 @@ async def confirm_sighting_action(
 
     Hunter-scoped from the JWT: a sighting somebody else reported is 404, never
     403, so this cannot be used to probe which sighting ids exist. A sighting an
-    owner or admin has already reviewed is 409 — by then the report has been
-    judged as it stands, and flipping it to 'Caught' would retro-fit it into
-    the bounty-eligible shape.
+    administrator has WITHDRAWN ('Dismissed') is 409 — it is out of the owner's
+    timeline and out of scoring, so flipping it to 'Caught' would retro-fit it
+    into the bounty-eligible shape. 'Verified' does NOT lock: it is written only
+    to reverse a dismissal, and a reversal restores the sighting completely,
+    the hunter's ability to change the action type included (see
+    `SightingService.confirm_sighting_action`).
     """
     try:
         result = await service.confirm_sighting_action(

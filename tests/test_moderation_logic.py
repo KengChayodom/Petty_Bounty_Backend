@@ -129,7 +129,7 @@ class TestBuildFlagPayload:
 
 
 class TestResolvePenaltyPoints:
-    """UTC-56 — how many points an upheld flag costs its hunter.
+    """UTC-55 — how many points an upheld flag costs its hunter.
 
     These were framed through AdminService.review_report until 09/09/2026, which
     meant standing up two repository stubs, a Pending flag and a sighting
