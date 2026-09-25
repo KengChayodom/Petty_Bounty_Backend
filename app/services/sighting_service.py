@@ -74,8 +74,9 @@ class SightingService:
         result keyed by image_url so the follow-up POST /sightings/ doesn't
         repeat any of it.
 
-        Returns the same shape as before — `{species, confidence, bbox}` —
-        so the Flutter verification screen contract is unchanged.
+        Returns `{species, confidence, bbox, primary_color_hex}`. The report
+        form uses the colour as its default coat colour, which the owner may
+        change. `primary_color_hex` is None when no colour could be read.
         """
         try:
             embedding = await self.ai.embed_image(str(image_url), with_color=True)
@@ -110,6 +111,7 @@ class SightingService:
                     "species": embedding.species,
                     "confidence": round(embedding.confidence * 100, 2),
                     "bbox": embedding.bbox,
+                    "primary_color_hex": embedding.primary_color_hex,
                 }
             }
         except Exception as e:

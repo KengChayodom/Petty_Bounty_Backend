@@ -363,7 +363,7 @@ class TestMyReportsRoute:
 
 # --------------------------------------------------------------------------- #
 # GET /admin/missing-pets/{pet_id} — MD-60 / SRS-70 (the "review" half).
-# UTC-57. The browse half is MD-41 and is covered above; this is the detail
+# UTC-56. The browse half is MD-41 and is covered above; this is the detail
 # read the console opens from that listing. The route is a gate plus a
 # pass-through, so what is verifiable here is that it forwards the identifier,
 # projects nothing of its own, turns an absent row into 404, does NOT turn a
@@ -373,7 +373,7 @@ class TestMyReportsRoute:
 # --------------------------------------------------------------------------- #
 class TestAdminPetDetailRoute:
     def test_tc01_returns_the_row_the_service_projected(self):
-        """UTC-57-TC-01 — the route reshapes nothing. The derived badge and the
+        """UTC-56-TC-01 — the route reshapes nothing. The derived badge and the
         numeric coordinates the RPC projects reach the caller untouched."""
         repo = MagicMock(spec=MissingPetRepository)
         repo.get_missing_pet_by_id.return_value = {
@@ -391,7 +391,7 @@ class TestAdminPetDetailRoute:
         repo.get_missing_pet_by_id.assert_called_once_with("p1")
 
     def test_tc02_unknown_identifier_yields_404(self):
-        """UTC-57-TC-02 — no row is a 404, not an empty 200."""
+        """UTC-56-TC-02 — no row is a 404, not an empty 200."""
         repo = MagicMock(spec=MissingPetRepository)
         repo.get_missing_pet_by_id.return_value = None
 
@@ -401,7 +401,7 @@ class TestAdminPetDetailRoute:
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_tc03_a_database_failure_is_not_a_404(self):
-        """UTC-57-TC-03 — a failing read must not be reported as a missing
+        """UTC-56-TC-03 — a failing read must not be reported as a missing
         report. Answering 404 here would tell a moderator the report had been
         deleted when the database was merely unreachable."""
         repo = MagicMock(spec=MissingPetRepository)
@@ -420,7 +420,7 @@ class TestAdminPetDetailRoute:
         assert r.status_code == 500
 
     def test_tc04_the_route_is_behind_the_administrator_gate(self):
-        """UTC-57-TC-04 — the gate is declared on this route. Without it the
+        """UTC-56-TC-04 — the gate is declared on this route. Without it the
         detail read would expose an owner's contact details to any caller,
         which the browse listing above is protected from."""
         route = next(
