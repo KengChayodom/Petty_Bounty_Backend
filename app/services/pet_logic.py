@@ -85,9 +85,16 @@ _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
 OWNER_REJECTED = "Rejected"
 
 
-def build_missing_pet_payload(pet, *, feature_vector) -> dict:
+def build_missing_pet_payload(
+    pet, *, feature_vector, measured_color_hex: str | None = None,
+) -> dict:
     """The missing_pets INSERT payload — location as a PostGIS POINT, status
     seeded to 'Searching', and the CLIP feature vector attached.
+
+    `primary_color_hex` is the owner's colour when they chose one, otherwise
+    `measured_color_hex`, the coat colour extracted from the photo the same
+    way a sighting's is. The app offers that measured colour as the default,
+    so this fallback only matters when the default never reached the form.
 
     `expires_at` is deliberately absent: the column DEFAULT (`NOW() + INTERVAL
     '7 days'`) is the single source of the seven-day grant.
@@ -104,7 +111,7 @@ def build_missing_pet_payload(pet, *, feature_vector) -> dict:
         "image_url": str(pet.image_url),
         "feature_vector": feature_vector,
         "status": "Searching",
-        "primary_color_hex": pet.primary_color_hex,
+        "primary_color_hex": pet.primary_color_hex or measured_color_hex,
     }
 
 

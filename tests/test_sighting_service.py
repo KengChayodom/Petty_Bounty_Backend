@@ -646,6 +646,8 @@ class TestAnalyzeSightingImage:
         assert out["data"]["species"] == "Dog"
         assert out["data"]["confidence"] == 88.25      # round(0.8825 * 100, 2)
         assert out["data"]["bbox"] == bbox
+        # the report form uses this as its default coat colour
+        assert out["data"]["primary_color_hex"] == "#123456"
         ai.embed_image.assert_awaited_once_with(url, with_color=True)
 
         cached = AnalyzeCache.get(url)

@@ -33,10 +33,13 @@ class Settings:
     # Colour-aware matching (see app/services/sighting_logic.rerank_by_color).
     # The final match score blends CLIP cosine with coat-colour similarity:
     #   combined = CLIP_MATCH_WEIGHT * clip_sim + COLOR_MATCH_WEIGHT * color_sim
-    # The two weights should sum to 1.0. CLIP stays dominant — colour is a
-    # tie-breaker/penalty, not the primary signal.
-    CLIP_MATCH_WEIGHT: float = 0.7
-    COLOR_MATCH_WEIGHT: float = 0.3
+    # The two weights should sum to 1.0. Colour's weight is kept small because
+    # CLIP scores every cat in a narrow band (about 0.85 to 0.95): at 0.3 the
+    # colour term decided the order alone and pushed the true cat out of the
+    # top 5. Colour's main job is the exclusion below. eval_color_matching.py
+    # section 5 measured 0.05 as the best trade-off (2026-09-25).
+    CLIP_MATCH_WEIGHT: float = 0.95
+    COLOR_MATCH_WEIGHT: float = 0.05
 
     # Colour exclusion works in two regimes, split by chroma (C* = √(a*²+b*²) in
     # CIELab) so "grey vs black" and "grey vs orange" are judged by the right

@@ -126,10 +126,29 @@ class TestRegisterMissingPet:
         assert payload["status"] == "Searching"
         assert payload["species"] == "Dog"
         assert payload["last_seen_location"] == "POINT(100.5018 13.7563)"
-        # embed is constrained to the user-confirmed species
+        # embed is constrained to the user-confirmed species, and measures the
+        # coat colour the same way the sighting side does
         AIManager.embed_image.assert_awaited_once_with(
-            "https://img.example/pet.jpg", expected_species="Dog"
+            "https://img.example/pet.jpg", expected_species="Dog",
+            with_color=True,
         )
+
+    def test_a_report_with_no_colour_stores_the_measured_one(self, monkeypatch):
+        """The form's default colour comes from analyze. When it never arrived,
+        registration stores the colour measured from the same photo."""
+        _patch_embed(monkeypatch, result=EmbedResult(
+            feature_vector=[0.1], species="Cat", confidence=0.9,
+            bbox=[1.0, 2.0, 3.0, 4.0], isolated_image="CROP_IMG",
+            primary_color_hex="#726860", used_full_frame=False,
+        ))
+        repo = _repo()
+        repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
+
+        run(PetService.register_missing_pet(
+            repo, _make_pet(species="Cat", primary_color_hex=None)))
+
+        payload = repo.insert_missing_pet.call_args.args[0]
+        assert payload["primary_color_hex"] == "#726860"
 
     def test_yolo_miss_falls_back_to_full_frame(self, monkeypatch):
         vector = [0.4, 0.5]
@@ -142,7 +161,11 @@ class TestRegisterMissingPet:
         run(PetService.register_missing_pet(repo, _make_pet()))
 
         # On a YOLO miss embed_image full-frame-encodes; that vector is inserted.
-        assert repo.insert_missing_pet.call_args.args[0]["feature_vector"] == vector
+        # No colour is read off a full frame, so with no owner colour the pet
+        # matches on CLIP only.
+        payload = repo.insert_missing_pet.call_args.args[0]
+        assert payload["feature_vector"] == vector
+        assert payload["primary_color_hex"] is None
 
     def test_insert_returning_no_row_raises_valueerror(self, monkeypatch):
         _patch_embed(monkeypatch, result=EmbedResult(
