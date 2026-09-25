@@ -1,5 +1,5 @@
 """
-Unit tests for administrator role assignment — UTC-52, UTC-53, UTC-54
+Unit tests for administrator role assignment — UTC-51, UTC-52, UTC-53
 (MD-56 to MD-58, SRS-94 to SRS-98, UD-23).
 
 Written against `progress_2/test_plan.md` §3.1.14 Roles Module. The boundary is
@@ -56,7 +56,7 @@ ACCOUNT = {"id": "u2", "username": "Kus", "role": "user"}
 
 
 # --------------------------------------------------------------------------- #
-# UTC-52 — find_user_by_email (MD-56, SRS-94)
+# UTC-51 — find_user_by_email (MD-56, SRS-94)
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_tc01_exact_address_returns_one_account(self):
@@ -81,7 +81,7 @@ class TestFindUserByEmail:
         assert result == ACCOUNT
 
     def test_tc04_unknown_address(self):
-        """UTC-52-TC-03 [error] - an address nobody holds is a missing account,
+        """UTC-51-TC-03 [error] - an address nobody holds is a missing account,
         and the port was asked for it exactly as typed, so no near miss is
         expanded into a prefix and no account is disclosed by having nearly
         matched.
@@ -128,7 +128,7 @@ class TestFindUserByEmail:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-53 — assign_user_role (MD-57, SRS-95 to SRS-98)
+# UTC-52 — assign_user_role (MD-57, SRS-95 to SRS-98)
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_tc01_grants_the_administrator_role(self):
@@ -257,7 +257,7 @@ class TestAssignUserRole:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-54 — list_role_changes (MD-58, SRS-97 reading half)
+# UTC-53 — list_role_changes (MD-58, SRS-97 reading half)
 # --------------------------------------------------------------------------- #
 class TestListRoleChanges:
     def test_tc01_returns_the_page_with_its_total(self):
@@ -312,7 +312,7 @@ class TestListRoleChanges:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-55: list the current administrators (MD-59, SRS-94 — the roster half)
+# UTC-54: list the current administrators (MD-59, SRS-94 — the roster half)
 #
 # The Roles screen pairs the blind email lookup with a roster of who holds the
 # role today, because withdrawing access from a departing administrator means

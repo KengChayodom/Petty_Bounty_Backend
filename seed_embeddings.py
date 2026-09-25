@@ -22,6 +22,12 @@ Usage:
 
     # Re-vector every pet (use after changing the encoding pipeline).
     python seed_embeddings.py --all
+
+    # Give pets with no real coat colour the colour measured from their photo:
+    # primary_color_hex NULL, or the app's old placeholder #D4AF37, which the
+    # form sent whenever the owner never opened the picker. Colours an owner
+    # chose are left alone. Vectors are left untouched.
+    python seed_embeddings.py --colors
 """
 import asyncio
 import os
@@ -30,7 +36,7 @@ import sys
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-from app.services.ai_service import AIManager
+from app.services.ai_service import AIManager, EmbedResult
 
 load_dotenv()
 
@@ -48,39 +54,49 @@ AIManager.get_clip()
 print("✅ Models loaded.")
 
 
-def embed_pet(image_url: str, species: str) -> tuple[list[float] | None, bool]:
+def embed_pet(image_url: str, species: str) -> EmbedResult | None:
     """
-    Return (vector, used_full_frame).
+    The shared pipeline's result, or None if it failed.
 
-    used_full_frame is True when YOLO found no matching subject and we fell
-    back to encoding the full image — useful for the run summary.
+    `used_full_frame` on the result is True when YOLO found no matching subject
+    and the full image was encoded instead, useful for the run summary. The
+    coat colour is extracted with the same call register_missing_pet makes.
 
     Runs the async `AIManager.embed_image` via `asyncio.run` (one loop per pet,
     fine for a CLI backfill) so this script and the live path share one pipeline.
     """
     try:
-        result = asyncio.run(
-            AIManager.embed_image(image_url, expected_species=species)
-        )
-        return result.feature_vector, result.used_full_frame
+        return asyncio.run(AIManager.embed_image(
+            image_url, expected_species=species, with_color=True,
+        ))
     except Exception as e:
         print(f"   ❌ embed failed for {image_url}: {e}")
-        return None, False
+        return None
 
 
-def backfill(force_all: bool = False) -> None:
+# The create form's default before 2026-09-25. It means "never picked", not gold.
+OLD_PLACEHOLDER_COLOR = "#D4AF37"
+
+
+def backfill(force_all: bool = False, colors_only: bool = False) -> None:
     query = (supabase.table("missing_pets")
                      .select("id, pet_name, species, image_url"))
-    if not force_all:
+    if colors_only:
+        query = query.or_(f"primary_color_hex.is.null,"
+                          f"primary_color_hex.eq.{OLD_PLACEHOLDER_COLOR}")
+    elif not force_all:
         query = query.is_("feature_vector", "null")
 
     pets = query.execute().data
     if not pets:
-        scope = "any pets" if force_all else "pets with NULL feature_vector"
+        scope = ("pets without a chosen coat colour" if colors_only
+                 else "any pets" if force_all
+                 else "pets with NULL feature_vector")
         print(f"✨ Nothing to do — found no {scope}.")
         return
 
-    mode = "RE-VECTOR ALL" if force_all else "fill missing only"
+    mode = ("fill coat colours" if colors_only
+            else "RE-VECTOR ALL" if force_all else "fill missing only")
     print(f"\n📦 {len(pets)} pets to process ({mode}).")
 
     ok = fail = no_detection = 0
@@ -93,23 +109,30 @@ def backfill(force_all: bool = False) -> None:
             fail += 1
             continue
 
-        vec, used_full_frame = embed_pet(url, species)
-        if vec is None:
+        result = embed_pet(url, species)
+        if result is None:
             fail += 1
             continue
-        if used_full_frame:
+        if result.used_full_frame:
             print(f"   ⚠️  YOLO found no {species.lower()} → encoded full"
                   f" frame (recall will degrade for this pet)")
             no_detection += 1
         else:
             print("   ✓ mask-isolated subject encoded")
 
+        if colors_only:
+            if not result.primary_color_hex:
+                print("   ⚠️  no readable coat colour, left NULL (CLIP only)")
+                continue
+            changes = {"primary_color_hex": result.primary_color_hex}
+        else:
+            changes = {"feature_vector": result.feature_vector}
         upd = (supabase.table("missing_pets")
-                       .update({"feature_vector": vec})
+                       .update(changes)
                        .eq("id", pid)
                        .execute())
         if upd.data:
-            print(f"   🎯 vector saved for {name}")
+            print(f"   🎯 saved {', '.join(changes)} for {name}")
             ok += 1
         else:
             print(f"   ❌ DB update failed for {name}")
@@ -120,6 +143,5 @@ def backfill(force_all: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    force_all = "--all" in sys.argv
-    backfill(force_all=force_all)
+    backfill(force_all="--all" in sys.argv, colors_only="--colors" in sys.argv)
     print("\n🎉 Done.")

@@ -61,8 +61,11 @@ class PetService:
             # (AIManager.embed_image), so missing_pets and sightings vectors
             # stay directly comparable for pgvector similarity.
             logger.info(f"Extracting features from pet image: {pet.image_url}")
+            # with_color: when the owner sent no colour, the one measured here
+            # (the same way a sighting's is) is stored instead.
             embedding = await AIManager.embed_image(
                 str(pet.image_url), expected_species=pet.species,
+                with_color=True,
             )
             if embedding.used_full_frame:
                 logger.warning(
@@ -72,6 +75,7 @@ class PetService:
 
             data = build_missing_pet_payload(
                 pet, feature_vector=embedding.feature_vector,
+                measured_color_hex=embedding.primary_color_hex,
             )
 
             logger.info(f"Registering missing pet: {pet.pet_name}")

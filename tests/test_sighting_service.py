@@ -646,6 +646,8 @@ class TestAnalyzeSightingImage:
         assert out["data"]["species"] == "Dog"
         assert out["data"]["confidence"] == 88.25      # round(0.8825 * 100, 2)
         assert out["data"]["bbox"] == bbox
+        # the report form uses this as its default coat colour
+        assert out["data"]["primary_color_hex"] == "#123456"
         ai.embed_image.assert_awaited_once_with(url, with_color=True)
 
         cached = AnalyzeCache.get(url)
@@ -789,12 +791,12 @@ class TestGetHunterActivity:
         }
 
     def test_a_penalty_that_outlived_its_sighting_is_left_out_here(self):
-        """UTC-45-TC-04 - a deduction carrying no sighting is a separate choice
+        """UTC-44-TC-04 - a deduction carrying no sighting is a separate choice
         of the same category and was sharing TC-03's test method until
         2026-09-07. `sighting_id` is ON DELETE SET NULL, so a deduction can
         outlive what it punished; it must not crash the assembly and it must
         not attach itself to an unrelated sighting. It is still counted in the
-        cumulative summary of UTC-46."""
+        cumulative summary of UTC-45."""
         repo = _repo()
         repo.count_sightings_for_hunter.return_value = 1
         repo.list_sightings_for_hunter.return_value = [{"id": "s1"}]
@@ -810,7 +812,7 @@ class TestGetHunterActivity:
         assert s1["score_penalty"] is None
 
     def test_a_sighting_can_carry_both_an_award_and_a_penalty(self):
-        """UTC-45-TC-06 - they are independent records: a sighting that earned points on one
+        """UTC-44-TC-06 - they are independent records: a sighting that earned points on one
         case can still have been flagged and upheld."""
         repo = _repo()
         repo.count_sightings_for_hunter.return_value = 1
@@ -910,7 +912,7 @@ class TestGetHunterStats:
         assert run(svc.get_hunter_stats("hunter-1"))["total_score"] == 0
 
     def test_a_deduction_with_no_points_counts_as_zero(self):
-        """UTC-46-TC-06 [single] - the boundary of the summed column. A
+        """UTC-45-TC-06 [single] - the boundary of the summed column. A
         deduction row whose points figure is absent must count as nothing
         rather than fail the whole card, which is a stats screen the hunter
         opens far more often than any administrator opens the queue."""
@@ -1100,7 +1102,7 @@ class TestConfirmSightingAction:
         repo.set_sighting_action_type.assert_not_called()
 
     def test_a_database_failure_is_not_a_missing_sighting(self):
-        """UTC-47-TC-09 [error] - the read has two error choices and only one
+        """UTC-46-TC-09 [error] - the read has two error choices and only one
         was framed until 2026-09-07. A read that finds nothing is a missing
         sighting, which the route reports as 404, and a read that fails is a
         server fault, which it reports as 500. Collapsing the two would tell a
