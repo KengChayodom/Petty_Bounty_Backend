@@ -63,7 +63,6 @@ CENTER_LAT, CENTER_LON = 18.7963, 98.9530
 class DemoCat:
     file: str
     pet_name: str
-    color_hex: str               # primary coat colour, #RRGGBB
     traits: str
     bounty: float                # THB; 0 means no bounty
     d_lat: float                 # offset from CENTER, degrees
@@ -72,74 +71,75 @@ class DemoCat:
     secondary_hex: str | None = None
 
 
-# Colours follow the matching rules in sighting_logic.color_similarity:
-# grey, white and black coats are neutral hexes, while orange, cream and brown
-# coats are chromatic. A wrong family would exclude the pet from its own
-# matches, so the hex describes the main coat, not a collar or a background.
+# No coat colour is sent, like an owner who keeps the app's default: the app's
+# default is the colour measured from the photo, and register_missing_pet
+# stores that same measurement when none is sent. A hand-typed hex here is how
+# Kaprao (a grey tabby) once got a brownish #8A7560 and surfaced for orange
+# searches. secondary_hex is only a descriptive trait and does not feed matching.
 DEMO_CATS: list[DemoCat] = [
-    DemoCat("เทา2.jpg", "Silver", "#B4B4B4",
+    DemoCat("เทา2.jpg", "Silver",
             "Silver classic tabby (American Shorthair type), yellow eyes, "
             "red collar with red bell and red leash",
             2000, 0.0042, 0.0061, 20, secondary_hex="#3C3C3C"),
-    DemoCat("เทา1.jpg", "Marble", "#AAAAA8",
+    DemoCat("เทา1.jpg", "Marble",
             "Silver classic tabby with bullseye pattern on the sides, "
             "white paws, yellow eyes",
             1500, -0.0105, 0.0120, 44, secondary_hex="#2F2F2F"),
-    DemoCat("เทา3.jpg", "Kaprao", "#8A7560",
+    DemoCat("เทา3.jpg", "Kaprao",
             "Brown mackerel tabby, large ears, yellow-green eyes, "
             "pastel beaded collar",
             500, 0.0150, -0.0080, 30),
-    DemoCat("เทา4.jpg", "Pepper", "#9C9C9C",
+    DemoCat("เทา4.jpg", "Pepper",
             "Silver tabby kitten with dark stripes, bushy tail, black collar",
             800, -0.0060, -0.0140, 12, secondary_hex="#3A3A3A"),
-    DemoCat("เทา5.jpg", "Moon", "#D8D2CC",
+    DemoCat("เทา5.jpg", "Moon",
             "Pale cream-grey shorthair, stocky build, pink paw pads",
             0, 0.0210, 0.0035, 60),
-    DemoCat("ลายเทา.jpg", "Smokey", "#A8A39E",
+    DemoCat("ลายเทา.jpg", "Smokey",
             "Light grey mackerel tabby with beige undertone, yellow eyes, "
             "fluffy dark-tipped tail",
             1000, -0.0180, -0.0025, 26),
-    DemoCat("ขาว.jpg", "Pearl", "#EFEBE4",
+    DemoCat("ขาว.jpg", "Pearl",
             "Long-haired white Persian, flat face, amber eyes",
             3000, 0.0090, 0.0190, 8),
-    DemoCat("ขาว1.jpg", "Cotton", "#F3F3F1",
+    DemoCat("ขาว1.jpg", "Cotton",
             "White Scottish Fold kitten, folded ears, dark blue collar "
             "with silver bell",
             2500, -0.0030, 0.0240, 36),
-    DemoCat("ขาว2.jpg", "Snow", "#F4F4F2",
+    DemoCat("ขาว2.jpg", "Snow",
             "White British Shorthair, round face, copper eyes",
             2000, 0.0260, -0.0170, 52),
-    DemoCat("ขาว3.jpg", "Salapao", "#F0EFEC",
+    DemoCat("ขาว3.jpg", "Salapao",
             "White cat with grey tabby patches on the head, grey ringed tail, "
             "teal collar with blue bell",
             700, -0.0230, 0.0160, 18, secondary_hex="#6E6A66"),
-    DemoCat("ขาว4.jpg", "Oreo", "#F2F2F0",
+    DemoCat("ขาว4.jpg", "Oreo",
             "Long-haired white cat with black head cap, black saddle patch "
             "and black tail, copper eyes",
             1500, 0.0120, -0.0250, 40, secondary_hex="#1E1E1E"),
-    DemoCat("ดำ1.jpg", "Domino", "#1C1C1C",
+    DemoCat("ดำ1.jpg", "Domino",
             "Black and white tuxedo, white chest bib and paws, small black "
             "spot on the chin, yellow eyes",
             1000, -0.0290, -0.0110, 70, secondary_hex="#F5F5F5"),
-    DemoCat("ส้ม.jpg", "Pumpkin", "#D69556",
+    DemoCat("ส้ม.jpg", "Pumpkin",
             "Orange classic tabby, amber eyes, ringed stripes on the chest",
             1200, 0.0055, -0.0045, 16),
-    DemoCat("ส้ม1.jpg", "Peach", "#DB9A55",
+    DemoCat("ส้ม1.jpg", "Peach",
             "Orange kitten, amber eyes, pink collar with pink bell",
             1800, -0.0140, 0.0045, 10),
-    DemoCat("ส้ม2.jpg", "Tiger", "#C98A4B",
+    DemoCat("ส้ม2.jpg", "Tiger",
             "Adult orange tabby, lean build, red bell on the collar",
             600, 0.0310, 0.0090, 90),
-    DemoCat("ส้ม3.jpg", "Mango", "#D9A064",
+    DemoCat("ส้ม3.jpg", "Mango",
             "Orange and white tabby, white chest and legs, silver bell collar",
             900, -0.0075, 0.0300, 28, secondary_hex="#FFFFFF"),
-    DemoCat("ส้ม4.jpg", "Khanom", "#E0A064",
+    DemoCat("ส้ม4.jpg", "Khanom",
             "Very small orange tabby kitten, blue-grey eyes",
             500, 0.0180, 0.0260, 6),
-    DemoCat("ส้มถ.jpg", "Tangmo", "#D9954F",
+    DemoCat("ส้มถ.jpg", "Tangmo",
             "Young orange tabby kitten, white chest and white paws",
             0, -0.0330, 0.0020, 48, secondary_hex="#FFFFFF"),
-    DemoCat("Leo1.jpg", "Leo", "#E3BD95",
+    DemoCat("Leo1.jpg", "Leo",
             "Cream long-haired Persian, flat face, copper eyes, "
             "fluffy plume tail",
             3000, 0.0015, -0.0300, 22),
@@ -186,9 +186,9 @@ def upload_photo(client: Client, path: Path) -> str:
 
 def build_request(cat: DemoCat, owner_id: str, image_url: str,
                   now: datetime) -> MissingPetCreate:
-    # Same characteristics shape the Flutter create screen sends, plus the
-    # secondary colour key the edit screen writes for two-tone coats.
-    characteristics = {"color": cat.color_hex, "traits": cat.traits}
+    # The secondary colour key is the one the edit screen writes for two-tone
+    # coats. There is no primary colour: registration measures it.
+    characteristics = {"traits": cat.traits}
     if cat.secondary_hex:
         characteristics["secondary_color"] = cat.secondary_hex
     return MissingPetCreate(
@@ -201,7 +201,6 @@ def build_request(cat: DemoCat, owner_id: str, image_url: str,
         longitude=CENTER_LON + cat.d_lon,
         last_seen_time=now - timedelta(hours=cat.hours_ago),
         image_url=image_url,
-        primary_color_hex=cat.color_hex,
     )
 
 
@@ -227,7 +226,7 @@ async def seed(owner: str, folder: Path, dry_run: bool) -> None:
     if dry_run:
         for c in todo:
             req = build_request(c, owner_id, "<uploaded url>", now)
-            print(f" • {c.pet_name:8} {c.file:12} {c.color_hex} "
+            print(f" • {c.pet_name:8} {c.file:12} "
                   f"฿{c.bounty:>6.0f}  ({req.latitude:.4f}, {req.longitude:.4f})")
         print(f"\n🧪 Dry run: {len(todo)} reports would be created.")
         return

@@ -376,6 +376,36 @@ class TestBuildMissingPetPayload:
         assert out["image_url"] == "https://example.com/mochi.jpg"
         assert out["primary_color_hex"] == "#112233"
 
+    def test_the_owners_colour_wins_over_the_measured_one(self):
+        """UTC-63-TC-07 — the measured colour is only a default. An owner who
+        chose a colour, including by changing the default, keeps it."""
+        out = build_missing_pet_payload(
+            _Pet(primary_color_hex="#8A7560"),
+            feature_vector=[0.1], measured_color_hex="#726860",
+        )
+
+        assert out["primary_color_hex"] == "#8A7560"
+
+    def test_no_owner_colour_falls_back_to_the_measured_one(self):
+        """UTC-63-TC-08 — when the default never reached the form (analyze
+        failed, or an older client), the colour measured at registration is
+        stored, so the report still takes part in colour matching."""
+        out = build_missing_pet_payload(
+            _Pet(primary_color_hex=None),
+            feature_vector=[0.1], measured_color_hex="#726860",
+        )
+
+        assert out["primary_color_hex"] == "#726860"
+
+    def test_no_colour_on_either_side_stores_none(self):
+        """UTC-63-TC-09 — nothing chosen and nothing measured (a full-frame
+        fallback) leaves the colour empty, and the report matches on CLIP only."""
+        out = build_missing_pet_payload(
+            _Pet(primary_color_hex=None), feature_vector=[0.1],
+        )
+
+        assert out["primary_color_hex"] is None
+
     def test_the_expiry_is_left_to_the_column_default(self):
         """UTC-63-TC-06 — SRS-86 is granted by the database, not here.
 

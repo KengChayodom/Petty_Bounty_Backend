@@ -40,11 +40,13 @@ def build_sighting_payload(
 
 
 # --- colour maths ------------------------------------------------------- #
-# The owner picks a missing pet's colour by hand; a sighting's colour is
-# auto-extracted from the photo. Those two sources disagree most on
-# BRIGHTNESS (a swatch is idealised; a real coat is shaded), so we compare in
-# CIELab with lightness down-weighted: what separates grey (a*,b*≈0) from
-# orange (a*,b* large) is chroma, not L*. See config.COLOR_* for the tunables.
+# A sighting's colour is the median of the YOLO mask. A missing pet's colour
+# starts as the same measurement on the owner's photo (offered as the form's
+# default) and the owner may change it. Two photos of one coat still disagree
+# most on BRIGHTNESS (lighting, shade), so we compare in CIELab with lightness
+# down-weighted: what separates grey (a*,b*≈0)
+# from orange (a*,b* large) is chroma, not L*. See config.COLOR_* for the
+# tunables and eval_color_matching.py for how they were measured.
 
 # sRGB→XYZ (D65) matrix rows and the D65 white point.
 _D65 = (0.95047, 1.0, 1.08883)

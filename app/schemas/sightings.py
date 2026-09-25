@@ -5,7 +5,8 @@ Pydantic schemas for sighting-related operations.
 2-step flow (mandated by wiki/api_flow.md Flow 3, step 6 — user must be
 able to override YOLO's species guess):
 
-    POST /sightings/analyze  →  server returns {species, confidence, bbox}
+    POST /sightings/analyze  →  server returns {species, confidence, bbox,
+                                  primary_color_hex}
                                   AND caches the pre-computed CLIP vector
     POST /sightings/         →  client sends user-CONFIRMED species; server
                                   pulls the cached vector and saves
