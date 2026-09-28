@@ -418,6 +418,27 @@ class TestEmbedImage:
         AIManager.clip_encode.assert_awaited_once_with("SRC_IMG")  # full frame
         AIManager.extract_coat_color_hex.assert_not_called()
 
+    def test_with_identity_encodes_the_same_isolated_crop(self, monkeypatch):
+        self._patch(monkeypatch, iso=("CROP_IMG", "Cat", 0.7, [0, 0, 1, 1]),
+                    vector=[0.5])
+        monkeypatch.setattr(AIManager, "identity_encode",
+                            AsyncMock(return_value=[0.6, 0.8]))
+
+        r = run(AIManager.embed_image("http://img/x.jpg", with_identity=True))
+
+        assert r.identity_vector == [0.6, 0.8]
+        AIManager.identity_encode.assert_awaited_once_with("CROP_IMG")
+
+    def test_without_identity_the_identity_model_is_not_run(self, monkeypatch):
+        self._patch(monkeypatch, iso=("CROP_IMG", "Cat", 0.7, [0, 0, 1, 1]),
+                    vector=[0.5])
+        monkeypatch.setattr(AIManager, "identity_encode", AsyncMock())
+
+        r = run(AIManager.embed_image("http://img/x.jpg"))
+
+        assert r.identity_vector is None
+        AIManager.identity_encode.assert_not_awaited()
+
     def test_without_color_skips_the_colour_pass(self, monkeypatch):
         self._patch(monkeypatch, iso=("CROP_IMG", "Cat", 0.7, [0, 0, 1, 1]),
                     vector=[0.5])
