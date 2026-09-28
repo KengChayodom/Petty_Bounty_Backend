@@ -42,6 +42,7 @@ class AnalyzePayload(TypedDict):
     confidence: float            # 0.0–1.0, YOLO confidence on the picked detection
     feature_vector: list[float]  # 512-D CLIP embedding (the heavy artefact)
     primary_color_hex: Optional[str]  # '#RRGGBB' coat colour, or None if unreadable
+    identity_vector: Optional[list[float]]  # identity-model vector, None when the re-rank is off
 
 
 class AnalyzeCache:

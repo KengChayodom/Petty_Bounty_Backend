@@ -37,6 +37,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.core.config import settings
+
 from app.repositories.sighting_repository import (
     SearchAlreadyClosed,
     SightingActionLocked,
@@ -455,7 +457,8 @@ class TestProcessAndSaveCacheMiss:
 
         # the re-run went through the shared pipeline on the real URL
         ai.embed_image.assert_awaited_once_with(
-            "https://img.example/sighting.jpg", with_color=True
+            "https://img.example/sighting.jpg", with_color=True,
+            with_identity=settings.IDENTITY_RERANK_ENABLED,
         )
 
         insert_payload = repo.insert_sighting.call_args.args[0]
@@ -648,7 +651,10 @@ class TestAnalyzeSightingImage:
         assert out["data"]["bbox"] == bbox
         # the report form uses this as its default coat colour
         assert out["data"]["primary_color_hex"] == "#123456"
-        ai.embed_image.assert_awaited_once_with(url, with_color=True)
+        ai.embed_image.assert_awaited_once_with(
+            url, with_color=True,
+            with_identity=settings.IDENTITY_RERANK_ENABLED,
+        )
 
         cached = AnalyzeCache.get(url)
         assert cached is not None

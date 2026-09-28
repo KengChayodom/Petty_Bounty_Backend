@@ -71,6 +71,22 @@ class Settings:
     # LIMIT would hide colour-better candidates ranked just outside it).
     MATCH_CANDIDATE_POOL: int = 50
 
+    # Identity re-rank (see app/services/identity_index.py). CLIP still pulls
+    # the candidate pool from pgvector. The pool is then ordered by an image
+    # model trained for "same object in two photos" rather than "photo matches
+    # a caption": CLIP scores every cat within about 0.85 to 0.95 and cannot
+    # tell one silver tabby from another. Vectors live in process memory, so
+    # the database schema is unchanged. Set IDENTITY_RERANK=false to fall back
+    # to the CLIP + colour ranking above.
+    IDENTITY_RERANK_ENABLED: bool = os.getenv(
+        "IDENTITY_RERANK", "true"
+    ).lower() in ("1", "true", "yes")
+    IDENTITY_MODEL: str = os.getenv("IDENTITY_MODEL", "facebook/dinov2-base")
+    # Colour only nudges the identity order and never removes a candidate: a
+    # single colour reading shifts with lighting (a white cat under warm light
+    # measures cream) and must not hide a cat that looks the same.
+    IDENTITY_COLOR_WEIGHT: float = 0.1
+
     # API Configuration
     API_PREFIX: str = "/api"
     PROJECT_NAME: str = "Petty Bounty API"

@@ -30,6 +30,19 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
 
 
+async def _warm_identity_index() -> None:
+    from app.core.database import get_supabase_client
+    from app.repositories.supabase_missing_pet_repository import (
+        SupabaseMissingPetRepository,
+    )
+    from app.services.identity_index import warm_from_repo
+
+    try:
+        await warm_from_repo(SupabaseMissingPetRepository(get_supabase_client()))
+    except Exception as e:
+        logger.error("Identity index warm-up failed: %s", e, exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
@@ -55,6 +68,11 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(AIManager.warmup_models)
 
     print("Loaded and Warmed up AI models successfully")
+
+    if settings.IDENTITY_RERANK_ENABLED:
+        # Background, so the server takes requests while it runs. A match that
+        # arrives first builds any missing vector itself (ensure_vectors).
+        asyncio.create_task(_warm_identity_index())
 
     yield  # จุดนี้คือช่วงที่เซิร์ฟเวอร์รันทำงานปกติ
 
