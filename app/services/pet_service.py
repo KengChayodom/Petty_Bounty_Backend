@@ -20,7 +20,9 @@ import logging
 from app.repositories.missing_pet_repository import MissingPetRepository
 from app.repositories.pagination import Page
 from app.schemas.missing_pets import MissingPetCreate
+from app.core.config import settings
 from app.services.ai_service import AIManager
+from app.services.identity_index import IdentityIndex
 from app.services.pet_logic import (
     attach_sighting_counts,
     build_missing_pet_payload,
@@ -66,6 +68,7 @@ class PetService:
             embedding = await AIManager.embed_image(
                 str(pet.image_url), expected_species=pet.species,
                 with_color=True,
+                with_identity=settings.IDENTITY_RERANK_ENABLED,
             )
             if embedding.used_full_frame:
                 logger.warning(
@@ -80,6 +83,12 @@ class PetService:
 
             logger.info(f"Registering missing pet: {pet.pet_name}")
             created = await asyncio.to_thread(repo.insert_missing_pet, data)
+            if embedding.identity_vector is not None:
+                # Ready for the very next sighting, without waiting for a
+                # match to build it on demand.
+                IdentityIndex.put(
+                    created["id"], str(pet.image_url), embedding.identity_vector,
+                )
             logger.info(f"Missing pet registered successfully: {created['id']}")
             return created
 
