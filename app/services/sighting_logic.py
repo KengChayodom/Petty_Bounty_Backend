@@ -239,6 +239,62 @@ def rerank_by_color(
     return ranked[:limit] if limit and limit > 0 else ranked
 
 
+# Colour term for a candidate whose colour cannot be judged (missing on either
+# side): halfway, so an unknown colour neither lifts nor sinks it.
+_UNKNOWN_COLOUR = 0.5
+
+
+def rerank_by_identity(
+    matches: list[dict],
+    sighting_hex: str | None,
+    identity_sims: dict[str, float],
+    *,
+    color_weight: float,
+    exclude_distance: float,
+    lightness_weight: float,
+    neutral_chroma: float,
+    neutral_lightness_exclude: float,
+    limit: int,
+) -> list[dict]:
+    """Order the CLIP candidate pool by identity similarity, colour as a nudge.
+
+    score = identity_sim + color_weight * colour_term, where colour_term is the
+    `color_similarity` score (0..1), 0 for a clearly different colour, and 0.5
+    when colour is unknown. Unlike `rerank_by_color` NOTHING is excluded: one
+    colour reading shifts with lighting and must not hide a cat that looks the
+    same. Candidates with no identity score (their vector could not be built)
+    follow the scored ones in their incoming (CLIP) order.
+
+    The match dicts are returned unmutated, so `similarity` stays the CLIP
+    cosine the app turns into stars. `limit` <= 0 means 'no trim'.
+    """
+    scored: list[tuple[float, dict]] = []
+    unscored: list[dict] = []
+    for m in matches:
+        ident = identity_sims.get(str(m.get("id")))
+        if ident is None:
+            unscored.append(m)
+            continue
+        sim = color_similarity(
+            sighting_hex, m.get("primary_color_hex"),
+            neutral_chroma=neutral_chroma,
+            neutral_lightness_exclude=neutral_lightness_exclude,
+            chromatic_exclude=exclude_distance,
+            lightness_weight=lightness_weight,
+        )
+        if sim is None:
+            colour = _UNKNOWN_COLOUR
+        elif sim == EXCLUDE:
+            colour = 0.0
+        else:
+            colour = sim
+        scored.append((ident + color_weight * colour, m))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    ranked = [m for _, m in scored] + unscored
+    return ranked[:limit] if limit and limit > 0 else ranked
+
+
 # The owner's verdict on one AI match (`sighting_matches.owner_status`, enum
 # `owner_decision`). 'Pending' is the value a match is born with and is NOT a
 # decision, so it cannot be written back through this path — an owner either

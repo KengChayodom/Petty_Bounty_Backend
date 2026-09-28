@@ -44,6 +44,7 @@ from app.repositories.sighting_repository import (
 )
 from app.schemas.sightings import SightingCreate, TargetedSightingCreate
 from app.services.ai_cache import AnalyzeCache
+from app.services.identity_index import ensure_vectors, identity_similarities
 from app.services.sighting_logic import (
     VERIFICATION_DISMISSED,
     VERIFICATION_PENDING,
@@ -54,6 +55,7 @@ from app.services.sighting_logic import (
     normalize_action_type,
     normalize_owner_decision,
     rerank_by_color,
+    rerank_by_identity,
     strip_feature_vector,
 )
 
@@ -79,7 +81,10 @@ class SightingService:
         change. `primary_color_hex` is None when no colour could be read.
         """
         try:
-            embedding = await self.ai.embed_image(str(image_url), with_color=True)
+            embedding = await self.ai.embed_image(
+                str(image_url), with_color=True,
+                with_identity=settings.IDENTITY_RERANK_ENABLED,
+            )
             if embedding.used_full_frame:
                 # No cat/dog/bird found: the verify screen asks the hunter to
                 # retake the photo, so nothing is cached and no row can be saved.
@@ -96,6 +101,7 @@ class SightingService:
                 "confidence": embedding.confidence,
                 "feature_vector": embedding.feature_vector,
                 "primary_color_hex": embedding.primary_color_hex,
+                "identity_vector": embedding.identity_vector,
             })
             # WARNING level so URL drift / worker isolation is easy to spot
             # — pair with the HIT/MISS logs in process_and_save_sighting.
@@ -156,6 +162,7 @@ class SightingService:
             if cached is not None:
                 vector = cached["feature_vector"]
                 primary_color_hex = cached.get("primary_color_hex")
+                identity_vector = cached.get("identity_vector")
                 logger.warning(
                     "Analyze-cache HIT key=%r — reusing CLIP vector",
                     image_url,
@@ -169,13 +176,17 @@ class SightingService:
                 # represents whatever animal pixels YOLO finds even if the user
                 # corrected YOLO's guess (the user's choice is honoured at the
                 # INSERT step). `with_color` keeps a cache-miss save colour-aware.
-                embedding = await self.ai.embed_image(image_url, with_color=True)
+                embedding = await self.ai.embed_image(
+                    image_url, with_color=True,
+                    with_identity=settings.IDENTITY_RERANK_ENABLED,
+                )
                 if embedding.used_full_frame:
                     raise ValueError(
                         "No target animal detected in image during re-run."
                     )
                 vector = embedding.feature_vector
                 primary_color_hex = embedding.primary_color_hex
+                identity_vector = embedding.identity_vector
 
             sighting_row = await asyncio.to_thread(
                 self._insert_sighting_row,
@@ -194,7 +205,8 @@ class SightingService:
             matches: list[dict] = []
             try:
                 matches = await self.get_matches(
-                    sighting_id, limit=5, threshold=0.0
+                    sighting_id, limit=5, threshold=0.0,
+                    identity_vector=identity_vector,
                 )
             except Exception as e:
                 logger.warning(
@@ -475,33 +487,85 @@ class SightingService:
         sighting_id: str,
         limit: int = 5,
         threshold: float = 0.0,
+        identity_vector: list[float] | None = None,
     ) -> list[dict]:
-        """Find matching missing pets via the match_missing_pets RPC."""
+        """Find matching missing pets via the match_missing_pets RPC.
+
+        With the sighting's identity vector (the discovery save has it from
+        analyze) and IDENTITY_RERANK_ENABLED, the CLIP pool is re-ranked by
+        identity. Without one (GET /sightings/{id}/matches, which only has the
+        stored row) or if that step fails, the CLIP + colour ranking is used.
+        """
+        if settings.IDENTITY_RERANK_ENABLED and identity_vector:
+            try:
+                return await self._get_identity_matches(
+                    sighting_id, limit, threshold, identity_vector,
+                )
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.error(
+                    "Identity re-rank failed for sighting %s, falling back to "
+                    "CLIP + colour: %s", sighting_id, e, exc_info=True,
+                )
         return await asyncio.to_thread(
             self._get_matches_sync, sighting_id, limit, threshold
         )
+
+    async def _get_identity_matches(
+        self, sighting_id: str, limit: int, threshold: float,
+        identity_vector: list[float],
+    ) -> list[dict]:
+        sighting, pool = await asyncio.to_thread(
+            self._fetch_match_pool_sync, sighting_id, threshold,
+        )
+        await ensure_vectors(pool)
+        sims = identity_similarities(identity_vector, pool)
+        matches = rerank_by_identity(
+            pool,
+            sighting.get("primary_color_hex"),
+            sims,
+            color_weight=settings.IDENTITY_COLOR_WEIGHT,
+            exclude_distance=settings.COLOR_EXCLUDE_DISTANCE,
+            lightness_weight=settings.COLOR_LIGHTNESS_WEIGHT,
+            neutral_chroma=settings.NEUTRAL_CHROMA_THRESHOLD,
+            neutral_lightness_exclude=settings.NEUTRAL_LIGHTNESS_EXCLUDE,
+            limit=limit,
+        )
+        logger.info(
+            "Found %d matches for sighting %s by identity "
+            "(pool=%d, scored=%d, colour=%s)",
+            len(matches), sighting_id, len(pool), len(sims),
+            sighting.get("primary_color_hex"),
+        )
+        return matches
+
+    def _fetch_match_pool_sync(
+        self, sighting_id: str, threshold: float,
+    ) -> tuple[dict, list[dict]]:
+        sighting = self.repo.get_sighting_for_match(sighting_id)
+        if not sighting:
+            raise ValueError(f"Sighting {sighting_id} not found")
+        if not sighting.get("feature_vector"):
+            raise ValueError(f"Sighting {sighting_id} has no feature vector")
+        if not sighting.get("detected_species"):
+            raise ValueError(f"Sighting {sighting_id} has no detected species")
+        if not sighting.get("sighted_location"):
+            raise ValueError(f"Sighting {sighting_id} has no location")
+
+        # Pull a WIDER pool than the client's limit: the SQL side ranks by
+        # CLIP only, so the re-rank must see candidates that sit just outside
+        # the CLIP top-N before it reorders and trims.
+        pool = self.repo.match_missing_pets(
+            sighting_id, settings.MATCH_CANDIDATE_POOL
+        )
+        return sighting, filter_by_threshold(pool, threshold)
 
     def _get_matches_sync(
         self, sighting_id: str, limit: int, threshold: float,
     ) -> list[dict]:
         try:
-            sighting = self.repo.get_sighting_for_match(sighting_id)
-            if not sighting:
-                raise ValueError(f"Sighting {sighting_id} not found")
-            if not sighting.get("feature_vector"):
-                raise ValueError(f"Sighting {sighting_id} has no feature vector")
-            if not sighting.get("detected_species"):
-                raise ValueError(f"Sighting {sighting_id} has no detected species")
-            if not sighting.get("sighted_location"):
-                raise ValueError(f"Sighting {sighting_id} has no location")
-
-            # Pull a WIDER pool than the client's limit: the SQL side ranks by
-            # CLIP only, so the colour re-rank must see candidates that sit just
-            # outside the CLIP top-N before it reorders/excludes and trims.
-            pool = self.repo.match_missing_pets(
-                sighting_id, settings.MATCH_CANDIDATE_POOL
-            )
-            pool = filter_by_threshold(pool, threshold)
+            sighting, pool = self._fetch_match_pool_sync(sighting_id, threshold)
             matches = rerank_by_color(
                 pool,
                 sighting.get("primary_color_hex"),

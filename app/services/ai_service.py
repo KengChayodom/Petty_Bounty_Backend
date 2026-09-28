@@ -21,6 +21,8 @@ from PIL import Image
 from sentence_transformers import SentenceTransformer
 from ultralytics import YOLO
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,8 @@ class EmbedResult:
     isolated_image: Image.Image | None = None
     primary_color_hex: str | None = None
     used_full_frame: bool = False
+    # Identity-model vector of the same crop, only when asked for (with_identity).
+    identity_vector: list[float] | None = None
 
 
 class AIManager:
@@ -52,6 +56,7 @@ class AIManager:
 
     _yolo = None
     _clip = None
+    _identity = None  # (image processor, model) for settings.IDENTITY_MODEL
 
     # PyTorch weights — single source of truth.
     YOLO_WEIGHTS = "yolo11s-seg.pt"
@@ -76,6 +81,50 @@ class AIManager:
             logger.info("Loading CLIP model (%s, backend=pytorch)…", cls.CLIP_MODEL)
             cls._clip = SentenceTransformer(cls.CLIP_MODEL)
         return cls._clip
+
+    @classmethod
+    def get_identity(cls):
+        """Get or load the identity model (DINOv2 by default), used to re-rank
+        the CLIP candidate pool by "same animal", see identity_index.py."""
+        if cls._identity is None:
+            from transformers import AutoImageProcessor, AutoModel
+
+            logger.info("Loading identity model (%s)…", settings.IDENTITY_MODEL)
+            cls._identity = (
+                AutoImageProcessor.from_pretrained(settings.IDENTITY_MODEL),
+                AutoModel.from_pretrained(settings.IDENTITY_MODEL).eval(),
+            )
+        return cls._identity
+
+    @classmethod
+    def _identity_encode_sync(cls, image: Image.Image) -> list[float]:
+        import torch
+
+        processor, model = cls.get_identity()
+        with torch.no_grad():
+            out = model(**processor(images=image, return_tensors="pt"))
+        vec = out.last_hidden_state[0, 0].numpy()  # CLS token
+        return (vec / np.linalg.norm(vec)).tolist()
+
+    @classmethod
+    async def identity_encode(cls, image: Image.Image) -> list[float]:
+        """Unit-length identity vector of a (typically mask-isolated) image."""
+        return await asyncio.to_thread(cls._identity_encode_sync, image)
+
+    @classmethod
+    async def identity_vector_for(
+        cls, image_url: str, *, expected_species: str | None = None,
+    ) -> list[float]:
+        """Identity vector for a stored photo: the same download, YOLO and
+        isolation as embed_image, without the CLIP encode. A YOLO miss encodes
+        the full frame, as register_missing_pet does for its CLIP vector."""
+        image = await cls.download_image(image_url)
+        results = await cls.run_yolo_seg(image)
+        iso = await asyncio.to_thread(
+            cls.isolate_subject, image, results,
+            expected_species=expected_species,
+        )
+        return await cls.identity_encode(iso[0] if iso else image)
 
     # --- Pipeline helpers (in-memory, single-responsibility) -----------------
 
@@ -187,6 +236,7 @@ class AIManager:
         *,
         expected_species: str | None = None,
         with_color: bool = False,
+        with_identity: bool = False,
     ) -> EmbedResult:
         """Download → YOLO-seg → mask-isolate → CLIP-encode — the ONE pipeline
         every caller shares (`register_missing_pet`, `analyze_sighting_image`,
@@ -198,7 +248,8 @@ class AIManager:
         None for the "forgiving" behaviour (highest-confidence target animal).
         `with_color` also runs the coat-colour extraction, which is only
         meaningful on a genuine isolated crop and is skipped on a full-frame
-        fallback.
+        fallback. `with_identity` also encodes the same crop with the identity
+        model, for the identity re-rank.
 
         On a YOLO miss the full frame is CLIP-encoded so a vector always exists
         (`used_full_frame=True`); a caller that must refuse a miss inspects that
@@ -214,6 +265,9 @@ class AIManager:
             return EmbedResult(
                 feature_vector=await cls.clip_encode(image),
                 used_full_frame=True,
+                identity_vector=(
+                    await cls.identity_encode(image) if with_identity else None
+                ),
             )
         isolated, species, confidence, bbox = iso
         return EmbedResult(
@@ -227,6 +281,9 @@ class AIManager:
                 if with_color else None
             ),
             used_full_frame=False,
+            identity_vector=(
+                await cls.identity_encode(isolated) if with_identity else None
+            ),
         )
 
     # Coat-colour extraction tunables. A mask-isolated crop has a BLACK
@@ -279,6 +336,10 @@ class AIManager:
             clip_model = cls.get_clip()
             clip_model.encode(blank_image)
             logger.info("  CLIP model warm-up complete.")
+
+            if settings.IDENTITY_RERANK_ENABLED:
+                cls._identity_encode_sync(blank_image)
+                logger.info("  Identity model warm-up complete.")
 
             logger.info("All AI models warmed up successfully!")
         except Exception as e:

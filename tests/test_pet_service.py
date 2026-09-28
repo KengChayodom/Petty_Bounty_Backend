@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.core.config import settings
+
 from app.repositories.missing_pet_repository import (
     MissingPetNotSaved,
     MissingPetRepository,
@@ -130,7 +132,7 @@ class TestRegisterMissingPet:
         # coat colour the same way the sighting side does
         AIManager.embed_image.assert_awaited_once_with(
             "https://img.example/pet.jpg", expected_species="Dog",
-            with_color=True,
+            with_color=True, with_identity=settings.IDENTITY_RERANK_ENABLED,
         )
 
     def test_a_report_with_no_colour_stores_the_measured_one(self, monkeypatch):
