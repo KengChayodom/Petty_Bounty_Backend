@@ -240,8 +240,17 @@ async def decide_sighting_match(
 @router.get("/{pet_id}", response_model=StandardResponse)
 async def get_missing_pet(
     pet_id: str,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
+    """One missing-pet report, for a signed-in caller.
+
+    The detail RPC joins in the owner's username, telephone number and photo, so
+    this needs a token: without one, anyone could list pet ids from `/nearby`
+    and read a telephone number for each without an account. The app already
+    sends every signed-out user to the login screen, so a request without a
+    token is not one it makes.
+    """
     try:
         pet = await PetService.get_missing_pet_by_id(
             SupabaseMissingPetRepository(supabase), pet_id

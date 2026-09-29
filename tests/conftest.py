@@ -115,3 +115,17 @@ def _clean_analyze_cache():
     AnalyzeCache.clear()
     yield
     AnalyzeCache.clear()
+
+
+# --------------------------------------------------------------------------- #
+# The photo-URL allowlist (app/utils/image_url.py) is what production runs with,
+# but most tests here use made-up hosts (https://img, https://example.com) to
+# stand in for "some photo". Enforcement is off by default so they keep doing
+# that. tests/test_image_url.py turns it back on for the cases that are about
+# the rule itself.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def _image_allowlist_off(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "IMAGE_URL_ALLOWLIST_ENFORCED", False)
