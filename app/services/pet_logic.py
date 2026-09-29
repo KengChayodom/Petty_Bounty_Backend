@@ -262,3 +262,4 @@ def attach_sighting_counts(
             ),
         })
     return enriched
+

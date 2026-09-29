@@ -54,8 +54,8 @@ from app.services.sighting_logic import (
     filter_by_threshold,
     normalize_action_type,
     normalize_owner_decision,
-    rerank_by_color,
-    rerank_by_identity,
+    rerank_by_color_rated,
+    rerank_by_identity_rated,
     strip_feature_vector,
 )
 
@@ -521,7 +521,7 @@ class SightingService:
         )
         await ensure_vectors(pool)
         sims = identity_similarities(identity_vector, pool)
-        matches = rerank_by_identity(
+        matches = rerank_by_identity_rated(
             pool,
             sighting.get("primary_color_hex"),
             sims,
@@ -531,6 +531,8 @@ class SightingService:
             neutral_chroma=settings.NEUTRAL_CHROMA_THRESHOLD,
             neutral_lightness_exclude=settings.NEUTRAL_LIGHTNESS_EXCLUDE,
             limit=limit,
+            three_star=settings.IDENTITY_STAR_THREE,
+            two_star=settings.IDENTITY_STAR_TWO,
         )
         logger.info(
             "Found %d matches for sighting %s by identity "
@@ -566,7 +568,7 @@ class SightingService:
     ) -> list[dict]:
         try:
             sighting, pool = self._fetch_match_pool_sync(sighting_id, threshold)
-            matches = rerank_by_color(
+            matches = rerank_by_color_rated(
                 pool,
                 sighting.get("primary_color_hex"),
                 clip_weight=settings.CLIP_MATCH_WEIGHT,
@@ -576,6 +578,8 @@ class SightingService:
                 neutral_chroma=settings.NEUTRAL_CHROMA_THRESHOLD,
                 neutral_lightness_exclude=settings.NEUTRAL_LIGHTNESS_EXCLUDE,
                 limit=limit,
+                three_star=settings.CLIP_STAR_THREE,
+                two_star=settings.CLIP_STAR_TWO,
             )
             logger.info(
                 "Found %d matches for sighting %s "
@@ -590,6 +594,68 @@ class SightingService:
         except Exception as e:
             logger.error("Error finding matches: %s", e)
             raise Exception(f"Failed to find matches: {e}")
+
+    def _sighting_visible_to(self, sighting_id: str, viewer_id: str) -> dict:
+        """The sighting row, if `viewer_id` may read it. Raises LookupError if not.
+
+        Readable by the hunter who reported it, and by the owner of any pet it is
+        linked to, whether the AI matched it or a targeted report named it. A
+        sighting moderation has withdrawn is hidden from owners, as it is on
+        their timeline, and stays visible to its own hunter.
+
+        One error for "no such sighting" and "not yours", with the same text, so
+        the endpoint cannot be used to discover which ids exist. Same rule as
+        `confirm_sighting_action` and the owner timeline.
+        """
+        denied = LookupError(f"Sighting {sighting_id} not found")
+        row = self.repo.get_sighting(sighting_id)
+        if row is None:
+            raise denied
+        if row.get("hunter_id") == viewer_id:
+            return row
+        if row.get("verification_status") == VERIFICATION_DISMISSED:
+            raise denied
+
+        pet_ids = {
+            m["missing_pet_id"]
+            for m in self.repo.get_matches_for_sightings([sighting_id])
+            if m.get("missing_pet_id")
+        }
+        if row.get("initial_target_pet_id"):
+            pet_ids.add(row["initial_target_pet_id"])
+        if pet_ids and viewer_id in self.repo.get_pet_owners(sorted(pet_ids)).values():
+            return row
+        raise denied
+
+    async def get_sighting_for_viewer(self, sighting_id: str, viewer_id: str) -> dict:
+        """One sighting for a caller, refused unless they are allowed to see it.
+
+        Raises:
+            LookupError: no such sighting, or the caller may not read it
+                (API -> 404 for both).
+        """
+        row = await asyncio.to_thread(
+            self._sighting_visible_to, sighting_id, viewer_id
+        )
+        return strip_feature_vector(row)
+
+    async def get_matches_for_viewer(
+        self, sighting_id: str, viewer_id: str,
+        limit: int = 5, threshold: float = 0.0,
+    ) -> list[dict]:
+        """`get_matches` for a caller, refused unless they may see the sighting.
+
+        The check comes first, so a caller who is refused triggers no matching
+        and learns nothing about which pets the sighting resembles.
+
+        Raises:
+            LookupError: no such sighting, or the caller may not read it (404).
+            ValueError: the sighting cannot be matched, for example a targeted
+                one with no vector (API -> 400). Only reached by a caller who
+                is allowed to see it.
+        """
+        await asyncio.to_thread(self._sighting_visible_to, sighting_id, viewer_id)
+        return await self.get_matches(sighting_id, limit, threshold)
 
     async def get_sighting_by_id(self, sighting_id: str) -> dict | None:
         return await asyncio.to_thread(self._get_sighting_by_id_sync, sighting_id)
