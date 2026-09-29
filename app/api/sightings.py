@@ -17,7 +17,12 @@ from app.services.ai_service import AIManager
 from app.services.notification_service import notify_pet_owners
 from app.services.sighting_service import SightingService
 
-router = APIRouter(prefix="/sightings", tags=["Sightings"])
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/sightings", tags=["Sightings"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 
 def get_sighting_service(

@@ -5,23 +5,36 @@ Two boards, both paginated:
   * /leaderboard/bounties — active missing pets ranked by `bounty_amount`.
 
 No schema of its own: every field already exists (`users.total_score`,
-`missing_pets.bounty_amount`). Straight ordered reads, so they live in the
-route rather than a repository/service layer.
+`missing_pets.bounty_amount`). The queries are in `SupabaseLeaderboardRepository`
+and the ranking rules in `LeaderboardService`, like every other route.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
+from app.repositories.supabase_leaderboard_repository import (
+    SupabaseLeaderboardRepository,
+)
 from app.schemas.common import StandardResponse
+from app.services.leaderboard_service import LeaderboardService
 
-router = APIRouter(prefix="/leaderboard", tags=["Leaderboard"])
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/leaderboard", tags=["Leaderboard"],
+    dependencies=[Depends(get_current_user_id)],
+)
+
+
+def get_leaderboard_service(supabase=Depends(get_supabase_client)) -> LeaderboardService:
+    return LeaderboardService(SupabaseLeaderboardRepository(supabase))
 
 
 @router.get("/users", response_model=StandardResponse)
 async def leaderboard_users(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    supabase=Depends(get_supabase_client),
+    service: LeaderboardService = Depends(get_leaderboard_service),
     user_id: str = Depends(get_current_user_id),
 ):
     """One page of the hunter board (highest score first) plus the caller's own
@@ -34,64 +47,11 @@ async def leaderboard_users(
     skipping rows when scores are equal.
     """
     try:
-        res = (
-            supabase.table("users")
-            .select("id, username, profile_image_url, total_score")
-            .order("total_score", desc=True)
-            .order("id")
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
-        entries = []
-        current_rank = 1
-        for i, r in enumerate(res.data or []):
-            my_score = r.get("total_score") or 0
-            if i == 0:
-                higher = (
-                    supabase.table("users")
-                    .select("id", count="exact")
-                    .gt("total_score", my_score)
-                    .execute()
-                )
-                current_rank = (higher.count or 0) + 1
-            elif my_score < (res.data[i-1].get("total_score") or 0):
-                current_rank = offset + i + 1
-            
-            entries.append({
-                "rank": current_rank,
-                "user_id": r["id"],
-                "username": r.get("username"),
-                "profile_image_url": r.get("profile_image_url"),
-                "total_score": my_score,
-            })
-
-        me_res = (
-            supabase.table("users")
-            .select("username, profile_image_url, total_score")
-            .eq("id", user_id)
-            .limit(1)
-            .execute()
-        )
-        me_row = (me_res.data or [{}])[0]
-        my_score = me_row.get("total_score") or 0
-        higher = (
-            supabase.table("users")
-            .select("id", count="exact")
-            .gt("total_score", my_score)
-            .execute()
-        )
-        me_standing = {
-            "rank": (higher.count or 0) + 1,
-            "user_id": user_id,
-            "username": me_row.get("username"),
-            "profile_image_url": me_row.get("profile_image_url"),
-            "total_score": my_score,
-        }
-
+        data = await service.users_page(user_id, limit, offset)
         return StandardResponse(
             status="success",
-            message=f"Retrieved {len(entries)} ranked users.",
-            data={"entries": entries, "me": me_standing},
+            message=f"Retrieved {len(data['entries'])} ranked users.",
+            data=data,
         )
     except Exception as e:
         raise HTTPException(
@@ -103,7 +63,7 @@ async def leaderboard_users(
 async def leaderboard_bounties(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    supabase=Depends(get_supabase_client),
+    service: LeaderboardService = Depends(get_leaderboard_service),
     user_id: str = Depends(get_current_user_id),
 ):
     """One page of active missing pets ranked by bounty (highest first).
@@ -114,42 +74,11 @@ async def leaderboard_bounties(
     kept in case an admin settlement uses that word.
     """
     try:
-        res = (
-            supabase.table("missing_pets")
-            .select("id, pet_name, image_url, bounty_amount")
-            .not_.in_("status", ["Found", "Resolved"])
-            .order("bounty_amount", desc=True)
-            .order("id")
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
-        entries = []
-        current_rank = 1
-        for i, r in enumerate(res.data or []):
-            my_score = float(r.get("bounty_amount") or 0)
-            if i == 0:
-                higher = (
-                    supabase.table("missing_pets")
-                    .select("id", count="exact")
-                    .not_.in_("status", ["Found", "Resolved"])
-                    .gt("bounty_amount", my_score)
-                    .execute()
-                )
-                current_rank = (higher.count or 0) + 1
-            elif my_score < float(res.data[i-1].get("bounty_amount") or 0):
-                current_rank = offset + i + 1
-            
-            entries.append({
-                "rank": current_rank,
-                "pet_id": r["id"],
-                "pet_name": r.get("pet_name"),
-                "image_url": r.get("image_url"),
-                "bounty_amount": my_score,
-            })
+        data = await service.bounties_page(limit, offset)
         return StandardResponse(
             status="success",
-            message=f"Retrieved {len(entries)} bounties.",
-            data={"entries": entries},
+            message=f"Retrieved {len(data['entries'])} bounties.",
+            data=data,
         )
     except Exception as e:
         raise HTTPException(
