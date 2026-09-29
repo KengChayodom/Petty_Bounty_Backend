@@ -28,7 +28,12 @@ from app.schemas.common import PaginatedData, StandardResponse
 from app.services.admin_service import AdminService
 from app.services.pet_service import PetService
 
-router = APIRouter(prefix="/admin", tags=["Admin"])
+# Every route here needs an administrator, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/admin", tags=["Admin"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 def get_admin_service(supabase=Depends(get_supabase_client)) -> AdminService:

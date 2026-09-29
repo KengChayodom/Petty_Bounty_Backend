@@ -17,7 +17,12 @@ from app.schemas.common import StandardResponse
 from app.services.moderation_logic import FLAG_REASONS
 from app.services.report_service import ReportService
 
-router = APIRouter(prefix="/reports", tags=["Reports"])
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/reports", tags=["Reports"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 
 def get_report_service(
