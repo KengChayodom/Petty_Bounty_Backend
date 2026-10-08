@@ -1182,3 +1182,65 @@ class TestConfirmSightingAction:
             run(svc.confirm_sighting_action("s1", "hunter-1", bad))
         repo.get_sighting_for_action.assert_not_called()
         repo.set_sighting_action_type.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Feature 6 — an owner may not report a sighting on their own report. The
+# targeted path refuses outright; the discovery path drops the caller's own
+# reports from the matches it links and returns.
+# --------------------------------------------------------------------------- #
+class TestOwnReportRefused:
+    def test_a_targeted_report_on_your_own_pet_is_refused_before_saving(self):
+        from app.repositories.sighting_repository import OwnReportRefused
+        sighting = make_targeted_sighting(target_pet_id="pet-mine")
+        repo = _repo()
+        repo.get_pet_owners.return_value = {"pet-mine": "hunter-1"}
+        svc = SightingService(repo, ai_manager=MagicMock())
+
+        with pytest.raises(OwnReportRefused):
+            run(svc.save_targeted_sighting(sighting))
+        repo.insert_sighting.assert_not_called()
+
+    def test_a_targeted_report_on_someone_elses_pet_is_saved(self):
+        sighting = make_targeted_sighting(target_pet_id="pet-theirs")
+        repo = _repo()
+        repo.get_pet_owners.return_value = {"pet-theirs": "owner-9"}
+        repo.insert_sighting.return_value = {
+            "id": "s1", "hunter_id": "hunter-1",
+            "detected_species": "Dog", "sighted_location": POINT,
+        }
+        svc = SightingService(repo, ai_manager=MagicMock())
+
+        result = run(svc.save_targeted_sighting(sighting))
+        assert result["sighting"]["id"] == "s1"
+
+    def test_discovery_drops_your_own_pet_from_the_matches(self):
+        cached_vector = [0.1, 0.2]
+        sighting = make_sighting()
+        AnalyzeCache.set(str(sighting.image_url), {
+            "species": "Dog", "feature_vector": cached_vector,
+        })
+        repo = _repo()
+        wire_save_path(repo, cached_vector)   # matches -> [pet-1]
+        repo.get_pet_owners.return_value = {"pet-1": "hunter-1"}
+        svc = SightingService(repo, ai_manager=MagicMock())
+
+        result = run(svc.process_and_save_sighting(sighting))
+
+        assert result["matches"] == []
+        repo.upsert_sighting_matches.assert_not_called()
+
+    def test_a_failed_owner_lookup_keeps_the_matches(self):
+        cached_vector = [0.1, 0.2]
+        sighting = make_sighting()
+        AnalyzeCache.set(str(sighting.image_url), {
+            "species": "Dog", "feature_vector": cached_vector,
+        })
+        repo = _repo()
+        wire_save_path(repo, cached_vector)
+        repo.get_pet_owners.side_effect = RuntimeError("db down")
+        svc = SightingService(repo, ai_manager=MagicMock())
+
+        result = run(svc.process_and_save_sighting(sighting))
+
+        assert [m["id"] for m in result["matches"]] == ["pet-1"]

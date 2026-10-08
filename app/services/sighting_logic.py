@@ -546,6 +546,20 @@ def filter_by_threshold(matches: list[dict], threshold: float) -> list[dict]:
     return [m for m in matches if (m.get("similarity") or 0.0) >= threshold]
 
 
+def drop_own_reports(
+    matches: list[dict], owners_by_pet: dict[str, str], hunter_id: str
+) -> list[dict]:
+    """Remove the reports the reporting hunter owns from a match list.
+
+    An owner may not report a sighting on their own report, so a discovery
+    sighting is never linked to, or offered against, the caller's own pets.
+    `owners_by_pet` maps pet id -> owner id. A match whose owner is unknown is
+    kept: refusing it would hide a stranger's pet on a failed lookup.
+    """
+    return [m for m in matches
+            if owners_by_pet.get(str(m.get("id"))) != str(hunter_id)]
+
+
 def build_match_rows(sighting_id: str, matches: list[dict]) -> list[dict]:
     """Map match RPC rows (keyed `id` + `similarity`) to sighting_matches rows.
     Matches without an `id` are dropped."""

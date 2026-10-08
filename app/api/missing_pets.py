@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.schemas.missing_pets import MissingPetCreate, MissingPetUpdate
 from app.schemas.common import StandardResponse
 from app.services.ai_service import AIManager
+from app.services.pet_logic import OwnerEditRefused, apply_owner_edit_rules
 from app.services.pet_service import PetService
 from app.services.sighting_service import SightingService
 from app.repositories.supabase_missing_pet_repository import (
@@ -42,7 +43,7 @@ public_router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
 # the search is already Found and its sightings already closed — either by this
 # route (the owner ended the search themselves) or by owner_decide_sighting
 # (the owner confirmed a rescue).
-CLOSED_PET_STATUSES = frozenset({"Found"})
+CLOSED_PET_STATUSES = frozenset({"Found", "Resolved"})
 
 @router.post("/", response_model=StandardResponse)
 async def create_missing_pet(
@@ -295,6 +296,12 @@ async def update_missing_pet(
 
     Security: owner-scoped — .eq("owner_id", user_id) ทำให้แก้ได้แค่ pet ของตัวเอง
     pet ที่ไม่มีหรือเป็นของคนอื่นจะ return 0 row → 404 (ไม่บอกว่ามี pet นั้นอยู่ไหม)
+
+    Feature 6 (SRS-100, SRS-102, SRS-103): the bounty may be raised but never
+    lowered, and neither it nor the status may change once the report is
+    "Found". Closing by hand is refused while a "Caught" sighting awaits the
+    owner's decision; otherwise it closes straight to "Resolved", there being
+    nobody to pay. A refused edit answers 409.
     """
     try:
         # Build update payload with only provided fields
@@ -307,7 +314,40 @@ async def update_missing_pet(
         # that doesn't exist OR isn't theirs both yield no rows -> 404 (we don't
         # leak existence of other owners' reports).
         repo = SupabaseMissingPetRepository(supabase)
-        updated = repo.update_missing_pet_owned(pet_id, user_id, payload)
+        expected_status = None
+
+        if "status" in payload or "bounty_amount" in payload:
+            current = repo.get_owned_pet_state(pet_id, user_id)
+            if not current:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Missing pet {pet_id} not found or not owned by you",
+                )
+            caught_waiting = (
+                payload.get("status") == "Found"
+                and repo.has_caught_awaiting_decision(pet_id)
+            )
+            try:
+                payload = apply_owner_edit_rules(
+                    current, payload, caught_awaiting_decision=caught_waiting
+                )
+            except OwnerEditRefused as oe:
+                raise HTTPException(status_code=409, detail=str(oe))
+            expected_status = current.get("status")
+
+        updated = repo.update_missing_pet_owned(
+            pet_id, user_id, payload, expected_status=expected_status,
+        )
+
+        # The report was read a moment ago, so no row now means its status
+        # changed in between (a Caught confirmation closing it): refuse rather
+        # than act on a state that no longer holds.
+        if not updated and expected_status is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="The report changed while you were editing it. "
+                       "Reload it and try again.",
+            )
 
         if not updated:
             raise HTTPException(
