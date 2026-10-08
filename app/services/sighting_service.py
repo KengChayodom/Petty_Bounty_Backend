@@ -39,6 +39,7 @@ import logging
 
 from app.core.config import settings
 from app.repositories.sighting_repository import (
+    OwnReportRefused,
     SightingActionLocked,
     SightingRepository,
 )
@@ -51,6 +52,7 @@ from app.services.sighting_logic import (
     assemble_hunter_activity,
     build_match_rows,
     build_sighting_payload,
+    drop_own_reports,
     filter_by_threshold,
     normalize_action_type,
     normalize_owner_decision,
@@ -214,6 +216,29 @@ class SightingService:
                     sighting_id, e,
                 )
 
+            # The hunter's own reports are never linked or offered: an owner
+            # may not report a sighting on their own report.
+            # A failed owner lookup keeps the list as it is rather than failing
+            # a request whose sighting is already saved. Only the targeted path
+            # refuses outright; neither GET /sightings/{id}/matches nor
+            # owner_decide_sighting checks the rule, so on a failed lookup an
+            # own-pet match can still be saved and offered.
+            if matches:
+                try:
+                    owners = await asyncio.to_thread(
+                        self.repo.get_pet_owners,
+                        sorted({str(m["id"]) for m in matches if m.get("id")}),
+                    )
+                    matches = drop_own_reports(
+                        matches, owners, sighting.hunter_id
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Sighting %s: owner lookup failed, own reports not "
+                        "filtered from matches: %s", sighting_id, e,
+                        exc_info=True,
+                    )
+
             # Persist match results into sighting_matches so the owner
             # timeline and F1 scoring have a sighting↔pet link to read.
             # Wrapped in its own try/except: a persist failure must NOT
@@ -263,6 +288,12 @@ class SightingService:
         match and must not be reported as one.
         """
         try:
+            owners = await asyncio.to_thread(
+                self.repo.get_pet_owners, [sighting.target_pet_id]
+            )
+            if owners.get(str(sighting.target_pet_id)) == str(sighting.hunter_id):
+                raise OwnReportRefused(sighting.target_pet_id)
+
             sighting_row = await asyncio.to_thread(
                 self._insert_sighting_row,
                 sighting, vector=None, target_pet_id=sighting.target_pet_id,

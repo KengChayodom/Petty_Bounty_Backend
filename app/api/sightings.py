@@ -118,6 +118,9 @@ async def report_targeted_sighting(
     initial_target_pet_id set and no feature_vector. Returns
     {sighting, matches: []} (same shape as POST /sightings/ so the client
     parses both identically).
+
+    SRS-101: a report on the caller's own pet is refused with 400; the
+    discovery route drops the caller's own pets from its matches.
     """
     # Identity comes from the verified JWT, never from the request body.
     sighting.hunter_id = user_id

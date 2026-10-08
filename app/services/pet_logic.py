@@ -263,3 +263,52 @@ def attach_sighting_counts(
         })
     return enriched
 
+
+
+class OwnerEditRefused(ValueError):
+    """An owner's edit that the report's state does not allow. The route
+    answers 409: the request is well formed, the report is just past the point
+    where that change is permitted."""
+
+
+def apply_owner_edit_rules(
+    current: dict, payload: dict, *, caught_awaiting_decision: bool
+) -> dict:
+    """Check an owner's PATCH against the report's state, and translate a hand
+    close.
+
+    - The bounty may be raised, never lowered, and is frozen once the report is
+      "Found" or "Resolved".
+    - The status cannot change once the report is "Found" or "Resolved": from
+      "Found" on, only the payment process moves it.
+    - Closing by hand (status "Found") is refused while a "Caught" sighting
+      awaits the owner's decision. Otherwise there is nobody to pay, so the
+      report closes straight to "Resolved".
+
+    Returns the payload to write, which may differ from the one given.
+    """
+    out = dict(payload)
+    status_now = (current.get("status") or "").strip().lower()
+    closed = status_now in _CLOSED_PET_STATUSES
+
+    if "bounty_amount" in out:
+        if closed:
+            raise OwnerEditRefused(
+                "The bounty cannot be changed once the pet has been found"
+            )
+        if float(out["bounty_amount"]) < float(current.get("bounty_amount") or 0):
+            raise OwnerEditRefused("The bounty can be raised but not lowered")
+
+    if "status" in out:
+        if closed:
+            raise OwnerEditRefused(
+                "The report's status cannot be changed once the pet has been found"
+            )
+        if out["status"] == "Found":
+            if caught_awaiting_decision:
+                raise OwnerEditRefused(
+                    "Decide the sighting that says the pet was caught before "
+                    "closing the report"
+                )
+            out["status"] = "Resolved"
+    return out
