@@ -79,6 +79,8 @@ class BountyService:
 
         view = {
             "pet_id": pet_id,
+            "pet_name": pet.get("pet_name"),
+            "image_url": pet.get("image_url"),
             "role": role,
             "pet_status": pet.get("status"),
             "bounty_amount": pet.get("bounty_amount"),

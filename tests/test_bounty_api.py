@@ -63,7 +63,8 @@ class TestIsThaiMobile:
 # --------------------------------------------------------------------------- #
 def _repo(*, status="Found", bounty=2000, payment=None, phone="0812345678"):
     r = MagicMock(spec=BountyRepository)
-    r.get_pet.return_value = {"id": "p1", "owner_id": "owner-1", "status": status,
+    r.get_pet.return_value = {"id": "p1", "owner_id": "owner-1", "pet_name": "Mali",
+                              "image_url": "http://img", "status": status,
                               "bounty_amount": bounty, "found_at": "t",
                               "unpaid_referred_at": None, "bounty_unpaid": False}
     r.get_final_sighting.return_value = {"sighting_id": "s1", "hunter_id": "hunter-1"}
@@ -77,6 +78,7 @@ class TestGetView:
     def test_an_owner_who_owes_sees_the_hunters_promptpay(self):
         v = run(BountyService(_repo()).get_view("p1", "owner-1"))
         assert (v["role"], v["unpaid"], v["hunter_promptpay"]) == ("owner", True, "0812345678")
+        assert v["pet_name"] == "Mali"
         assert v["hunter_username"] == "Khun B"
 
     def test_a_phone_that_is_not_a_mobile_number_is_withheld(self):
