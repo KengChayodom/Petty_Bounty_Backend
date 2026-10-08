@@ -7,7 +7,7 @@ class SupabaseBountyRepository:
 
     def get_pet(self, pet_id: str) -> dict | None:
         res = (self._db.table("missing_pets")
-                       .select("id, owner_id, pet_name, status, bounty_amount, "
+                       .select("id, owner_id, pet_name, image_url, status, bounty_amount, "
                                "found_at, unpaid_referred_at, bounty_unpaid")
                        .eq("id", pet_id)
                        .execute())
