@@ -25,8 +25,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import devices, me, missing_pets
-from app.api.devices import get_device_token_repository
-from app.api.me import get_user_repository
+from app.api.dependencies import (
+    get_device_token_repository,
+    get_notification_repository,
+    get_user_repository,
+)
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
 from app.repositories.device_token_repository import DeviceTokenRepository
@@ -210,13 +213,13 @@ class TestMissingPetFanout:
         """Patch the AI/DB insert and the notify boundary; spy BackgroundTasks.
 
         The register + notify boundaries are monkeypatched wholesale, so the
-        client this route is handed is an opaque sentinel — the fan-out just
-        needs to be scheduled with it, not to be a real DB.
+        notification port this route is handed is an opaque sentinel. The
+        fan-out just needs to be scheduled with it, not to reach a real DB.
         """
         seq = []
-        db = object()  # opaque client sentinel handed to the background task
+        notif_repo = object()  # opaque port sentinel handed to the background task
 
-        async def fake_register(repo, pet):
+        async def fake_register(self, pet):
             seq.append("insert")
             return {"id": "pet-123", "pet_name": pet.pet_name}
 
@@ -245,10 +248,11 @@ class TestMissingPetFanout:
         app = FastAPI()
         app.include_router(missing_pets.router)
         app.dependency_overrides[get_current_user_id] = lambda: JWT_USER
-        app.dependency_overrides[get_supabase_client] = lambda: db
+        app.dependency_overrides[get_supabase_client] = lambda: object()
+        app.dependency_overrides[get_notification_repository] = lambda: notif_repo
         client = TestClient(app)
         return SimpleNamespace(
-            client=client, db=db, seq=seq,
+            client=client, notif_repo=notif_repo, seq=seq,
             scheduled=scheduled, notify_calls=notify_calls,
             notify=fake_notify,
         )
@@ -264,10 +268,10 @@ class TestMissingPetFanout:
         func, args, _kwargs = env.scheduled[0]
         assert func is env.notify
 
-        # Args: (client, pet_id, latitude, longitude, owner_id, radius,
-        #        pet_name, species) — owner is the JWT user, id is the inserted
-        # row, species/name are the user-confirmed values.
-        assert args[0] is env.db
+        # Args: (notification port, pet_id, latitude, longitude, owner_id,
+        #        radius, pet_name, species) — owner is the JWT user, id is the
+        # inserted row, species/name are the user-confirmed values.
+        assert args[0] is env.notif_repo
         assert args[1] == "pet-123"
         assert args[2] == 13.7563          # latitude
         assert args[3] == 100.5018         # longitude

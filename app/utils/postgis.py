@@ -9,21 +9,22 @@ from typing import Union
 
 def create_postgis_point(latitude: float, longitude: float) -> str:
     """
-    Convert latitude and longitude to PostGIS POINT format with SRID.
+    Convert latitude and longitude to a WKT POINT string.
 
     Note: PostGIS uses longitude first (x, y) in POINT format.
-    This function handles the conversion automatically.
+    This function handles the conversion automatically. The string carries no
+    SRID; PostgreSQL casts it to geography(4326) on write.
 
     Args:
         latitude: Latitude coordinate (-90 to 90)
         longitude: Longitude coordinate (-180 to 180)
 
     Returns:
-        PostGIS POINT string with SRID: "ST_SetSRID(ST_MakePoint(lng, lat), 4326)"
+        WKT string "POINT(lng lat)"
 
     Example:
         >>> create_postgis_point(13.7563, 100.5018)
-        "ST_SetSRID(ST_MakePoint(100.5018,13.7563),4326)"
+        'POINT(100.5018 13.7563)'
     """
     return f"POINT({longitude} {latitude})"
 

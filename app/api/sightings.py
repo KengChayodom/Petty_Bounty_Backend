@@ -1,19 +1,23 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
+from app.api.dependencies import (
+    get_notification_repository,
+    get_sighting_repository,
+    get_sighting_service,
+)
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
-from app.repositories.supabase_sighting_repository import (
-    SupabaseSightingRepository,
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.sighting_repository import (
+    SightingActionLocked,
+    SightingRepository,
 )
 from app.schemas.common import StandardResponse
-from app.repositories.sighting_repository import SightingActionLocked
 from app.schemas.sightings import (
     AnalyzeRequest,
     SightingActionUpdate,
     SightingCreate,
     TargetedSightingCreate,
 )
-from app.services.ai_service import AIManager
 from app.services.notification_service import notify_pet_owners
 from app.services.sighting_service import SightingService
 
@@ -23,14 +27,6 @@ router = APIRouter(
     prefix="/sightings", tags=["Sightings"],
     dependencies=[Depends(get_current_user_id)],
 )
-
-
-def get_sighting_service(
-    supabase=Depends(get_supabase_client),
-) -> SightingService:
-    return SightingService(
-        repo=SupabaseSightingRepository(supabase), ai_manager=AIManager
-    )
 
 
 @router.post("/analyze", response_model=StandardResponse)
@@ -61,8 +57,9 @@ async def analyze_image(
 async def report_sighting(
     sighting: SightingCreate,
     background_tasks: BackgroundTasks,
-    supabase=Depends(get_supabase_client),
     service: SightingService = Depends(get_sighting_service),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
+    sighting_repo: SightingRepository = Depends(get_sighting_repository),
     user_id: str = Depends(get_current_user_id),
 ):
     """
@@ -86,7 +83,8 @@ async def report_sighting(
         if matched_pet_ids:
             background_tasks.add_task(
                 notify_pet_owners,
-                supabase,
+                notif_repo,
+                sighting_repo,
                 result["sighting"]["id"],
                 matched_pet_ids,
                 user_id,
@@ -107,8 +105,9 @@ async def report_sighting(
 async def report_targeted_sighting(
     sighting: TargetedSightingCreate,
     background_tasks: BackgroundTasks,
-    supabase=Depends(get_supabase_client),
     service: SightingService = Depends(get_sighting_service),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
+    sighting_repo: SightingRepository = Depends(get_sighting_repository),
     user_id: str = Depends(get_current_user_id),
 ):
     """
@@ -132,7 +131,8 @@ async def report_targeted_sighting(
         # makes the message true.
         background_tasks.add_task(
             notify_pet_owners,
-            supabase,
+            notif_repo,
+            sighting_repo,
             result["sighting"]["id"],
             [sighting.target_pet_id],
             user_id,

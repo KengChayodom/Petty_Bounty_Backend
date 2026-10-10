@@ -10,11 +10,8 @@ and the ranking rules in `LeaderboardService`, like every other route.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.dependencies import get_leaderboard_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
-from app.repositories.supabase_leaderboard_repository import (
-    SupabaseLeaderboardRepository,
-)
 from app.schemas.common import StandardResponse
 from app.services.leaderboard_service import LeaderboardService
 
@@ -24,10 +21,6 @@ router = APIRouter(
     prefix="/leaderboard", tags=["Leaderboard"],
     dependencies=[Depends(get_current_user_id)],
 )
-
-
-def get_leaderboard_service(supabase=Depends(get_supabase_client)) -> LeaderboardService:
-    return LeaderboardService(SupabaseLeaderboardRepository(supabase))
 
 
 @router.get("/users", response_model=StandardResponse)

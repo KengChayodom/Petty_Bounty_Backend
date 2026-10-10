@@ -110,10 +110,10 @@ class Settings:
     PROJECT_NAME: str = "Petty Bounty API"
     VERSION: str = "1.0.0"
 
-    # Admin bypass — must be explicitly opted into per-environment. When False
-    # (the default), `require_admin` short-circuits to 503 instead of returning
-    # TEST_USER_ID, so a deploy without real auth (Feature #6) cannot expose
-    # the bounty-payout endpoints.
+    # Admin bypass, LOCAL DEV ONLY. When True, `require_admin` returns
+    # TEST_USER_ID without checking anything, so every /admin route is open.
+    # When False (the default), it validates the JWT and requires
+    # `users.role = 'admin'`. MUST stay False in any shared or public deploy.
     ENABLE_UNAUTHED_ADMIN: bool = os.getenv(
         "ENABLE_UNAUTHED_ADMIN", "false"
     ).lower() in ("1", "true", "yes")
@@ -143,6 +143,18 @@ class Settings:
     # the switch exists so the unit suite, which uses made-up hosts, can turn the
     # check off. A deploy must not be able to turn it off with a setting.
     IMAGE_URL_ALLOWLIST_ENFORCED: bool = True
+
+    # Browser origins allowed to call the API (the admin console). The mobile
+    # app is not a browser and is not affected. Comma-separated, for example
+    # CORS_ALLOW_ORIGINS="https://admin.example.com". Unset means any origin,
+    # which is safe only because no route authenticates by cookie: the token
+    # travels in the Authorization header, so CORS credentials stay off.
+    def cors_allow_origins(self) -> list[str]:
+        origins = [
+            o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+            if o.strip()
+        ]
+        return origins or ["*"]
 
     def image_allowed_hosts(self) -> set[str]:
         """The project's storage host plus any extras from the environment."""

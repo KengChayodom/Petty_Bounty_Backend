@@ -108,7 +108,7 @@ class TestOwnerPushIsScheduled:
 
         assert r.status_code == 200
         assert len(scheduled) == 1
-        _db, sighting_id, pet_ids, hunter_id = scheduled[0]
+        _notif_repo, _sighting_repo, sighting_id, pet_ids, hunter_id = scheduled[0]
         assert sighting_id == "s1"
         assert pet_ids == ["p1", "p2"]
         assert hunter_id == "hunter-1"
@@ -137,5 +137,5 @@ class TestOwnerPushIsScheduled:
         )
 
         assert r.status_code == 200
-        _db, sighting_id, pet_ids, hunter_id = scheduled[0]
+        _notif_repo, _sighting_repo, sighting_id, pet_ids, hunter_id = scheduled[0]
         assert (sighting_id, pet_ids, hunter_id) == ("s9", ["p7"], "hunter-1")

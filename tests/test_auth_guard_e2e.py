@@ -30,7 +30,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import me
-from app.api.me import get_user_repository
+from app.api.dependencies import get_user_repository
 from app.core import auth
 from app.repositories.user_repository import UserRepository
 

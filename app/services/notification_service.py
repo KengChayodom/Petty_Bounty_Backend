@@ -1,5 +1,5 @@
 """
-FCM push fan-out (SRS-FR-12).
+FCM push fan-out (MD-11, MD-12, MD-13).
 
 Everything here is guarded by `is_firebase_ready()` so it is a safe no-op when
 FIREBASE_CREDENTIALS is unset (the rest of the API still runs). Functions are
@@ -12,12 +12,8 @@ from firebase_admin import messaging
 
 from app.core.firebase import is_firebase_ready
 from app.repositories.notification_repository import NotificationRepository
-from app.repositories.supabase_notification_repository import (
-    SupabaseNotificationRepository,
-)
-from app.repositories.supabase_sighting_repository import (
-    SupabaseSightingRepository,
-)
+from app.repositories.sighting_repository import SightingRepository
+from app.utils.postgis import create_postgis_point
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +105,7 @@ def send_to_users(
 
 
 def notify_nearby_hunters(
-    db,
+    repo: NotificationRepository,
     pet_id: str,
     latitude: float,
     longitude: float,
@@ -126,14 +122,7 @@ def notify_nearby_hunters(
     if not is_firebase_ready():
         return
 
-    # `db` is the raw request-scoped client (this runs as a BackgroundTask
-    # scheduled straight from the route); wrap it in the port here — the
-    # composition point for the fan-out.
-    repo = SupabaseNotificationRepository(db)
-
-    # WKT 'POINT(lng lat)' — Postgres casts to geography(4326); mirrors the
-    # convention used by get_nearby_missing_pets.
-    center_wkt = f"POINT({longitude} {latitude})"
+    center_wkt = create_postgis_point(latitude, longitude)
     try:
         user_ids = repo.get_nearby_hunters(
             center_wkt, radius_km * 1000.0, max_age_hours, owner_id
@@ -156,7 +145,8 @@ def notify_nearby_hunters(
 
 
 def notify_pet_owners(
-    db,
+    notif_repo: NotificationRepository,
+    sighting_repo: SightingRepository,
     sighting_id: str,
     pet_ids: list[str],
     hunter_id: str | None = None,
@@ -184,11 +174,6 @@ def notify_pet_owners(
         return []
     if not is_firebase_ready():
         return []
-
-    # `db` is the raw request-scoped client (this runs as a BackgroundTask
-    # scheduled from the route), so the ports are constructed here.
-    notif_repo = SupabaseNotificationRepository(db)
-    sighting_repo = SupabaseSightingRepository(db)
 
     try:
         owners_by_pet = sighting_repo.get_pet_owners(pet_ids)

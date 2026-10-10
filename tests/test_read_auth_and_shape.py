@@ -26,6 +26,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import dependencies
 from app.api import missing_pets as pets_api
 from app.api import sightings as sightings_api
 from app.core.auth import get_current_user_id
@@ -51,7 +52,7 @@ class TestTheOwnerTimelineIsScopedToItsOwner:
         )
         repo.sightings_for_pet.return_value = TIMELINE
         monkeypatch.setattr(
-            pets_api, "SupabaseMissingPetRepository", lambda db: repo
+        dependencies, "SupabaseMissingPetRepository", lambda db: repo
         )
         return repo
 

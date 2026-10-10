@@ -49,7 +49,7 @@ def _env(monkeypatch, *, register=None):
     """A client whose route reaches a spy instead of the AI + database path."""
     seen = {}
 
-    async def default_register(repo, pet):
+    async def default_register(self, pet):
         seen["pet"] = pet
         return {"id": "pet-123", "owner_id": pet.owner_id}
 
@@ -106,7 +106,7 @@ class TestCreateMissingPetRoute:
 
     def test_a_refused_report_is_the_callers_fault(self, monkeypatch):
         """UTC-74-TC-04 — a ValueError out of the service is 400, not 500."""
-        async def refusing(repo, pet):
+        async def refusing(self, pet):
             raise ValueError("Invalid image URL")
 
         env = _env(monkeypatch, register=refusing)
@@ -118,7 +118,7 @@ class TestCreateMissingPetRoute:
 
     def test_an_unexpected_failure_is_the_servers_fault(self, monkeypatch):
         """UTC-74-TC-05 — anything that is not a ValueError is 500."""
-        async def exploding(repo, pet):
+        async def exploding(self, pet):
             raise RuntimeError("DB connection lost")
 
         env = _env(monkeypatch, register=exploding)

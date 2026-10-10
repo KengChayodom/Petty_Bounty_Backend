@@ -21,6 +21,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_missing_pet_repository
 from app.api import admin as admin_api
 from app.api import missing_pets as pets_api
 from app.api import reports as reports_api
@@ -44,7 +45,7 @@ def _admin_client(service=None, pet_repo=None):
         app.dependency_overrides[admin_api.get_admin_service] = lambda: service
     if pet_repo is not None:
         app.dependency_overrides[
-            admin_api.get_missing_pet_repository
+            get_missing_pet_repository
         ] = lambda: pet_repo
     return TestClient(app)
 
@@ -337,7 +338,7 @@ class TestMyReportsRoute:
         reversed, "me" is read as a pet id and this endpoint never runs."""
         seen = {}
 
-        async def _fake_get_my(repo, owner_id):
+        async def _fake_get_my(self, owner_id):
             seen["owner_id"] = owner_id
             return [{"id": "p1", "owner_id": owner_id}]
 
@@ -353,7 +354,7 @@ class TestMyReportsRoute:
         assert r.json()["data"][0]["id"] == "p1"
 
     def test_failure_yields_500(self, monkeypatch):
-        async def _boom(repo, owner_id):
+        async def _boom(self, owner_id):
             raise RuntimeError("db down")
 
         monkeypatch.setattr(pets_api.PetService, "get_my_missing_pets", _boom)
@@ -411,7 +412,7 @@ class TestAdminPetDetailRoute:
         app.include_router(admin_api.router)
         app.dependency_overrides[require_admin] = lambda: "admin-1"
         app.dependency_overrides[
-            admin_api.get_missing_pet_repository
+            get_missing_pet_repository
         ] = lambda: repo
         r = TestClient(app, raise_server_exceptions=False).get(
             "/admin/missing-pets/p1"

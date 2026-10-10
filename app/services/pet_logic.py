@@ -73,6 +73,11 @@ def normalize_browse_species(species):
 # resolve RPC; 'Found' is what the owner's End Search button writes.
 _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
 
+
+def is_closed_pet_status(pet_status: str | None) -> bool:
+    """True when `pet_status` means the search is over (case-insensitive)."""
+    return (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES
+
 # SRS-86: a post stops reaching new hunters once it passes its `expires_at`.
 # The read paths (`match_missing_pets`, `get_nearby_missing_pets`) filter
 # `mp.expires_at > NOW()`, and the badge below reads the same column — one
@@ -196,7 +201,7 @@ def derive_post_status(
     `expires_at` is optional: a caller that does not have it gets the pre-expiry
     behaviour rather than a wrong answer.
     """
-    if (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES:
+    if is_closed_pet_status(pet_status):
         return POST_STATUS_RESCUED
     if sighting_count > 0:
         return POST_STATUS_SPOTTED
@@ -288,8 +293,7 @@ def apply_owner_edit_rules(
     Returns the payload to write, which may differ from the one given.
     """
     out = dict(payload)
-    status_now = (current.get("status") or "").strip().lower()
-    closed = status_now in _CLOSED_PET_STATUSES
+    closed = is_closed_pet_status(current.get("status"))
 
     if "bounty_amount" in out:
         if closed:
