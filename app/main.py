@@ -31,14 +31,12 @@ os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
 
 
 async def _warm_identity_index() -> None:
+    from app.api.dependencies import get_missing_pet_repository
     from app.core.database import get_supabase_client
-    from app.repositories.supabase_missing_pet_repository import (
-        SupabaseMissingPetRepository,
-    )
     from app.services.identity_index import warm_from_repo
 
     try:
-        await warm_from_repo(SupabaseMissingPetRepository(get_supabase_client()))
+        await warm_from_repo(get_missing_pet_repository(get_supabase_client()))
     except Exception as e:
         logger.error("Identity index warm-up failed: %s", e, exc_info=True)
 
@@ -55,8 +53,8 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info(
-            "Admin endpoints gated: require_admin will 503 until "
-            "ENABLE_UNAUTHED_ADMIN=true or Feature #6 ships real auth."
+            "Admin endpoints gated: require_admin needs a valid JWT whose "
+            "users.role is 'admin'."
         )
 
     # Initialize Firebase Admin for FCM push (SRS-FR-12). Non-fatal: logs a
@@ -90,11 +88,12 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Configure CORS
+# Configure CORS. Credentials stay off: auth is a bearer header, never a cookie,
+# and "*" with credentials on would let any site make credentialed calls.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Configure proper origins for production
-    allow_credentials=True,
+    allow_origins=settings.cors_allow_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

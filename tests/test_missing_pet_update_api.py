@@ -30,6 +30,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import dependencies
 from app.api import missing_pets as pets_api
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
@@ -52,7 +53,8 @@ def repo(monkeypatch):
         "id": "p1", "status": "Searching", "bounty_amount": 0,
     }
     r.has_caught_awaiting_decision.return_value = False
-    monkeypatch.setattr(pets_api, "SupabaseMissingPetRepository", lambda db: r)
+    monkeypatch.setattr(
+        dependencies, "SupabaseMissingPetRepository", lambda db: r)
     return r
 
 

@@ -8,11 +8,11 @@ can confirm the session is valid and read the server-authoritative `role`.
 """
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.dependencies import get_user_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
-from app.repositories.supabase_user_repository import SupabaseUserRepository
 from app.repositories.user_repository import UserProfileNotFound
 from app.schemas.common import StandardResponse
+from app.services.user_service import UserService
 
 # Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
 # The routes still ask for the id where they use it, which FastAPI resolves once per request.
@@ -24,12 +24,12 @@ router = APIRouter(
 
 @router.get("/me", response_model=StandardResponse)
 async def get_me(
-    supabase=Depends(get_supabase_client),
+    service: UserService = Depends(get_user_service),
     user_id: str = Depends(get_current_user_id),
 ):
     """Return the authenticated user's public.users profile row."""
     try:
-        data = SupabaseUserRepository(supabase).get_user_profile(user_id)
+        data = await service.get_profile(user_id)
     except UserProfileNotFound as e:
         raise HTTPException(
             status_code=404,

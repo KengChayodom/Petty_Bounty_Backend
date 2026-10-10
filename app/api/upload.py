@@ -1,9 +1,9 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from app.api.dependencies import get_upload_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
 from app.schemas.common import StandardResponse
-import asyncio
-import uuid
+from app.services.upload_service import UploadService
 
 # Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
 # The routes still ask for the id where they use it, which FastAPI resolves once per request.
@@ -12,69 +12,29 @@ router = APIRouter(
     dependencies=[Depends(get_current_user_id)],
 )
 
+
 @router.post("/pet-image", response_model=StandardResponse)
 async def upload_pet_image(
     file: UploadFile = File(...),
-    supabase = Depends(get_supabase_client),
+    service: UploadService = Depends(get_upload_service),
     user_id: str = Depends(get_current_user_id),
 ):
+    """Store a lost-pet or profile photo and return its public URL.
+
+    The sightings flow does not come through here (Flutter uploads straight to
+    Storage). A file that fails validation answers 400 and nothing is written.
+    """
     try:
-        # Validate file exists
-        if not file.filename:
-            raise HTTPException(
-                status_code=400,
-                detail="No filename provided"
-            )
-
-        # Validate file type
-        allowed_extensions = {"jpg", "jpeg", "png", "webp"}
-        file_extension = file.filename.split(".")[-1].lower() if file.filename else ""
-
-        if file_extension not in allowed_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
-            )
-
-        # Validate content type
-        allowed_content_types = {"image/jpeg", "image/png", "image/webp"}
-        if file.content_type not in allowed_content_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid content type. Allowed: {', '.join(allowed_content_types)}"
-            )
-
-        file_bytes = await file.read()
-
-        # Check file size (max 10MB)
-        if len(file_bytes) > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
-
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
-
-        # supabase-py's storage client is synchronous, so calling it inline
-        # would block the event loop for the ENTIRE upload — the longest
-        # blocking call in the API, and one that scales with the user's file
-        # size and connection. Off to a worker thread it goes.
-        #
-        # The sightings flow no longer comes through here (Flutter uploads
-        # straight to Storage), but the lost-pet-post and profile-photo paths
-        # still do, and they carry the same stall.
-        await asyncio.to_thread(
-            supabase.storage.from_("pet-images").upload,
-            path=unique_filename,
-            file=file_bytes,
-            file_options={"content-type": file.content_type},
+        data = await service.upload_pet_image(
+            file.filename, file.content_type, await file.read(),
         )
-        public_url = supabase.storage.from_("pet-images").get_public_url(unique_filename)
-
-        return StandardResponse(
-            status="success",
-            message="Upload complete!",
-            data={"image_url": public_url, "filename": unique_filename}
-        )
-
-    except HTTPException:
-        raise
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+    return StandardResponse(
+        status="success",
+        message="Upload complete!",
+        data=data,
+    )

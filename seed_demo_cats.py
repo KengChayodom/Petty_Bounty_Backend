@@ -241,8 +241,8 @@ async def seed(owner: str, folder: Path, dry_run: bool) -> None:
         print(f"\n • {c.pet_name} ({c.file})")
         try:
             url = await asyncio.to_thread(upload_photo, client, folder / c.file)
-            created = await PetService.register_missing_pet(
-                repo, build_request(c, owner_id, url, now)
+            created = await PetService(repo).register_missing_pet(
+                build_request(c, owner_id, url, now)
             )
             print(f"   🎯 created {created['id']}")
             ok += 1

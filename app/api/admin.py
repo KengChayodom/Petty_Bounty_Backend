@@ -1,20 +1,19 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.api.dependencies import (
+    get_admin_service,
+    get_bounty_service,
+    get_notification_repository,
+    get_pet_service,
+)
 from app.core.auth import require_admin
-from app.core.database import get_supabase_client
-from app.repositories.missing_pet_repository import MissingPetRepository
 from app.repositories.admin_repository import SightingNotFound
+from app.repositories.notification_repository import NotificationRepository
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
 )
-from app.repositories.supabase_admin_repository import SupabaseAdminRepository
-from app.repositories.supabase_missing_pet_repository import (
-    SupabaseMissingPetRepository,
-)
-from app.repositories.supabase_report_repository import SupabaseReportRepository
-from app.repositories.supabase_user_repository import SupabaseUserRepository
 from app.repositories.user_repository import (
     RoleAssignmentRefused,
     UserAccountNotFound,
@@ -28,11 +27,7 @@ from app.schemas.admin import (
 from app.schemas.common import PaginatedData, StandardResponse
 from app.services.admin_service import AdminService
 from app.services.pet_service import PetService
-from app.api.bounty import get_bounty_service
 from app.repositories.bounty_repository import BountyConflict, BountyNotFound
-from app.repositories.supabase_notification_repository import (
-    SupabaseNotificationRepository,
-)
 from app.services.bounty_service import BountyService
 from app.services.notification_service import send_to_users
 
@@ -42,20 +37,6 @@ router = APIRouter(
     prefix="/admin", tags=["Admin"],
     dependencies=[Depends(require_admin)],
 )
-
-
-def get_admin_service(supabase=Depends(get_supabase_client)) -> AdminService:
-    return AdminService(
-        repo=SupabaseAdminRepository(supabase),
-        report_repo=SupabaseReportRepository(supabase),
-        user_repo=SupabaseUserRepository(supabase),
-    )
-
-
-def get_missing_pet_repository(
-    supabase=Depends(get_supabase_client),
-) -> MissingPetRepository:
-    return SupabaseMissingPetRepository(supabase)
 
 
 @router.patch(
@@ -141,7 +122,7 @@ async def list_all_missing_pets(
         description="Optional filter: Cat, Dog, Bird, or Other. "
                     "Anything else is a 400.",
     ),
-    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
     """MD-41 / SRS-70 — browse every missing-pet report for moderation.
@@ -157,8 +138,8 @@ async def list_all_missing_pets(
     implements.
     """
     try:
-        page = await PetService.list_all_missing_pets(
-            repo, limit=limit, offset=offset, status=status, species=species,
+        page = await pets.list_all_missing_pets(
+            limit=limit, offset=offset, status=status, species=species,
         )
         return StandardResponse(
             status="success",
@@ -181,11 +162,11 @@ async def list_all_missing_pets(
 @router.get("/missing-pets/{pet_id}")
 async def get_missing_pet(
     pet_id: str,
-    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
     """Get a specific missing pet for admin details view."""
-    pet = await PetService.get_missing_pet_by_id(repo, pet_id)
+    pet = await pets.get_missing_pet_by_id(pet_id)
     if not pet:
         raise HTTPException(status_code=404, detail="Pet not found")
     return pet
@@ -193,7 +174,7 @@ async def get_missing_pet(
 @router.delete("/missing-pets/{pet_id}", response_model=StandardResponse)
 async def remove_missing_pet(
     pet_id: str,
-    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
     """
@@ -203,7 +184,7 @@ async def remove_missing_pet(
     the row is deleted outright; the moderation action is recorded in the log.
     """
     try:
-        removed = await PetService.remove_missing_pet(repo, pet_id, admin_id)
+        removed = await pets.remove_missing_pet(pet_id, admin_id)
     except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:
@@ -540,7 +521,7 @@ async def rule_bounty_payment(
     payload: BountyRuling,
     background_tasks: BackgroundTasks,
     service: BountyService = Depends(get_bounty_service),
-    supabase=Depends(get_supabase_client),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
     admin_id: str = Depends(require_admin),
 ):
     """SRS-111, SRS-113: confirm a payment (the report becomes "Resolved") or
@@ -549,7 +530,7 @@ async def rule_bounty_payment(
     result = await _bounty(service.admin_rule(payment_id, admin_id, payload.decision))
     if result.get("status") == "Rejected" and result.get("owner_id"):
         background_tasks.add_task(
-            send_to_users, SupabaseNotificationRepository(supabase),
+            send_to_users, notif_repo,
             [str(result["owner_id"])], "Bounty payment rejected",
             "Your bounty payment could not be confirmed. Please pay the hunter again.",
             {"type": "bounty_payment_rejected", "payment_id": str(payment_id)},

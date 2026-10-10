@@ -6,10 +6,9 @@ in app/api/admin.py.
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.dependencies import get_bounty_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
 from app.repositories.bounty_repository import BountyConflict, BountyNotFound
-from app.repositories.supabase_bounty_repository import SupabaseBountyRepository
 from app.schemas.common import StandardResponse
 from app.services.bounty_service import BountyService
 
@@ -19,10 +18,6 @@ router = APIRouter(
     prefix="/bounty", tags=["Bounty"],
     dependencies=[Depends(get_current_user_id)],
 )
-
-
-def get_bounty_service(supabase=Depends(get_supabase_client)) -> BountyService:
-    return BountyService(SupabaseBountyRepository(supabase))
 
 
 class PaymentSubmission(BaseModel):
