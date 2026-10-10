@@ -525,8 +525,9 @@ async def _bounty(coro):
 
 @router.get("/bounty-queue", response_model=StandardResponse)
 async def bounty_queue(service: BountyService = Depends(get_bounty_service)):
-    """SRS-114: disputed payments, payments left unconfirmed past their
-    three-day dispute window, and reports referred as unpaid, oldest first.
+    """SRS-110: disputed payments, payments left unconfirmed past their
+    three-day dispute window, reports referred as unpaid, and reports whose
+    payment was rejected over three days ago and not paid again, oldest first.
     Each entry carries the report, both parties, the amount and any slip."""
     rows = await _bounty(service.ruling_queue())
     return StandardResponse(status="success", message=f"{len(rows)} case(s) to rule on.",
@@ -542,7 +543,7 @@ async def rule_bounty_payment(
     supabase=Depends(get_supabase_client),
     admin_id: str = Depends(require_admin),
 ):
-    """SRS-116, SRS-119: confirm a payment (the report becomes "Resolved") or
+    """SRS-111, SRS-113: confirm a payment (the report becomes "Resolved") or
     reject it (the report stays "Found" and the owner is notified to pay
     again). The ruling Administrator and the time are recorded."""
     result = await _bounty(service.admin_rule(payment_id, admin_id, payload.decision))
@@ -562,7 +563,7 @@ async def close_bounty_unpaid(
     service: BountyService = Depends(get_bounty_service),
     admin_id: str = Depends(require_admin),
 ):
-    """SRS-117, SRS-119: close an unpaid report as "Resolved", recording that
+    """SRS-112, SRS-113: close an unpaid report as "Resolved", recording that
     the bounty was not paid, by whom and when."""
     result = await _bounty(service.admin_close_unpaid(pet_id, admin_id))
     return StandardResponse(status="success", message="Closed as unpaid.", data=result)

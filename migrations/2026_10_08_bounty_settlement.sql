@@ -1,8 +1,7 @@
 -- 2026-10-08 — Feature 6: owner-paid bounty settlement.
 --
--- STATUS: PROPOSED. NOT APPLIED to any database. Verified against the
--- integration container (tests/integration/test_bounty_settlement.py). Read it,
--- then apply it yourself.
+-- STATUS: APPLIED (found applied to the database on 2026-10-10). Verified
+-- against the integration container (tests/integration/test_bounty_settlement.py).
 --
 -- WHAT. The owner pays the returning hunter directly, by PromptPay, and submits
 -- the slip. The hunter confirms or disputes it. The Administrator rules on
@@ -459,7 +458,8 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- 9. The Administrator's queue: disputed payments, payments left unconfirmed
---    past their dispute window, and reports referred as unpaid. Derived on
+--    past their dispute window, reports referred as unpaid, and rejected
+--    payments not replaced within three days. Derived on
 --    read, so no scheduled job is needed.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION bounty_ruling_queue()
