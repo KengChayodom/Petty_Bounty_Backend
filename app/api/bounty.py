@@ -55,7 +55,7 @@ async def my_bounties(
 ):
     """The reports the caller returned the pet for, with each one's payment
     state, newest first. Declared before /{pet_id} so "mine" is not read as a
-    pet id. It is the hunter's way into SRS-110 and SRS-112."""
+    pet id. It is the hunter's way into the confirm, dispute and unpaid routes."""
     rows = await _run(service.bounties_for_hunter(user_id))
     return StandardResponse(status="success", message=f"{len(rows)} bounty case(s).", data=rows)
 
@@ -69,7 +69,7 @@ async def get_bounty(
     """The payment state of one closed report, for its owner or its returning
     hunter; anyone else gets 404.
 
-    SRS-104, SRS-105, SRS-108: for an owner who still owes the bounty, the
+    SRS-104, SRS-105, SRS-107: for an owner who still owes the bounty, the
     response carries the hunter's profile phone as their PromptPay number when
     it is a Thai mobile number, else null, so the app can show the QR code or
     say the hunter's payout details are awaited.
@@ -101,7 +101,7 @@ async def answer_payment(
     service: BountyService = Depends(get_bounty_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """SRS-110: the returning hunter, and no one else, confirms a payment at
+    """SRS-108: the returning hunter, and no one else, confirms a payment at
     any time or disputes it within its three-day dispute window. Confirming
     resolves the report; a dispute sends it to the Administrator's queue."""
     data = await _run(service.hunter_answer(payment_id, user_id, payload.answer))
@@ -114,7 +114,7 @@ async def refer_unpaid(
     service: BountyService = Depends(get_bounty_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """SRS-112: the returning hunter refers an unpaid report to the
+    """SRS-109: the returning hunter refers an unpaid report to the
     Administrator, within three days of it becoming "Found"."""
     data = await _run(service.refer_unpaid(pet_id, user_id))
     return StandardResponse(status="success", message="Referred as unpaid.", data=data)
