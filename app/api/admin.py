@@ -1,19 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
+from app.api.dependencies import (
+    get_admin_service,
+    get_bounty_service,
+    get_notification_repository,
+    get_pet_service,
+)
 from app.core.auth import require_admin
-from app.core.database import get_supabase_client
-from app.repositories.missing_pet_repository import MissingPetRepository
 from app.repositories.admin_repository import SightingNotFound
+from app.repositories.notification_repository import NotificationRepository
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
     ReportNotFound,
 )
-from app.repositories.supabase_admin_repository import SupabaseAdminRepository
-from app.repositories.supabase_missing_pet_repository import (
-    SupabaseMissingPetRepository,
-)
-from app.repositories.supabase_report_repository import SupabaseReportRepository
-from app.repositories.supabase_user_repository import SupabaseUserRepository
 from app.repositories.user_repository import (
     RoleAssignmentRefused,
     UserAccountNotFound,
@@ -27,6 +27,9 @@ from app.schemas.admin import (
 from app.schemas.common import PaginatedData, StandardResponse
 from app.services.admin_service import AdminService
 from app.services.pet_service import PetService
+from app.repositories.bounty_repository import BountyConflict, BountyNotFound
+from app.services.bounty_service import BountyService
+from app.services.notification_service import send_to_users
 
 # Every route here needs an administrator, declared ONCE for the whole router so a route added later inherits it.
 # The routes still ask for the id where they use it, which FastAPI resolves once per request.
@@ -34,20 +37,6 @@ router = APIRouter(
     prefix="/admin", tags=["Admin"],
     dependencies=[Depends(require_admin)],
 )
-
-
-def get_admin_service(supabase=Depends(get_supabase_client)) -> AdminService:
-    return AdminService(
-        repo=SupabaseAdminRepository(supabase),
-        report_repo=SupabaseReportRepository(supabase),
-        user_repo=SupabaseUserRepository(supabase),
-    )
-
-
-def get_missing_pet_repository(
-    supabase=Depends(get_supabase_client),
-) -> MissingPetRepository:
-    return SupabaseMissingPetRepository(supabase)
 
 
 @router.patch(
@@ -133,7 +122,7 @@ async def list_all_missing_pets(
         description="Optional filter: Cat, Dog, Bird, or Other. "
                     "Anything else is a 400.",
     ),
-    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
     """MD-41 / SRS-70 — browse every missing-pet report for moderation.
@@ -149,8 +138,8 @@ async def list_all_missing_pets(
     implements.
     """
     try:
-        page = await PetService.list_all_missing_pets(
-            repo, limit=limit, offset=offset, status=status, species=species,
+        page = await pets.list_all_missing_pets(
+            limit=limit, offset=offset, status=status, species=species,
         )
         return StandardResponse(
             status="success",
@@ -173,11 +162,11 @@ async def list_all_missing_pets(
 @router.get("/missing-pets/{pet_id}")
 async def get_missing_pet(
     pet_id: str,
-    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
     """Get a specific missing pet for admin details view."""
-    pet = await PetService.get_missing_pet_by_id(repo, pet_id)
+    pet = await pets.get_missing_pet_by_id(pet_id)
     if not pet:
         raise HTTPException(status_code=404, detail="Pet not found")
     return pet
@@ -185,7 +174,7 @@ async def get_missing_pet(
 @router.delete("/missing-pets/{pet_id}", response_model=StandardResponse)
 async def remove_missing_pet(
     pet_id: str,
-    repo: MissingPetRepository = Depends(get_missing_pet_repository),
+    pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
     """
@@ -195,7 +184,7 @@ async def remove_missing_pet(
     the row is deleted outright; the moderation action is recorded in the log.
     """
     try:
-        removed = await PetService.remove_missing_pet(repo, pet_id, admin_id)
+        removed = await pets.remove_missing_pet(pet_id, admin_id)
     except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:
@@ -491,3 +480,71 @@ async def list_role_changes(
             items=page.items, total=page.total, limit=limit, offset=offset,
         ),
     )
+
+
+
+# ---------------------------------------------------------------------- #
+# Feature 6 — the Administrator rules on bounty payments the owner and the
+# returning hunter could not settle themselves.
+# ---------------------------------------------------------------------- #
+class BountyRuling(BaseModel):
+    decision: str = Field(..., description="'Confirm' or 'Reject'")
+
+
+async def _bounty(coro):
+    try:
+        return await coro
+    except BountyNotFound as nf:
+        raise HTTPException(status_code=404, detail=str(nf))
+    except BountyConflict as bc:
+        raise HTTPException(status_code=409, detail=str(bc))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bounty request failed: {e}")
+
+
+@router.get("/bounty-queue", response_model=StandardResponse)
+async def bounty_queue(service: BountyService = Depends(get_bounty_service)):
+    """SRS-110: disputed payments, payments left unconfirmed past their
+    three-day dispute window, reports referred as unpaid, and reports whose
+    payment was rejected over three days ago and not paid again, oldest first.
+    Each entry carries the report, both parties, the amount and any slip."""
+    rows = await _bounty(service.ruling_queue())
+    return StandardResponse(status="success", message=f"{len(rows)} case(s) to rule on.",
+                            data=rows)
+
+
+@router.post("/bounty-payments/{payment_id}/ruling", response_model=StandardResponse)
+async def rule_bounty_payment(
+    payment_id: str,
+    payload: BountyRuling,
+    background_tasks: BackgroundTasks,
+    service: BountyService = Depends(get_bounty_service),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
+    admin_id: str = Depends(require_admin),
+):
+    """SRS-111, SRS-113: confirm a payment (the report becomes "Resolved") or
+    reject it (the report stays "Found" and the owner is notified to pay
+    again). The ruling Administrator and the time are recorded."""
+    result = await _bounty(service.admin_rule(payment_id, admin_id, payload.decision))
+    if result.get("status") == "Rejected" and result.get("owner_id"):
+        background_tasks.add_task(
+            send_to_users, notif_repo,
+            [str(result["owner_id"])], "Bounty payment rejected",
+            "Your bounty payment could not be confirmed. Please pay the hunter again.",
+            {"type": "bounty_payment_rejected", "payment_id": str(payment_id)},
+        )
+    return StandardResponse(status="success", message="Ruling recorded.", data=result)
+
+
+@router.post("/missing-pets/{pet_id}/close-unpaid", response_model=StandardResponse)
+async def close_bounty_unpaid(
+    pet_id: str,
+    service: BountyService = Depends(get_bounty_service),
+    admin_id: str = Depends(require_admin),
+):
+    """SRS-112, SRS-113: close an unpaid report as "Resolved", recording that
+    the bounty was not paid, by whom and when."""
+    result = await _bounty(service.admin_close_unpaid(pet_id, admin_id))
+    return StandardResponse(status="success", message="Closed as unpaid.", data=result)

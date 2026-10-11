@@ -49,8 +49,7 @@ class TestGetNearbyMissingPets:
         repo = _repo()
         repo.get_nearby_missing_pets.return_value = [{"id": "pet-1"}]
 
-        rows = run(PetService.get_nearby_missing_pets(
-            repo, latitude=13.7563, longitude=100.5018, radius_km=5.0, limit=7,
+        rows = run(PetService(repo).get_nearby_missing_pets(latitude=13.7563, longitude=100.5018, radius_km=5.0, limit=7,
         ))
 
         assert rows == [{"id": "pet-1"}]
@@ -63,7 +62,7 @@ class TestGetNearbyMissingPets:
         repo = _repo()
         repo.get_nearby_missing_pets.return_value = []
 
-        run(PetService.get_nearby_missing_pets(repo, latitude=0.0, longitude=0.0))
+        run(PetService(repo).get_nearby_missing_pets(latitude=0.0, longitude=0.0))
 
         repo.get_nearby_missing_pets.assert_called_once_with(
             "POINT(0.0 0.0)", 10000.0, 20
@@ -72,13 +71,13 @@ class TestGetNearbyMissingPets:
     def test_no_rows_returns_empty_list(self):
         repo = _repo()
         repo.get_nearby_missing_pets.return_value = []
-        assert run(PetService.get_nearby_missing_pets(repo, 1.0, 2.0)) == []
+        assert run(PetService(repo).get_nearby_missing_pets(1.0, 2.0)) == []
 
     def test_rpc_error_is_reraised(self):
         repo = _repo()
         repo.get_nearby_missing_pets.side_effect = RuntimeError("RPC transport error")
         with pytest.raises(RuntimeError):
-            run(PetService.get_nearby_missing_pets(repo, 1.0, 2.0))
+            run(PetService(repo).get_nearby_missing_pets(1.0, 2.0))
 
 
 # --------------------------------------------------------------------------- #
@@ -119,7 +118,7 @@ class TestRegisterMissingPet:
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
-        created = run(PetService.register_missing_pet(repo, _make_pet(species="Dog")))
+        created = run(PetService(repo).register_missing_pet(_make_pet(species="Dog")))
 
         assert created == {"id": "pet-xyz"}
         repo.insert_missing_pet.assert_called_once()
@@ -146,8 +145,7 @@ class TestRegisterMissingPet:
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
-        run(PetService.register_missing_pet(
-            repo, _make_pet(species="Cat", primary_color_hex=None)))
+        run(PetService(repo).register_missing_pet(_make_pet(species="Cat", primary_color_hex=None)))
 
         payload = repo.insert_missing_pet.call_args.args[0]
         assert payload["primary_color_hex"] == "#726860"
@@ -160,7 +158,7 @@ class TestRegisterMissingPet:
         repo = _repo()
         repo.insert_missing_pet.return_value = {"id": "pet-xyz"}
 
-        run(PetService.register_missing_pet(repo, _make_pet()))
+        run(PetService(repo).register_missing_pet(_make_pet()))
 
         # On a YOLO miss embed_image full-frame-encodes; that vector is inserted.
         # No colour is read off a full frame, so with no owner colour the pet
@@ -179,7 +177,7 @@ class TestRegisterMissingPet:
         repo.insert_missing_pet.side_effect = MissingPetNotSaved({})
 
         with pytest.raises(ValueError):
-            run(PetService.register_missing_pet(repo, _make_pet()))
+            run(PetService(repo).register_missing_pet(_make_pet()))
 
     def test_ai_pipeline_error_is_wrapped_with_context(self, monkeypatch):
         # A NON-ValueError from the AI pipeline is caught and re-raised as a
@@ -189,7 +187,7 @@ class TestRegisterMissingPet:
         repo = _repo()
 
         with pytest.raises(Exception) as ei:
-            run(PetService.register_missing_pet(repo, _make_pet()))
+            run(PetService(repo).register_missing_pet(_make_pet()))
 
         assert "Failed to register missing pet" in str(ei.value)
         repo.insert_missing_pet.assert_not_called()
@@ -208,7 +206,7 @@ class TestRegisterMissingPet:
         repo.insert_missing_pet.side_effect = RuntimeError("db down")
 
         with pytest.raises(Exception) as ei:
-            run(PetService.register_missing_pet(repo, _make_pet()))
+            run(PetService(repo).register_missing_pet(_make_pet()))
 
         assert "Failed to register missing pet" in str(ei.value)
         assert not isinstance(ei.value, ValueError)
@@ -227,7 +225,7 @@ class TestGetMissingPetById:
         }
         repo.get_sighting_links_for_pets.return_value = []
 
-        assert run(PetService.get_missing_pet_by_id(repo, "pet-1")) == {
+        assert run(PetService(repo).get_missing_pet_by_id("pet-1")) == {
             "id": "pet-1",
             "latitude": 13.7,
             "status": "Searching",
@@ -250,7 +248,7 @@ class TestGetMissingPetById:
             {"pet_id": "pet-1", "sighting_id": "s2", "owner_status": "Rejected"},
         ]
 
-        out = run(PetService.get_missing_pet_by_id(repo, "pet-1"))
+        out = run(PetService(repo).get_missing_pet_by_id("pet-1"))
         assert out["sighting_count"] == 1
         assert out["post_status"] == "Spotted"
 
@@ -265,21 +263,21 @@ class TestGetMissingPetById:
         repo.get_sighting_links_for_pets.return_value = []
 
         assert run(
-            PetService.get_missing_pet_by_id(repo, "pet-1")
+            PetService(repo).get_missing_pet_by_id("pet-1")
         )["post_status"] == "Rescued"
 
     def test_missing_pet_returns_none_without_a_second_query(self):
         repo = _repo()
         repo.get_missing_pet_by_id.return_value = None
 
-        assert run(PetService.get_missing_pet_by_id(repo, "nope")) is None
+        assert run(PetService(repo).get_missing_pet_by_id("nope")) is None
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
         repo = _repo()
         repo.get_missing_pet_by_id.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            run(PetService.get_missing_pet_by_id(repo, "pet-1"))
+            run(PetService(repo).get_missing_pet_by_id("pet-1"))
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +288,7 @@ class TestGetSightingsForPet:
     def test_returns_rows_and_forces_include_dismissed_false(self):
         repo = _repo()
         repo.sightings_for_pet.return_value = [{"id": "s1"}]
-        out = run(PetService.get_sightings_for_pet(repo, "pet-1", limit=10, offset=5))
+        out = run(PetService(repo).get_sightings_for_pet("pet-1", limit=10, offset=5))
         assert out == [{"id": "s1"}]
         # the owner never sees Dismissed reports
         repo.sightings_for_pet.assert_called_once_with(
@@ -301,7 +299,7 @@ class TestGetSightingsForPet:
         repo = _repo()
         repo.sightings_for_pet.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            run(PetService.get_sightings_for_pet(repo, "pet-1"))
+            run(PetService(repo).get_sightings_for_pet("pet-1"))
 
     # --- owner scoping, added 2026-09-09 (UTC-38-TC-03 to TC-05) ------------ #
     # Being signed in was the only check on this read until that date, so any
@@ -314,8 +312,7 @@ class TestGetSightingsForPet:
             "id": "pet-1", "owner_id": "owner-1"
         }
         repo.sightings_for_pet.return_value = [{"id": "s1"}]
-        out = run(PetService.get_sightings_for_pet(
-            repo, "pet-1", owner_id="owner-1"
+        out = run(PetService(repo).get_sightings_for_pet("pet-1", owner_id="owner-1"
         ))
         assert out == [{"id": "s1"}]
 
@@ -331,8 +328,7 @@ class TestGetSightingsForPet:
         repo = _repo()
         repo.get_missing_pet_by_id.return_value = pet
         with pytest.raises(LookupError):
-            run(PetService.get_sightings_for_pet(
-                repo, "pet-1", owner_id="owner-1"
+            run(PetService(repo).get_sightings_for_pet("pet-1", owner_id="owner-1"
             ))
         repo.sightings_for_pet.assert_not_called()
 
@@ -342,17 +338,16 @@ class TestGetSightingsForPet:
         the thing that must pass it and is asserted separately."""
         repo = _repo()
         repo.sightings_for_pet.return_value = [{"id": "s1"}]
-        assert run(PetService.get_sightings_for_pet(repo, "pet-1")) == [{"id": "s1"}]
+        assert run(PetService(repo).get_sightings_for_pet("pet-1")) == [{"id": "s1"}]
         repo.get_missing_pet_by_id.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #
 # UTC-34  get_my_missing_pets (MD-38, SRS-68) — the owner's "My Reports" list.
 #
-# As-built note: the test plan writes this as `PetService(pet_repo)
-# .get_my_missing_pets(owner_id)`, but PetService is a static-method service
-# whose repo is the first argument (as it is for every other method here), so
-# the call is `PetService.get_my_missing_pets(repo, owner_id)`.
+# Called as the test plan writes it, `PetService(pet_repo)
+# .get_my_missing_pets(owner_id)`: the repository arrives through the
+# constructor, as it does for every other method here.
 #
 # Owner scoping is STRUCTURAL: the port takes an owner_id, so there is no shape
 # this service could pass that would return another owner's rows. TC-01
@@ -369,7 +364,7 @@ class TestGetMyMissingPets:
         }[owner_id]
         repo.get_sighting_links_for_pets.return_value = []
 
-        out = run(PetService.get_my_missing_pets(repo, "u1"))
+        out = run(PetService(repo).get_my_missing_pets("u1"))
 
         assert [p["id"] for p in out] == ["pet-1"]
         repo.get_by_owner.assert_called_once_with("u1")
@@ -380,7 +375,7 @@ class TestGetMyMissingPets:
         repo = _repo()
         repo.get_by_owner.return_value = []
 
-        assert run(PetService.get_my_missing_pets(repo, "u1")) == []
+        assert run(PetService(repo).get_my_missing_pets("u1")) == []
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
@@ -388,7 +383,7 @@ class TestGetMyMissingPets:
         repo = _repo()
         repo.get_by_owner.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            run(PetService.get_my_missing_pets(repo, "u1"))
+            run(PetService(repo).get_my_missing_pets("u1"))
 
     # --- derived post status (2026-08-17) --------------------------------- #
     def test_report_with_no_sightings_is_pending(self):
@@ -396,7 +391,7 @@ class TestGetMyMissingPets:
         repo.get_by_owner.return_value = [{"id": "p1", "status": "Searching"}]
         repo.get_sighting_links_for_pets.return_value = []
 
-        out = run(PetService.get_my_missing_pets(repo, "u1"))
+        out = run(PetService(repo).get_my_missing_pets("u1"))
 
         assert out[0]["post_status"] == "Pending"
         assert out[0]["sighting_count"] == 0
@@ -412,7 +407,7 @@ class TestGetMyMissingPets:
             {"pet_id": "p1", "sighting_id": "s2", "owner_status": "Confirmed"},
         ]
 
-        out = run(PetService.get_my_missing_pets(repo, "u1"))
+        out = run(PetService(repo).get_my_missing_pets("u1"))
 
         assert out[0]["post_status"] == "Spotted"
         assert out[0]["sighting_count"] == 2
@@ -428,12 +423,12 @@ class TestGetMyMissingPets:
             {"pet_id": "p1", "sighting_id": "s1", "owner_status": None},
         ]
         assert run(
-            PetService.get_my_missing_pets(repo, "u1")
+            PetService(repo).get_my_missing_pets("u1")
         )[0]["post_status"] == "Spotted"
 
         repo.get_sighting_links_for_pets.return_value = []   # sighting deleted
         assert run(
-            PetService.get_my_missing_pets(repo, "u1")
+            PetService(repo).get_my_missing_pets("u1")
         )[0]["post_status"] == "Pending"
 
     def test_closed_search_reads_rescued_even_with_sightings(self):
@@ -444,7 +439,7 @@ class TestGetMyMissingPets:
             for i in range(4)
         ]
 
-        out = run(PetService.get_my_missing_pets(repo, "u1"))
+        out = run(PetService(repo).get_my_missing_pets("u1"))
 
         assert out[0]["post_status"] == "Rescued"
 
@@ -453,7 +448,7 @@ class TestGetMyMissingPets:
         repo.get_by_owner.return_value = [{"id": "p1", "status": "Searching"}]
         repo.get_sighting_links_for_pets.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            run(PetService.get_my_missing_pets(repo, "u1"))
+            run(PetService(repo).get_my_missing_pets("u1"))
 
     def test_an_aged_out_report_with_no_sighting_reads_expired(self):
         """UTC-34-TC-09 [single] - the fourth badge, and the boundary of the
@@ -470,7 +465,7 @@ class TestGetMyMissingPets:
         }]
         repo.get_sighting_links_for_pets.return_value = []
 
-        out = run(PetService.get_my_missing_pets(repo, "u1"))
+        out = run(PetService(repo).get_my_missing_pets("u1"))
 
         assert out[0]["post_status"] == "Expired"
         assert out[0]["sighting_count"] == 0
@@ -496,8 +491,7 @@ class TestListAllMissingPets:
             [{"id": "pet-1", "status": "Searching"}], 1,
         )
 
-        out = run(PetService.list_all_missing_pets(
-            repo, limit=20, offset=0, status="Searching",
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0, status="Searching",
         ))
 
         assert out.items == [{"id": "pet-1", "status": "Searching", "sighting_count": 0, "post_status": "Pending"}]
@@ -508,7 +502,7 @@ class TestListAllMissingPets:
         repo = _repo()
         repo.list_all.return_value = Page([{"id": "pet-1"}, {"id": "pet-2"}], 2)
 
-        out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0))
 
         assert len(out.items) == 2
         repo.list_all.assert_called_once_with(None, None, 20, 0)
@@ -518,13 +512,13 @@ class TestListAllMissingPets:
         repo = _repo()
         repo.list_all.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            run(PetService.list_all_missing_pets(repo))
+            run(PetService(repo).list_all_missing_pets())
 
     def test_empty_page_returns_empty_list(self):
         """UTC-36-TC-04 — an empty page is [], not None."""
         repo = _repo()
         repo.list_all.return_value = Page([], 0)
-        out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0))
         assert out.items == [] and out.total == 0
 
     def test_total_is_the_filter_count_not_the_page_length(self):
@@ -536,7 +530,7 @@ class TestListAllMissingPets:
         repo = _repo()
         repo.list_all.return_value = Page([{"id": f"pet-{i}"} for i in range(20)], 57)
 
-        out = run(PetService.list_all_missing_pets(repo, limit=20, offset=0))
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0))
 
         assert len(out.items) == 20
         assert out.total == 57
@@ -550,8 +544,7 @@ class TestListAllMissingPets:
         repo = _repo()
         repo.list_all.return_value = Page([{"id": "pet-1", "status": "Found"}], 1)
 
-        out = run(PetService.list_all_missing_pets(
-            repo, limit=20, offset=0, status="Found",
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0, status="Found",
         ))
 
         assert out.total == 1
@@ -572,8 +565,7 @@ class TestListAllMissingPets:
             {"pet_id": "p2", "sighting_id": "s1", "owner_status": None},
         ]
 
-        out = run(PetService.list_all_missing_pets(
-            repo, limit=20, offset=0, status="Spotted",
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0, status="Spotted",
         ))
 
         assert [p["id"] for p in out.items] == ["p2"]
@@ -596,8 +588,7 @@ class TestListAllMissingPets:
             {"pet_id": "p2", "sighting_id": "s1", "owner_status": None},
         ]
 
-        out = run(PetService.list_all_missing_pets(
-            repo, limit=20, offset=0, status="Searching",
+        out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0, status="Searching",
         ))
 
         assert [p["id"] for p in out.items] == ["p1"]
@@ -615,8 +606,7 @@ class TestListAllMissingPets:
         )
         repo.get_sighting_links_for_pets.return_value = []
 
-        out = run(PetService.list_all_missing_pets(
-            repo, limit=2, offset=2, status="Searching",
+        out = run(PetService(repo).list_all_missing_pets(limit=2, offset=2, status="Searching",
         ))
 
         assert [p["id"] for p in out.items] == ["p2", "p3"]
@@ -629,8 +619,7 @@ class TestListAllMissingPets:
         repo = _repo()
         repo.list_all.return_value = Page([{"id": "p1"}], 1)
 
-        run(PetService.list_all_missing_pets(
-            repo, limit=20, offset=0, species="Cat",
+        run(PetService(repo).list_all_missing_pets(limit=20, offset=0, species="Cat",
         ))
 
         repo.list_all.assert_called_once_with(None, "Cat", 20, 0)
@@ -649,7 +638,7 @@ class TestRemoveMissingPet:
         repo = _repo()
         repo.remove.return_value = {"id": "p1", "pet_name": "Mochi"}
 
-        out = run(PetService.remove_missing_pet(repo, "p1", "a1"))
+        out = run(PetService(repo).remove_missing_pet("p1", "a1"))
 
         assert out == {"id": "p1", "pet_name": "Mochi"}
         repo.remove.assert_called_once_with("p1")
@@ -659,14 +648,14 @@ class TestRemoveMissingPet:
         repo = _repo()
         repo.remove.return_value = None
         with pytest.raises(ValueError):
-            run(PetService.remove_missing_pet(repo, "ghost", "a1"))
+            run(PetService(repo).remove_missing_pet("ghost", "a1"))
 
     def test_error_is_reraised(self):
         """UTC-37-TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.remove.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
-            run(PetService.remove_missing_pet(repo, "p1", "a1"))
+            run(PetService(repo).remove_missing_pet("p1", "a1"))
 
     def test_removal_is_audit_logged_with_the_admin(self, caplog):
         """The moderation action is recorded — MD-42 says the removal is a
@@ -674,5 +663,5 @@ class TestRemoveMissingPet:
         repo = _repo()
         repo.remove.return_value = {"id": "p1"}
         with caplog.at_level("WARNING"):
-            run(PetService.remove_missing_pet(repo, "p1", "admin-7"))
+            run(PetService(repo).remove_missing_pet("p1", "admin-7"))
         assert "admin-7" in caplog.text and "p1" in caplog.text

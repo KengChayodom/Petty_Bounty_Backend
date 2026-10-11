@@ -1,12 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.dependencies import get_sighting_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
-from app.repositories.supabase_sighting_repository import (
-    SupabaseSightingRepository,
-)
 from app.schemas.common import StandardResponse
-from app.services.ai_service import AIManager
 from app.services.sighting_service import SightingService
 
 # Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
@@ -15,14 +11,6 @@ router = APIRouter(
     prefix="/hunters", tags=["Hunters"],
     dependencies=[Depends(get_current_user_id)],
 )
-
-
-def get_sighting_service(
-    supabase=Depends(get_supabase_client),
-) -> SightingService:
-    return SightingService(
-        repo=SupabaseSightingRepository(supabase), ai_manager=AIManager
-    )
 
 
 @router.get("/me/score", response_model=StandardResponse)

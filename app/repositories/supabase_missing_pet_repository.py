@@ -163,16 +163,50 @@ class SupabaseMissingPetRepository:
 
         return closed
 
-    def update_missing_pet_owned(
-        self, pet_id: str, owner_id: str, patch: dict
-    ) -> dict | None:
-        # Owner-scoped: matches a row only if it belongs to owner_id. A pet that
-        # doesn't exist OR isn't theirs both yield no rows (caller -> 404).
+    def get_owned_pet_state(self, pet_id: str, owner_id: str) -> dict | None:
         res = (self._db.table("missing_pets")
-                       .update(patch)
+                       .select("id, status, bounty_amount")
                        .eq("id", pet_id)
                        .eq("owner_id", owner_id)
                        .execute())
+        return res.data[0] if res.data else None
+
+    def has_caught_awaiting_decision(self, pet_id: str) -> bool:
+        # PostgREST cannot join here, so the undecided queue rows are read
+        # first and their sightings checked second, as close_sightings_for_pet
+        # does.
+        pending = (self._db.table("sighting_matches")
+                           .select("sighting_id")
+                           .eq("missing_pet_id", pet_id)
+                           .eq("owner_status", "Pending")
+                           .execute())
+        ids = [r["sighting_id"] for r in (pending.data or [])]
+        if not ids:
+            return False
+        caught = (self._db.table("sightings")
+                          .select("id")
+                          .in_("id", ids)
+                          .eq("action_type", "Caught")
+                          .neq("verification_status", "Dismissed")
+                          .limit(1)
+                          .execute())
+        return bool(caught.data)
+
+    def update_missing_pet_owned(
+        self, pet_id: str, owner_id: str, patch: dict,
+        expected_status: str | None = None,
+    ) -> dict | None:
+        # Owner-scoped: matches a row only if it belongs to owner_id. A pet that
+        # doesn't exist OR isn't theirs both yield no rows (caller -> 404).
+        query = (self._db.table("missing_pets")
+                         .update(patch)
+                         .eq("id", pet_id)
+                         .eq("owner_id", owner_id))
+        # One conditional statement, not a lock held across the request: if
+        # owner_decide_sighting closed the report in between, nothing matches.
+        if expected_status is not None:
+            query = query.eq("status", expected_status)
+        res = query.execute()
         return res.data[0] if res.data else None
 
     def sightings_for_pet(

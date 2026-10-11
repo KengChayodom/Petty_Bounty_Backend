@@ -95,6 +95,20 @@ class SearchAlreadyClosed(OwnerDecisionRefused):
     """
 
 
+class OwnReportRefused(ValueError):
+    """The caller tried to report a sighting on a report they own.
+
+    Subclasses ValueError so the route answers 400, as it does for any other
+    sighting the request itself makes invalid.
+    """
+
+    def __init__(self, pet_id: str):
+        self.pet_id = pet_id
+        super().__init__(
+            f"You cannot report a sighting on your own report ({pet_id})"
+        )
+
+
 class SightingRepository(Protocol):
     # --- writes ---------------------------------------------------------- #
     def insert_sighting(self, payload: dict) -> dict: ...

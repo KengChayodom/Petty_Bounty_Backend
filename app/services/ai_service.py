@@ -62,7 +62,8 @@ class AIManager:
     YOLO_WEIGHTS = "yolo11s-seg.pt"
     CLIP_MODEL = "clip-ViT-B-32"  # resolved via sentence-transformers hub
 
-    # Same set as SightingService.TARGET_ANIMALS — keep in sync.
+    # Lower-case YOLO class names. Keep in sync with the species a report may
+    # carry (MissingPetCreate.species_must_be_valid: Cat, Dog, Bird).
     TARGET_ANIMALS = {"cat", "dog", "bird"}
     MASK_PADDING = 10  # px — applied around the mask bbox before CLIP encode
 

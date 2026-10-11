@@ -344,7 +344,7 @@ class TestRegisterStoresTheVector:
             image_url="https://img.example/silver.jpg",
         )
 
-        run(PetService.register_missing_pet(repo, pet))
+        run(PetService(repo).register_missing_pet(pet))
 
         assert IdentityIndex.get("pet-9", "https://img.example/silver.jpg") == [0.3, 0.4]
         assert AIManager.embed_image.await_args.kwargs["with_identity"] is True

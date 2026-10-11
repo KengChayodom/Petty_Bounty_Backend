@@ -6,13 +6,9 @@ with a missing-pet report (see app/repositories/report_repository.py).
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.dependencies import get_report_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
 from app.repositories.report_repository import FlagTargetNotFound
-from app.repositories.supabase_report_repository import SupabaseReportRepository
-from app.repositories.supabase_sighting_repository import (
-    SupabaseSightingRepository,
-)
 from app.schemas.common import StandardResponse
 from app.services.moderation_logic import FLAG_REASONS
 from app.services.report_service import ReportService
@@ -23,15 +19,6 @@ router = APIRouter(
     prefix="/reports", tags=["Reports"],
     dependencies=[Depends(get_current_user_id)],
 )
-
-
-def get_report_service(
-    supabase=Depends(get_supabase_client),
-) -> ReportService:
-    return ReportService(
-        repo=SupabaseReportRepository(supabase),
-        sighting_repo=SupabaseSightingRepository(supabase),
-    )
 
 
 class FlagSightingRequest(BaseModel):

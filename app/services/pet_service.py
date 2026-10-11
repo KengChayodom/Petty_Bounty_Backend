@@ -24,12 +24,16 @@ from app.core.config import settings
 from app.services.ai_service import AIManager
 from app.services.identity_index import IdentityIndex
 from app.services.pet_logic import (
+    OwnerEditRefused,
+    apply_owner_edit_rules,
     attach_sighting_counts,
     build_missing_pet_payload,
     count_sightings,
+    is_closed_pet_status,
     normalize_browse_species,
     normalize_browse_status,
 )
+from app.utils.postgis import create_postgis_point
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +44,24 @@ class PetService:
 
     This service coordinates between the repository and AI models
     to provide feature extraction and spatial storage for missing pets.
+
+    Its collaborators arrive through the constructor, as SightingService's do,
+    so a test hands in a fake repository or AI manager instead of patching a
+    module. The AI defaults are the process-wide singletons the app runs on.
     """
 
-    @staticmethod
+    def __init__(
+        self,
+        repo: MissingPetRepository,
+        ai_manager=AIManager,
+        identity_index=IdentityIndex,
+    ):
+        self.repo = repo
+        self.ai = ai_manager
+        self.identity_index = identity_index
+
     async def register_missing_pet(
-        repo: MissingPetRepository, pet: MissingPetCreate
+        self, pet: MissingPetCreate
     ) -> dict:
         """
         Register a new missing pet report with AI feature extraction.
@@ -65,7 +82,7 @@ class PetService:
             logger.info(f"Extracting features from pet image: {pet.image_url}")
             # with_color: when the owner sent no colour, the one measured here
             # (the same way a sighting's is) is stored instead.
-            embedding = await AIManager.embed_image(
+            embedding = await self.ai.embed_image(
                 str(pet.image_url), expected_species=pet.species,
                 with_color=True,
                 with_identity=settings.IDENTITY_RERANK_ENABLED,
@@ -82,11 +99,11 @@ class PetService:
             )
 
             logger.info(f"Registering missing pet: {pet.pet_name}")
-            created = await asyncio.to_thread(repo.insert_missing_pet, data)
+            created = await asyncio.to_thread(self.repo.insert_missing_pet, data)
             if embedding.identity_vector is not None:
                 # Ready for the very next sighting, without waiting for a
                 # match to build it on demand.
-                IdentityIndex.put(
+                self.identity_index.put(
                     created["id"], str(pet.image_url), embedding.identity_vector,
                 )
             logger.info(f"Missing pet registered successfully: {created['id']}")
@@ -99,9 +116,8 @@ class PetService:
             logger.error(f"Error registering missing pet: {e}")
             raise Exception(f"Failed to register missing pet: {str(e)}")
 
-    @staticmethod
     async def get_missing_pet_by_id(
-        repo: MissingPetRepository, pet_id: str
+        self, pet_id: str
     ) -> dict | None:
         """
         Fetch a single missing pet by ID.
@@ -121,26 +137,24 @@ class PetService:
         """
         try:
             return await asyncio.to_thread(
-                PetService._get_missing_pet_by_id_sync, repo, pet_id
+                self._get_missing_pet_by_id_sync, pet_id
             )
         except Exception as e:
             logger.error(f"Error fetching missing pet {pet_id}: {e}")
             raise
 
-    @staticmethod
     def _get_missing_pet_by_id_sync(
-        repo: MissingPetRepository, pet_id: str
+        self, pet_id: str
     ) -> dict | None:
-        pet = repo.get_missing_pet_by_id(pet_id)
+        pet = self.repo.get_missing_pet_by_id(pet_id)
         if not pet:
             # Not found is not an error and must not cost a second query.
             return None
-        links = repo.get_sighting_links_for_pets([pet_id])
+        links = self.repo.get_sighting_links_for_pets([pet_id])
         return attach_sighting_counts([pet], count_sightings(links))[0]
 
-    @staticmethod
     async def get_my_missing_pets(
-        repo: MissingPetRepository, owner_id: str
+        self, owner_id: str
     ) -> list[dict]:
         """
         MD-38 — the owner's "My Reports" list.
@@ -159,29 +173,27 @@ class PetService:
             # the first's output, so they cannot overlap anyway and splitting
             # them would only pay the hand-off twice.
             return await asyncio.to_thread(
-                PetService._get_my_missing_pets_sync, repo, owner_id
+                self._get_my_missing_pets_sync, owner_id
             )
         except Exception as e:
             logger.error("Error listing reports for owner %s: %s", owner_id, e)
             raise
 
-    @staticmethod
     def _get_my_missing_pets_sync(
-        repo: MissingPetRepository, owner_id: str
+        self, owner_id: str
     ) -> list[dict]:
-        pets = repo.get_by_owner(owner_id)
+        pets = self.repo.get_by_owner(owner_id)
         if not pets:
             # No pets means nothing to count — skip the round trip rather
             # than asking the database about an empty list of ids.
             return []
-        links = repo.get_sighting_links_for_pets(
+        links = self.repo.get_sighting_links_for_pets(
             [p["id"] for p in pets if p.get("id")]
         )
         return attach_sighting_counts(pets, count_sightings(links))
 
-    @staticmethod
     async def list_all_missing_pets(
-        repo: MissingPetRepository,
+        self,
         limit: int = 20,
         offset: int = 0,
         status: str | None = None,
@@ -211,16 +223,15 @@ class PetService:
         species = normalize_browse_species(species)
         try:
             return await asyncio.to_thread(
-                PetService._list_all_missing_pets_sync,
-                repo, status, species, limit, offset,
+                self._list_all_missing_pets_sync,
+                status, species, limit, offset,
             )
         except Exception as e:
             logger.error("Error listing all missing pets: %s", e)
             raise
 
-    @staticmethod
     def _list_all_missing_pets_sync(
-        repo: MissingPetRepository,
+        self,
         status: str | None,
         species: str | None,
         limit: int,
@@ -236,10 +247,10 @@ class PetService:
         # For Found / Resolved / None the DB query already gives the right total
         # so we use the normal efficient path (DB-level limit + offset).
         if status in ("Spotted", "Searching"):
-            raw = repo.list_all("Searching", species, limit=10_000, offset=0)
+            raw = self.repo.list_all("Searching", species, limit=10_000, offset=0)
             if not raw.items:
                 return Page([], 0)
-            links = repo.get_sighting_links_for_pets(
+            links = self.repo.get_sighting_links_for_pets(
                 [p["id"] for p in raw.items if p.get("id")]
             )
             enriched = attach_sighting_counts(raw.items, count_sightings(links))
@@ -252,18 +263,17 @@ class PetService:
             return Page(paged, total)
 
         # Normal path: Found / Resolved / None — DB total is already correct.
-        page = repo.list_all(status, species, limit, offset)
+        page = self.repo.list_all(status, species, limit, offset)
         if not page.items:
             return page
-        links = repo.get_sighting_links_for_pets(
+        links = self.repo.get_sighting_links_for_pets(
             [p["id"] for p in page.items if p.get("id")]
         )
         enriched = attach_sighting_counts(page.items, count_sightings(links))
         return Page(enriched, page.total)
 
-    @staticmethod
     async def remove_missing_pet(
-        repo: MissingPetRepository, pet_id: str, admin_id: str
+        self, pet_id: str, admin_id: str
     ) -> dict:
         """
         MD-42 — remove a report that violates the guidelines.
@@ -277,7 +287,7 @@ class PetService:
             ValueError: when no such report exists (the API layer maps it to 404).
         """
         try:
-            removed = await asyncio.to_thread(repo.remove, pet_id)
+            removed = await asyncio.to_thread(self.repo.remove, pet_id)
         except Exception as e:
             logger.error("Error removing missing pet %s: %s", pet_id, e)
             raise
@@ -289,9 +299,8 @@ class PetService:
         )
         return removed
 
-    @staticmethod
     async def get_sightings_for_pet(
-        repo: MissingPetRepository,
+        self,
         pet_id: str,
         limit: int = 50,
         offset: int = 0,
@@ -324,14 +333,14 @@ class PetService:
         """
         try:
             if owner_id is not None:
-                pet = await asyncio.to_thread(repo.get_missing_pet_by_id, pet_id)
+                pet = await asyncio.to_thread(self.repo.get_missing_pet_by_id, pet_id)
                 if not pet or pet.get("owner_id") != owner_id:
                     raise LookupError(
                         f"Missing pet {pet_id} not found or not owned by you"
                     )
             # owner never sees Dismissed reports -> include_dismissed=False
             return await asyncio.to_thread(
-                repo.sightings_for_pet,
+                self.repo.sightings_for_pet,
                 pet_id, limit, offset, include_dismissed=False,
             )
         except LookupError:
@@ -340,9 +349,8 @@ class PetService:
             logger.error("Error fetching sightings for pet %s: %s", pet_id, e)
             raise
 
-    @staticmethod
     async def get_nearby_missing_pets(
-        repo: MissingPetRepository,
+        self,
         latitude: float,
         longitude: float,
         radius_km: float = 10.0,
@@ -352,16 +360,92 @@ class PetService:
         Find missing pets within a radius using PostGIS spatial query.
         """
         try:
-            # WKT for the RPC: longitude BEFORE latitude, space-separated
-            # (no comma).
-            center_point_wkt = f"POINT({longitude} {latitude})"
+            center_point_wkt = create_postgis_point(latitude, longitude)
             radius_meters = radius_km * 1000.0
 
             return await asyncio.to_thread(
-                repo.get_nearby_missing_pets,
+                self.repo.get_nearby_missing_pets,
                 center_point_wkt, radius_meters, limit,
             )
 
         except Exception as e:
             logger.error(f"Error finding nearby missing pets: {e}")
             raise
+
+    async def update_owned_missing_pet(
+        self, pet_id: str, owner_id: str, payload: dict,
+    ) -> dict:
+        """
+        MD-39 — apply an owner's partial edit to a report they own.
+
+        Owner-scoped: the read and the write both match on `owner_id`, so a
+        report that does not exist and one owned by somebody else are the same
+        LookupError. The caller cannot use it to learn which identifiers exist.
+
+        A status or bounty change is first checked against the report's current
+        state (`apply_owner_edit_rules`), and the write only lands if that state
+        still holds. Ending the search also closes the report's sightings.
+
+        Raises:
+            LookupError: no such report, or it belongs to another account.
+            OwnerEditRefused: the edit is not allowed in the report's state, or
+                the report changed between the read and the write.
+        """
+        return await asyncio.to_thread(
+            self._update_owned_missing_pet_sync, pet_id, owner_id, payload,
+        )
+
+    def _update_owned_missing_pet_sync(
+        self, pet_id: str, owner_id: str, payload: dict,
+    ) -> dict:
+        not_found = f"Missing pet {pet_id} not found or not owned by you"
+        expected_status = None
+
+        if "status" in payload or "bounty_amount" in payload:
+            current = self.repo.get_owned_pet_state(pet_id, owner_id)
+            if not current:
+                raise LookupError(not_found)
+            caught_waiting = (
+                payload.get("status") == "Found"
+                and self.repo.has_caught_awaiting_decision(pet_id)
+            )
+            payload = apply_owner_edit_rules(
+                current, payload, caught_awaiting_decision=caught_waiting
+            )
+            expected_status = current.get("status")
+
+        updated = self.repo.update_missing_pet_owned(
+            pet_id, owner_id, payload, expected_status=expected_status,
+        )
+
+        if not updated:
+            if expected_status is not None:
+                # The report was read a moment ago, so no row now means its
+                # status changed in between (a Caught confirmation closing it).
+                # Refuse rather than act on a state that no longer holds.
+                raise OwnerEditRefused(
+                    "The report changed while you were editing it. "
+                    "Reload it and try again."
+                )
+            raise LookupError(not_found)
+
+        if is_closed_pet_status(payload.get("status")):
+            self._close_sightings_after_search_ended(pet_id)
+        return updated
+
+    def _close_sightings_after_search_ended(self, pet_id: str) -> None:
+        """Ending the search ends its sightings too: they stop being live leads
+        the moment the pet is home. A failure here is logged, not raised, since
+        the owner's report IS already updated and failing the request would
+        report a failure that did not happen."""
+        try:
+            closed = self.repo.close_sightings_for_pet(pet_id)
+            logger.info(
+                "Pet %s closed by owner — %d sighting(s) marked Closed.",
+                pet_id, closed,
+            )
+        except Exception as e:
+            logger.error(
+                "Pet %s closed but its sightings could NOT be closed: %s",
+                pet_id, e, exc_info=True,
+            )
