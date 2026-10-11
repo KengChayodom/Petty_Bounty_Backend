@@ -16,7 +16,12 @@ from app.repositories.user_repository import UserProfileNotFound, UserRepository
 from app.schemas.common import StandardResponse
 from app.utils.postgis import create_postgis_point
 
-router = APIRouter(prefix="/me", tags=["Me"])
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/me", tags=["Me"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 # Object-Storage photo formats accepted for the profile picture (MD-46).
 _ALLOWED_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")

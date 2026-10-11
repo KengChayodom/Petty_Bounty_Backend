@@ -101,6 +101,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(missing_pets.public_router)  # before .router: /nearby is not a {pet_id}
 app.include_router(missing_pets.router)
 app.include_router(upload.router)
 app.include_router(sightings.router)

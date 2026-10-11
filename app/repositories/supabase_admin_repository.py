@@ -15,6 +15,21 @@ class SupabaseAdminRepository:
                        .execute())
         return res.data[0] if res.data else None
 
+    def get_sighting(self, sighting_id: str) -> dict | None:
+        res = (self._db.table("sightings")
+                       .select("*")
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def has_penalty_for_sighting(self, sighting_id: str) -> bool:
+        res = (self._db.table("score_penalties")
+                       .select("id")
+                       .eq("sighting_id", sighting_id)
+                       .limit(1)
+                       .execute())
+        return bool(res.data)
+
     def get_sighting_timeline(
         self, pet_id: str, limit: int, offset: int
     ) -> list[dict]:

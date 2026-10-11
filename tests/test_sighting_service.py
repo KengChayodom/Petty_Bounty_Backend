@@ -278,7 +278,11 @@ class TestProcessAndSaveCacheHit:
         result = run(svc.process_and_save_sighting(sighting))
 
         assert "feature_vector" not in result["sighting"]   # not leaked to client
-        assert result["matches"] == [{"id": "pet-1", "similarity": 0.88}]
+        # `match_stars` is the backend's rating of the card (0.88 sits between
+        # the 0.7 and 0.9 CLIP thresholds, so 2); the rest is the row unchanged.
+        assert result["matches"] == [
+            {"id": "pet-1", "similarity": 0.88, "match_stars": 2}
+        ]
 
     # The following exercise the shared save-tail (persist + payload assembly)
     # via the cache-hit path; the behaviour is branch-agnostic.
@@ -581,7 +585,9 @@ class TestProcessAndSaveErrorFrames:
 
         result = run(svc.process_and_save_sighting(sighting))
 
-        assert result["matches"] == [{"id": "pet-1", "similarity": 0.88}]  # unaffected
+        assert result["matches"] == [
+            {"id": "pet-1", "similarity": 0.88, "match_stars": 2}
+        ]                                                                  # unaffected
         assert result["sighting"]["id"] == "s1"                            # still saved
         repo.upsert_sighting_matches.assert_called_once()                  # it was attempted
 

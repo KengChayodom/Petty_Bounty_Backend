@@ -23,7 +23,18 @@ from app.core.database import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/missing-pets", tags=["Missing Pets"],
+    dependencies=[Depends(get_current_user_id)],
+)
+
+# The map's route. Open on purpose: it returns no contact details (only the pet
+# and its `owner_id`), and the map loads before anything else. It lives on its
+# own router so that `router` above can require a login for everything else.
+# main.py includes this one FIRST, so `/nearby` is not read as a `{pet_id}`.
+public_router = APIRouter(prefix="/missing-pets", tags=["Missing Pets"])
 
 # Statuses an owner can PATCH that mean "the search is over". `Resolved` is not
 # here because the schema does not let an owner write it: it means "the bounty
@@ -73,7 +84,7 @@ async def create_missing_pet(
         raise HTTPException(status_code=500, detail=f"Failed to register pet: {str(e)}")
     
 
-@router.get("/nearby", response_model=StandardResponse)
+@public_router.get("/nearby", response_model=StandardResponse)
 async def get_nearby_missing_pets(
     latitude: float = Query(..., ge=-90.0, le=90.0, description="Center point latitude"),
     longitude: float = Query(..., ge=-180.0, le=180.0, description="Center point longitude"),
@@ -240,8 +251,17 @@ async def decide_sighting_match(
 @router.get("/{pet_id}", response_model=StandardResponse)
 async def get_missing_pet(
     pet_id: str,
-    supabase = Depends(get_supabase_client)
+    supabase = Depends(get_supabase_client),
+    user_id: str = Depends(get_current_user_id),
 ):
+    """One missing-pet report, for a signed-in caller.
+
+    The detail RPC joins in the owner's username, telephone number and photo, so
+    this needs a token: without one, anyone could list pet ids from `/nearby`
+    and read a telephone number for each without an account. The app already
+    sends every signed-out user to the login screen, so a request without a
+    token is not one it makes.
+    """
     try:
         pet = await PetService.get_missing_pet_by_id(
             SupabaseMissingPetRepository(supabase), pet_id

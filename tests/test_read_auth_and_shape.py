@@ -105,7 +105,10 @@ class TestTheMatchesResponse:
                 raise raises
             return matches
 
-        svc.get_matches = _get
+        # The route asks through the viewer-scoped method (who may read the
+        # sighting is covered in test_sighting_read_scope.py); this class is
+        # about the shape of the response and the mapping of failures.
+        svc.get_matches_for_viewer = _get
         app.dependency_overrides[sightings_api.get_sighting_service] = (
             lambda: svc
         )

@@ -25,7 +25,26 @@ class SightingNotFound(ValueError):
 class AdminRepository(Protocol):
     def update_sighting_verification(
         self, sighting_id: str, verification_status: str
-    ) -> dict | None: ...
+    ) -> dict | None:
+        """Set the status, returning the row ONLY if this call changed it.
+
+        None means nothing was written, and that covers two different things:
+        the sighting does not exist, or it already held that status. The write
+        is guarded in the database so two administrators acting at once cannot
+        both count as the one who changed it. Callers that must tell the two
+        apart follow up with `get_sighting`.
+        """
+        ...
+
+    def get_sighting(self, sighting_id: str) -> dict | None:
+        """The sighting row, or None when there is no such sighting."""
+        ...
+
+    def has_penalty_for_sighting(self, sighting_id: str) -> bool:
+        """Whether a score deduction has already been recorded against this
+        sighting, by any flag."""
+        ...
+
     def get_sighting_timeline(
         self, pet_id: str, limit: int, offset: int
     ) -> list[dict]: ...

@@ -111,7 +111,18 @@ class AdminService:
                 sighting_id, verification_status
             )
             if not row:
-                raise SightingNotFound(sighting_id)
+                # No row came back from the update, which means either that
+                # there is no such sighting or that it already holds this
+                # status. Only the second is a success (nothing to change), so
+                # the two are told apart by reading the row.
+                row = self.repo.get_sighting(sighting_id)
+                if not row:
+                    raise SightingNotFound(sighting_id)
+                logger.info(
+                    "Sighting %s already had verification_status=%s — no write",
+                    sighting_id, verification_status,
+                )
+                return strip_feature_vector(row)
             row = strip_feature_vector(row)
             logger.warning(
                 "Admin set sighting %s verification_status=%s",
@@ -310,15 +321,17 @@ class AdminService:
                 sighting = self.repo.update_sighting_verification(
                     sighting_id, "Dismissed"
                 )
+                sighting_dismissed = True
                 if not sighting:
-                    sighting_dismissed = True
-                    penalty = None
-                    logger.warning(
-                        "Flag %s upheld but sighting %s was already dismissed (or missing) — "
-                        "skipping double penalty deduction", report_id, sighting_id
+                    # This call changed nothing, so the sighting is gone or was
+                    # already Dismissed. Already Dismissed is not the same as
+                    # already PENALISED: an earlier attempt at this very review
+                    # may have withdrawn the sighting and then failed before the
+                    # deduction landed, leaving the flag Pending for a retry.
+                    sighting = self._sighting_still_owing_a_penalty(
+                        sighting_id, report_id,
                     )
-                else:
-                    sighting_dismissed = True
+                if sighting:
                     penalty = self._apply_penalty(
                         flag, sighting, report_id, admin_id, penalty_points,
                     )
@@ -343,6 +356,41 @@ class AdminService:
             "sighting_dismissed": sighting_dismissed,
             "penalty": penalty,
         }
+
+    def _sighting_still_owing_a_penalty(
+        self, sighting_id: str, report_id: str,
+    ) -> dict | None:
+        """The sighting row when its hunter still has to be charged, else None.
+
+        Called when withdrawing the sighting changed nothing. One sighting costs
+        its hunter once, however many flags are upheld against it, so a
+        deduction already on record for it means there is nothing left to do. A
+        sighting that has vanished leaves nobody to charge. Otherwise the
+        withdrawal happened on an earlier attempt that never reached the
+        deduction, and this retry is what finishes it.
+
+        `apply_score_penalty` is idempotent on `report_id`, so finishing it
+        cannot charge twice for this flag. It cannot see a second flag on the
+        same sighting, which is what the check below is for.
+        """
+        current = self.repo.get_sighting(sighting_id)
+        if not current:
+            logger.warning(
+                "Flag %s upheld but sighting %s is gone — nobody to penalise",
+                report_id, sighting_id,
+            )
+            return None
+        if self.repo.has_penalty_for_sighting(sighting_id):
+            logger.warning(
+                "Flag %s upheld but sighting %s was already penalised — "
+                "skipping double penalty deduction", report_id, sighting_id,
+            )
+            return None
+        logger.warning(
+            "Flag %s: sighting %s is already withdrawn but was never charged — "
+            "completing the deduction", report_id, sighting_id,
+        )
+        return current
 
     def _apply_penalty(
         self,
