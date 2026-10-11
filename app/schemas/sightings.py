@@ -15,13 +15,14 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.types import ImageUrl
 from app.services.sighting_logic import ACTION_SPOTTED, normalize_action_type
 
 
 class AnalyzeRequest(BaseModel):
     """Request schema for POST /sightings/analyze."""
 
-    image_url: str = Field(
+    image_url: ImageUrl = Field(
         ...,
         description="Public URL of the image to analyze",
     )
@@ -46,7 +47,7 @@ class SightingCreate(BaseModel):
         ...,
         description="ID of the bounty hunter (currently overridden server-side by TEST_USER_ID).",
     )
-    image_url: str = Field(
+    image_url: ImageUrl = Field(
         ...,
         description="Public URL of the sighting photo. Must match the URL "
                     "sent to /sightings/analyze for the cache to hit.",
@@ -130,7 +131,7 @@ class TargetedSightingCreate(BaseModel):
         ...,
         description="ID of the bounty hunter (overridden server-side from the JWT).",
     )
-    image_url: str = Field(
+    image_url: ImageUrl = Field(
         ...,
         description="Public URL of the sighting photo.",
     )

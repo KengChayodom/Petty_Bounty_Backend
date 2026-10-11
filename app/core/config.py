@@ -4,6 +4,8 @@ Core configuration settings for the Petty Bounty API.
 Loads environment variables and provides application-wide constants.
 """
 import os
+from urllib.parse import urlsplit
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -87,6 +89,22 @@ class Settings:
     # measures cream) and must not hide a cat that looks the same.
     IDENTITY_COLOR_WEIGHT: float = 0.1
 
+    # Star rating of a match card (1 to 3), decided here and not in the app so it
+    # comes from the same score that ordered the cards. See
+    # sighting_logic.stars_for_score.
+    #
+    # Identity ranking: the score is identity similarity + a small colour term.
+    # On the 23 labelled photos the true cat scored 0.85 to 0.90, other cats of
+    # the same colour family up to 0.82 (90th percentile 0.75), cats of another
+    # colour up to 0.62. There are only four same-cat pairs behind these, so
+    # treat them as a starting point and re-run eval/ when more pairs exist.
+    IDENTITY_STAR_THREE: float = 0.80
+    IDENTITY_STAR_TWO: float = 0.60
+    # CLIP-only ranking (identity re-rank off or failed): the rule the app used
+    # before the backend took over, applied to the raw CLIP cosine.
+    CLIP_STAR_THREE: float = 0.90
+    CLIP_STAR_TWO: float = 0.70
+
     # API Configuration
     API_PREFIX: str = "/api"
     PROJECT_NAME: str = "Petty Bounty API"
@@ -116,6 +134,27 @@ class Settings:
     ENABLE_DEV_AUTH: bool = os.getenv(
         "ENABLE_DEV_AUTH", "false"
     ).lower() in ("1", "true", "yes")
+
+    # Hosts the server may download a photo from (see app/utils/image_url.py).
+    # The project's own Supabase host is always allowed. Add a custom storage or
+    # CDN domain with IMAGE_ALLOWED_HOSTS="cdn.example.com,other.example.com".
+    #
+    # A plain class attribute and NOT an environment variable, deliberately:
+    # the switch exists so the unit suite, which uses made-up hosts, can turn the
+    # check off. A deploy must not be able to turn it off with a setting.
+    IMAGE_URL_ALLOWLIST_ENFORCED: bool = True
+
+    def image_allowed_hosts(self) -> set[str]:
+        """The project's storage host plus any extras from the environment."""
+        hosts = {
+            h.strip().lower()
+            for h in os.getenv("IMAGE_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        }
+        project_host = urlsplit(self.SUPABASE_URL).hostname
+        if project_host:
+            hosts.add(project_host.lower())
+        return hosts
 
     def __init__(self):
         """Validate required settings on initialization."""

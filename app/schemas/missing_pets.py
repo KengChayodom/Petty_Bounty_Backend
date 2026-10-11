@@ -13,6 +13,8 @@ from datetime import datetime
 import re
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.types import ImageUrl
+
 
 class MissingPetCreate(BaseModel):
     """
@@ -62,7 +64,7 @@ class MissingPetCreate(BaseModel):
         ...,
         description="Timestamp when the pet was last seen"
     )
-    image_url: str = Field(
+    image_url: ImageUrl = Field(
         ...,
         description="Public URL of the pet's photo"
     )

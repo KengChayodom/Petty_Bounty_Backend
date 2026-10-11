@@ -192,6 +192,39 @@ def _combined_score(
     return clip_weight * clip + color_weight * sim
 
 
+def _rank_by_color(
+    matches: list[dict],
+    sighting_hex: str | None,
+    *,
+    clip_weight: float,
+    color_weight: float,
+    exclude_distance: float,
+    lightness_weight: float,
+    neutral_chroma: float,
+    neutral_lightness_exclude: float,
+) -> list[tuple[float, dict]]:
+    """(combined score, match) for every candidate that survives the colour
+    exclusion, best first. The one place the CLIP + colour score is computed."""
+    scored: list[tuple[float, dict]] = []
+    for m in matches:
+        score = _combined_score(
+            m, sighting_hex,
+            clip_weight=clip_weight, color_weight=color_weight,
+            neutral_chroma=neutral_chroma,
+            neutral_lightness_exclude=neutral_lightness_exclude,
+            exclude_distance=exclude_distance, lightness_weight=lightness_weight,
+        )
+        if score is None:
+            continue  # excluded — clearly-different colour
+        scored.append((score, m))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return scored
+
+
+def _trim(items: list, limit: int) -> list:
+    return items[:limit] if limit and limit > 0 else items
+
+
 def rerank_by_color(
     matches: list[dict],
     sighting_hex: str | None,
@@ -221,27 +254,123 @@ def rerank_by_color(
     raw CLIP cosine; the colour blend only decides order and membership).
     Sorted by combined score desc. `limit` <= 0 means 'no trim'.
     """
-    scored: list[tuple[float, dict]] = []
-    for m in matches:
-        score = _combined_score(
-            m, sighting_hex,
-            clip_weight=clip_weight, color_weight=color_weight,
-            neutral_chroma=neutral_chroma,
-            neutral_lightness_exclude=neutral_lightness_exclude,
-            exclude_distance=exclude_distance, lightness_weight=lightness_weight,
-        )
-        if score is None:
-            continue  # excluded — clearly-different colour
-        scored.append((score, m))
+    scored = _rank_by_color(
+        matches, sighting_hex,
+        clip_weight=clip_weight, color_weight=color_weight,
+        exclude_distance=exclude_distance, lightness_weight=lightness_weight,
+        neutral_chroma=neutral_chroma,
+        neutral_lightness_exclude=neutral_lightness_exclude,
+    )
+    return _trim([m for _, m in scored], limit)
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    ranked = [m for _, m in scored]
-    return ranked[:limit] if limit and limit > 0 else ranked
+
+# --- star rating -------------------------------------------------------- #
+
+def stars_for_score(score: float | None, *, three: float, two: float) -> int:
+    """1 to 3 stars for a score: `three` and above is 3, `two` and above is 2.
+
+    No score is the lowest rating: a card the ranking could not judge should not
+    look like a confident match.
+    """
+    if score is None:
+        return 1
+    if score >= three:
+        return 3
+    if score >= two:
+        return 2
+    return 1
+
+
+def _rate(pairs: list[tuple[float | None, dict]], *, three: float, two: float) -> list[dict]:
+    """Copies of the matches, in the order given, each with `match_stars`.
+
+    A card never shows more stars than the one above it, so the rating can never
+    contradict the order the cards are drawn in, whatever score each rating came
+    from. The originals are not touched: `similarity` stays the CLIP cosine.
+    """
+    rated, ceiling = [], 3
+    for score, m in pairs:
+        stars = min(stars_for_score(score, three=three, two=two), ceiling)
+        ceiling = stars
+        rated.append({**m, "match_stars": stars})
+    return rated
+
+
+def rerank_by_color_rated(
+    matches: list[dict],
+    sighting_hex: str | None,
+    *,
+    clip_weight: float,
+    color_weight: float,
+    exclude_distance: float,
+    lightness_weight: float,
+    limit: int,
+    three_star: float,
+    two_star: float,
+    neutral_chroma: float = 10.0,
+    neutral_lightness_exclude: float = 45.0,
+) -> list[dict]:
+    """`rerank_by_color`, with each returned match a copy carrying `match_stars`.
+
+    The stars come from the raw CLIP `similarity`, as the app drew them before,
+    then capped so they never rise down the list (the order is by a blend with
+    colour, which can disagree with raw CLIP).
+    """
+    scored = _rank_by_color(
+        matches, sighting_hex,
+        clip_weight=clip_weight, color_weight=color_weight,
+        exclude_distance=exclude_distance, lightness_weight=lightness_weight,
+        neutral_chroma=neutral_chroma,
+        neutral_lightness_exclude=neutral_lightness_exclude,
+    )
+    pairs = [(m.get("similarity") or 0.0, m) for _, m in scored]
+    return _trim(_rate(pairs, three=three_star, two=two_star), limit)
 
 
 # Colour term for a candidate whose colour cannot be judged (missing on either
 # side): halfway, so an unknown colour neither lifts nor sinks it.
 _UNKNOWN_COLOUR = 0.5
+
+
+def _rank_by_identity(
+    matches: list[dict],
+    sighting_hex: str | None,
+    identity_sims: dict[str, float],
+    *,
+    color_weight: float,
+    exclude_distance: float,
+    lightness_weight: float,
+    neutral_chroma: float,
+    neutral_lightness_exclude: float,
+) -> tuple[list[tuple[float, dict]], list[dict]]:
+    """((score, match) best first, candidates with no identity score).
+
+    score = identity_sim + color_weight * colour_term. The one place that score
+    is computed, so the order and the stars cannot be built from two formulas.
+    """
+    scored: list[tuple[float, dict]] = []
+    unscored: list[dict] = []
+    for m in matches:
+        ident = identity_sims.get(str(m.get("id")))
+        if ident is None:
+            unscored.append(m)
+            continue
+        sim = color_similarity(
+            sighting_hex, m.get("primary_color_hex"),
+            neutral_chroma=neutral_chroma,
+            neutral_lightness_exclude=neutral_lightness_exclude,
+            chromatic_exclude=exclude_distance,
+            lightness_weight=lightness_weight,
+        )
+        if sim is None:
+            colour = _UNKNOWN_COLOUR
+        elif sim == EXCLUDE:
+            colour = 0.0
+        else:
+            colour = sim
+        scored.append((ident + color_weight * colour, m))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return scored, unscored
 
 
 def rerank_by_identity(
@@ -266,33 +395,42 @@ def rerank_by_identity(
     follow the scored ones in their incoming (CLIP) order.
 
     The match dicts are returned unmutated, so `similarity` stays the CLIP
-    cosine the app turns into stars. `limit` <= 0 means 'no trim'.
+    cosine. `limit` <= 0 means 'no trim'.
     """
-    scored: list[tuple[float, dict]] = []
-    unscored: list[dict] = []
-    for m in matches:
-        ident = identity_sims.get(str(m.get("id")))
-        if ident is None:
-            unscored.append(m)
-            continue
-        sim = color_similarity(
-            sighting_hex, m.get("primary_color_hex"),
-            neutral_chroma=neutral_chroma,
-            neutral_lightness_exclude=neutral_lightness_exclude,
-            chromatic_exclude=exclude_distance,
-            lightness_weight=lightness_weight,
-        )
-        if sim is None:
-            colour = _UNKNOWN_COLOUR
-        elif sim == EXCLUDE:
-            colour = 0.0
-        else:
-            colour = sim
-        scored.append((ident + color_weight * colour, m))
+    scored, unscored = _rank_by_identity(
+        matches, sighting_hex, identity_sims,
+        color_weight=color_weight, exclude_distance=exclude_distance,
+        lightness_weight=lightness_weight, neutral_chroma=neutral_chroma,
+        neutral_lightness_exclude=neutral_lightness_exclude,
+    )
+    return _trim([m for _, m in scored] + unscored, limit)
 
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    ranked = [m for _, m in scored] + unscored
-    return ranked[:limit] if limit and limit > 0 else ranked
+
+def rerank_by_identity_rated(
+    matches: list[dict],
+    sighting_hex: str | None,
+    identity_sims: dict[str, float],
+    *,
+    color_weight: float,
+    exclude_distance: float,
+    lightness_weight: float,
+    neutral_chroma: float,
+    neutral_lightness_exclude: float,
+    limit: int,
+    three_star: float,
+    two_star: float,
+) -> list[dict]:
+    """`rerank_by_identity`, with each returned match a copy carrying
+    `match_stars` rated from the same score that ordered it. A candidate with no
+    identity score follows with the lowest rating."""
+    scored, unscored = _rank_by_identity(
+        matches, sighting_hex, identity_sims,
+        color_weight=color_weight, exclude_distance=exclude_distance,
+        lightness_weight=lightness_weight, neutral_chroma=neutral_chroma,
+        neutral_lightness_exclude=neutral_lightness_exclude,
+    )
+    pairs = scored + [(None, m) for m in unscored]
+    return _trim(_rate(pairs, three=three_star, two=two_star), limit)
 
 
 # The owner's verdict on one AI match (`sighting_matches.owner_status`, enum

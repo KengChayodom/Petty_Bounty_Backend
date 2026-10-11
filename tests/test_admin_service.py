@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.repositories.admin_repository import AdminRepository
+from app.repositories.admin_repository import AdminRepository, SightingNotFound
 from app.repositories.pagination import Page
 from app.repositories.report_repository import (
     ReportAlreadyModerated,
@@ -58,8 +58,29 @@ class TestVerifySighting:
     def test_not_found_raises(self):
         repo = _repo()
         repo.update_sighting_verification.return_value = None
-        with pytest.raises(ValueError):
+        # None from the update means "nothing changed"; the follow-up read is
+        # what says the sighting really is not there.
+        repo.get_sighting.return_value = None
+        with pytest.raises(SightingNotFound):
             run(AdminService(repo).verify_sighting("s1", "Verified"))
+
+    def test_repeating_the_current_status_is_not_reported_as_missing(self):
+        """Dismissing a sighting that is already Dismissed changes nothing, and
+        that must not read as 'the sighting does not exist'. Two administrators
+        acting at once, or a double click, would otherwise see a 404 for a row
+        that is right there."""
+        repo = _repo()
+        repo.update_sighting_verification.return_value = None
+        repo.get_sighting.return_value = {
+            "id": "s1", "verification_status": "Dismissed",
+            "feature_vector": [0.1],
+        }
+
+        out = run(AdminService(repo).verify_sighting("s1", "Dismissed"))
+
+        assert out["id"] == "s1"
+        assert out["verification_status"] == "Dismissed"
+        assert "feature_vector" not in out
 
     def test_success_strips_vector_and_returns_row(self):
         repo = _repo()
@@ -179,6 +200,11 @@ def _moderation_service(flag=None, sighting=None):
     and its sighting update returning `sighting`."""
     repo = _repo()
     repo.update_sighting_verification.return_value = sighting
+    # Safe defaults for the two follow-up reads. A MagicMock(spec=...) answers an
+    # unconfigured method with a truthy MagicMock, which would read as "the
+    # sighting exists and is already penalised" in every test that does not care.
+    repo.get_sighting.return_value = None
+    repo.has_penalty_for_sighting.return_value = False
     repo.apply_score_penalty.return_value = {
         "already_applied": False, "points_applied": 10, "total_score_after": 0,
     }
@@ -403,6 +429,66 @@ class TestReviewReport:
             run(service.review_report("r1", "Reviewed_Penalty", "a1"))
 
         report_repo.update_report.assert_not_called()
+
+    def test_retry_after_a_failed_deduction_still_charges_the_hunter(self):
+        """The first attempt withdrew the sighting and then failed before the
+        deduction landed, so the flag stayed Pending. On the retry the sighting
+        is already Dismissed and the update reports no change. That must not be
+        read as 'somebody else already handled this': nothing was deducted, so
+        the hunter still owes the penalty."""
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting=None,
+        )
+        repo.get_sighting.return_value = {
+            "id": "s1", "hunter_id": "h9", "verification_status": "Dismissed",
+        }
+        repo.has_penalty_for_sighting.return_value = False
+
+        out = run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        assert out["penalty"]["points_applied"] == 10
+        assert repo.apply_score_penalty.call_args.kwargs["user_id"] == "h9"
+        report_repo.update_report.assert_called_once_with(
+            "r1", {"status": "Reviewed_Penalty"}
+        )
+
+    def test_a_second_flag_on_an_already_penalised_sighting_charges_nobody(self):
+        """One sighting costs its hunter once, however many flags are upheld
+        against it. This is the case the earlier 'already dismissed' shortcut
+        was written for and it must keep holding."""
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting=None,
+        )
+        repo.get_sighting.return_value = {
+            "id": "s1", "hunter_id": "h9", "verification_status": "Dismissed",
+        }
+        repo.has_penalty_for_sighting.return_value = True
+
+        out = run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        repo.apply_score_penalty.assert_not_called()
+        assert out["penalty"] is None
+        assert out["sighting_dismissed"] is True
+        report_repo.update_report.assert_called_once_with(
+            "r1", {"status": "Reviewed_Penalty"}
+        )
+
+    def test_an_upheld_flag_on_a_vanished_sighting_charges_nobody(self):
+        service, repo, report_repo = _moderation_service(
+            flag=dict(_PENDING_FLAG),
+            sighting=None,
+        )
+        repo.get_sighting.return_value = None
+
+        out = run(service.review_report("r1", "Reviewed_Penalty", "a1"))
+
+        repo.apply_score_penalty.assert_not_called()
+        assert out["penalty"] is None
+        report_repo.update_report.assert_called_once_with(
+            "r1", {"status": "Reviewed_Penalty"}
+        )
 
     def test_dismissing_never_charges_anyone(self):
         service, repo, _ = _moderation_service(

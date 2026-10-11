@@ -17,7 +17,12 @@ from app.services.ai_service import AIManager
 from app.services.notification_service import notify_pet_owners
 from app.services.sighting_service import SightingService
 
-router = APIRouter(prefix="/sightings", tags=["Sightings"])
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/sightings", tags=["Sightings"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 
 def get_sighting_service(
@@ -225,9 +230,10 @@ async def get_ranking(
 ):
     """Re-query matches for a previously stored sighting.
 
-    Authenticated since 2026-09-09. It was the one sighting read reachable
-    anonymously, and a match names a missing pet and the strength of the
-    resemblance, which is not public information.
+    Authenticated since 2026-09-09 and scoped to the sighting's own hunter or
+    the owner of a pet it is linked to (see
+    `SightingService.get_matches_for_viewer`). A match names a missing pet and
+    the strength of the resemblance, which is not public information.
 
     Answers 400, not 404, for a malformed request. `get_matches` raises
     ValueError for a sighting that cannot be matched — one carrying no feature
@@ -235,12 +241,17 @@ async def get_ranking(
     reporting it as 404 told the caller the sighting did not exist when it did.
     """
     try:
-        matches = await service.get_matches(sighting_id, limit, threshold)
+        matches = await service.get_matches_for_viewer(
+            sighting_id, user_id, limit, threshold,
+        )
         return StandardResponse(
             status="success",
             message=f"Retrieved {len(matches)} matches.",
             data={"matches": matches},
         )
+    except LookupError as le:
+        # No such sighting, or the caller may not read it. One answer for both.
+        raise HTTPException(status_code=404, detail=str(le))
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
@@ -255,23 +266,22 @@ async def get_sighting(
 ):
     """Fetch a single sighting record (feature_vector stripped).
 
-    Authenticated since 2026-09-09. The row carries where an animal was seen and
-    who reported it, which the owner timeline endpoint has always refused to
-    serve anonymously for that reason; this one had been left open.
+    Authenticated since 2026-09-09 and scoped to the sighting's own hunter or
+    the owner of a pet it is linked to. The row carries where an animal was seen
+    and who reported it, which the owner timeline endpoint has always refused to
+    serve to a stranger for that reason. A sighting the caller may not read is a
+    404, the same as one that does not exist.
     """
     try:
-        sighting = await service.get_sighting_by_id(sighting_id)
-        if not sighting:
-            raise HTTPException(
-                status_code=404, detail=f"Sighting {sighting_id} not found"
-            )
+        sighting = await service.get_sighting_for_viewer(sighting_id, user_id)
         return StandardResponse(
             status="success",
             message="Sighting retrieved successfully.",
             data=sighting,
         )
-    except HTTPException:
-        raise
+    except LookupError as le:
+        # No such sighting, or the caller may not read it. One answer for both.
+        raise HTTPException(status_code=404, detail=str(le))
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to retrieve sighting: {e}"
