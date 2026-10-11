@@ -5,19 +5,15 @@ The Flutter client registers its FCM token here after login and again on
 token refresh. Upsert is keyed by the UNIQUE fcm_token, so a token that moves
 to a different account reassigns cleanly instead of duplicating.
 """
-from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.dependencies import get_device_service
 from app.core.auth import get_current_user_id
-from app.core.database import get_supabase_client
-from app.repositories.device_token_repository import DeviceTokenRepository
-from app.repositories.supabase_device_token_repository import (
-    SupabaseDeviceTokenRepository,
-)
 from app.schemas.common import StandardResponse
+from app.services.device_service import DeviceService
 
 # Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
 # The routes still ask for the id where they use it, which FastAPI resolves once per request.
@@ -25,12 +21,6 @@ router = APIRouter(
     prefix="/devices", tags=["Devices"],
     dependencies=[Depends(get_current_user_id)],
 )
-
-
-def get_device_token_repository(
-    supabase=Depends(get_supabase_client),
-) -> DeviceTokenRepository:
-    return SupabaseDeviceTokenRepository(supabase)
 
 
 class DeviceRegisterRequest(BaseModel):
@@ -45,20 +35,14 @@ class DeviceUnregisterRequest(BaseModel):
 @router.post("/register", response_model=StandardResponse)
 async def register_device(
     payload: DeviceRegisterRequest,
-    repo: DeviceTokenRepository = Depends(get_device_token_repository),
+    service: DeviceService = Depends(get_device_service),
     user_id: str = Depends(get_current_user_id),
 ):
     """Upsert the caller's FCM token (keyed on fcm_token)."""
-    row = {
-        "user_id": user_id,
-        "fcm_token": payload.fcm_token,
-        "platform": payload.platform,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
     try:
-        created = repo.upsert_device_token(row)
-        if not created:
-            raise ValueError("Token upsert returned no row")
+        created = await service.register(
+            user_id, payload.fcm_token, payload.platform,
+        )
         return StandardResponse(
             status="success",
             message="Device token registered.",
@@ -73,7 +57,7 @@ async def register_device(
 @router.post("/unregister", response_model=StandardResponse)
 async def unregister_device(
     payload: DeviceUnregisterRequest,
-    repo: DeviceTokenRepository = Depends(get_device_token_repository),
+    service: DeviceService = Depends(get_device_service),
     user_id: str = Depends(get_current_user_id),
 ):
     """Drop the caller's FCM token on logout (SRS-20).
@@ -84,7 +68,7 @@ async def unregister_device(
     row is success, not a 404.
     """
     try:
-        repo.delete_device_token(user_id, payload.fcm_token)
+        await service.unregister(user_id, payload.fcm_token)
         return StandardResponse(
             status="success",
             message="Device token unregistered.",

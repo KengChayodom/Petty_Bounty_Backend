@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import dependencies
 from app.api import missing_pets as pets_api
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
@@ -31,7 +32,8 @@ def _client(monkeypatch, caller, pet=PET):
     repo = MagicMock()
     repo.get_missing_pet_by_id.return_value = None if pet is None else dict(pet)
     repo.get_sighting_links_for_pets.return_value = []
-    monkeypatch.setattr(pets_api, "SupabaseMissingPetRepository", lambda db: repo)
+    monkeypatch.setattr(
+        dependencies, "SupabaseMissingPetRepository", lambda db: repo)
     app = FastAPI()
     app.include_router(pets_api.router)
     app.dependency_overrides[get_supabase_client] = lambda: MagicMock()

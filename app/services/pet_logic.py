@@ -73,6 +73,11 @@ def normalize_browse_species(species):
 # resolve RPC; 'Found' is what the owner's End Search button writes.
 _CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
 
+
+def is_closed_pet_status(pet_status: str | None) -> bool:
+    """True when `pet_status` means the search is over (case-insensitive)."""
+    return (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES
+
 # SRS-86: a post stops reaching new hunters once it passes its `expires_at`.
 # The read paths (`match_missing_pets`, `get_nearby_missing_pets`) filter
 # `mp.expires_at > NOW()`, and the badge below reads the same column — one
@@ -196,7 +201,7 @@ def derive_post_status(
     `expires_at` is optional: a caller that does not have it gets the pre-expiry
     behaviour rather than a wrong answer.
     """
-    if (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES:
+    if is_closed_pet_status(pet_status):
         return POST_STATUS_RESCUED
     if sighting_count > 0:
         return POST_STATUS_SPOTTED
@@ -263,3 +268,51 @@ def attach_sighting_counts(
         })
     return enriched
 
+
+
+class OwnerEditRefused(ValueError):
+    """An owner's edit that the report's state does not allow. The route
+    answers 409: the request is well formed, the report is just past the point
+    where that change is permitted."""
+
+
+def apply_owner_edit_rules(
+    current: dict, payload: dict, *, caught_awaiting_decision: bool
+) -> dict:
+    """Check an owner's PATCH against the report's state, and translate a hand
+    close.
+
+    - The bounty may be raised, never lowered, and is frozen once the report is
+      "Found" or "Resolved".
+    - The status cannot change once the report is "Found" or "Resolved": from
+      "Found" on, only the payment process moves it.
+    - Closing by hand (status "Found") is refused while a "Caught" sighting
+      awaits the owner's decision. Otherwise there is nobody to pay, so the
+      report closes straight to "Resolved".
+
+    Returns the payload to write, which may differ from the one given.
+    """
+    out = dict(payload)
+    closed = is_closed_pet_status(current.get("status"))
+
+    if "bounty_amount" in out:
+        if closed:
+            raise OwnerEditRefused(
+                "The bounty cannot be changed once the pet has been found"
+            )
+        if float(out["bounty_amount"]) < float(current.get("bounty_amount") or 0):
+            raise OwnerEditRefused("The bounty can be raised but not lowered")
+
+    if "status" in out:
+        if closed:
+            raise OwnerEditRefused(
+                "The report's status cannot be changed once the pet has been found"
+            )
+        if out["status"] == "Found":
+            if caught_awaiting_decision:
+                raise OwnerEditRefused(
+                    "Decide the sighting that says the pet was caught before "
+                    "closing the report"
+                )
+            out["status"] = "Resolved"
+    return out

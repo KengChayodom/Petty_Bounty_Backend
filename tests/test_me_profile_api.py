@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.api import me as me_api
 from app.core.auth import get_current_user_id
+from app.api.dependencies import get_user_repository
 from app.repositories.user_repository import UserProfileNotFound, UserRepository
 
 
@@ -30,7 +31,7 @@ def _client(repo, user_id="u1"):
     app = FastAPI()
     app.include_router(me_api.router)
     app.dependency_overrides[get_current_user_id] = lambda: user_id
-    app.dependency_overrides[me_api.get_user_repository] = lambda: repo
+    app.dependency_overrides[get_user_repository] = lambda: repo
     return TestClient(app)
 
 

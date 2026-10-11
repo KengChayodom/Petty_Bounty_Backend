@@ -30,6 +30,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api import dependencies
 from app.api import missing_pets as pets_api
 from app.core.auth import get_current_user_id
 from app.core.database import get_supabase_client
@@ -45,7 +46,15 @@ def repo(monkeypatch):
     r = MagicMock(spec=MissingPetRepository)
     r.update_missing_pet_owned.return_value = {"id": "p1"}
     r.close_sightings_for_pet.return_value = 2
-    monkeypatch.setattr(pets_api, "SupabaseMissingPetRepository", lambda db: r)
+    # Feature 6 reads the report's state before a status or bounty edit. The
+    # default is an open search with no bounty and no Caught card waiting, so
+    # every frame below that predates Feature 6 keeps exercising the write.
+    r.get_owned_pet_state.return_value = {
+        "id": "p1", "status": "Searching", "bounty_amount": 0,
+    }
+    r.has_caught_awaiting_decision.return_value = False
+    monkeypatch.setattr(
+        dependencies, "SupabaseMissingPetRepository", lambda db: r)
     return r
 
 
@@ -128,6 +137,7 @@ class TestPatchContent:
                 # normalised to upper case by the schema validator
                 "primary_color_hex": "#FFFFFF",
             },
+            expected_status="Searching",
         )
 
     def test_unsent_fields_are_absent_from_the_patch(self, client, repo):
@@ -259,7 +269,9 @@ class TestStatusAndClosure:
         r = client.patch("/missing-pets/p1", json={"status": "Found"})
 
         assert r.status_code == 200
-        assert _patch_sent(repo) == {"status": "Found"}
+        # Feature 6 (SRS-103): a hand close has nobody to pay, so "Found"
+        # from the client is stored as "Resolved".
+        assert _patch_sent(repo) == {"status": "Resolved"}
         repo.close_sightings_for_pet.assert_called_once_with("p1")
 
     def test_still_searching_leaves_sightings_alone(self, client, repo):
@@ -285,7 +297,9 @@ class TestStatusAndClosure:
         r = client.patch("/missing-pets/p1", json={"status": "found"})
 
         assert r.status_code == 200
-        assert _patch_sent(repo) == {"status": "Found"}
+        # Feature 6 (SRS-103): a hand close has nobody to pay, so "Found"
+        # from the client is stored as "Resolved".
+        assert _patch_sent(repo) == {"status": "Resolved"}
         repo.close_sightings_for_pet.assert_called_once_with("p1")
 
     def test_a_status_an_owner_may_not_write_is_rejected(self, client, repo):
@@ -328,6 +342,9 @@ class TestWriteOutcome:
         Absorbed a struck duplicate on 2026-09-07, which was this same [error]
         choice framed a second time."""
         repo.update_missing_pet_owned.return_value = None
+        # Feature 6 reads the owned row first; a pet that is not the caller's
+        # is not found there, before any write.
+        repo.get_owned_pet_state.return_value = None
 
         r = client.patch("/missing-pets/p1", json={"status": "Found"})
 
@@ -344,3 +361,62 @@ class TestWriteOutcome:
         r = client.patch("/missing-pets/p1", json={"pet_name": "Mochi"})
 
         assert r.status_code == 500
+
+
+# --------------------------------------------------------------------------- #
+# Feature 6 — the bounty and status locks, and the guarded hand close.
+# --------------------------------------------------------------------------- #
+class TestFeature6Locks:
+    def test_raising_the_bounty_is_written(self, client, repo):
+        repo.get_owned_pet_state.return_value = {"id": "p1", "status": "Searching", "bounty_amount": 1000}
+        r = client.patch("/missing-pets/p1", json={"bounty_amount": 1500})
+        assert r.status_code == 200
+        assert _patch_sent(repo) == {"bounty_amount": 1500}
+
+    def test_lowering_the_bounty_is_refused(self, client, repo):
+        repo.get_owned_pet_state.return_value = {"id": "p1", "status": "Searching", "bounty_amount": 1000}
+        r = client.patch("/missing-pets/p1", json={"bounty_amount": 0})
+        assert r.status_code == 409
+        repo.update_missing_pet_owned.assert_not_called()
+
+    def test_the_bounty_is_frozen_once_found(self, client, repo):
+        repo.get_owned_pet_state.return_value = {"id": "p1", "status": "Found", "bounty_amount": 1000}
+        r = client.patch("/missing-pets/p1", json={"bounty_amount": 2000})
+        assert r.status_code == 409
+        repo.update_missing_pet_owned.assert_not_called()
+
+    def test_the_status_cannot_change_once_found(self, client, repo):
+        repo.get_owned_pet_state.return_value = {"id": "p1", "status": "Found", "bounty_amount": 1000}
+        r = client.patch("/missing-pets/p1", json={"status": "Searching"})
+        assert r.status_code == 409
+        repo.update_missing_pet_owned.assert_not_called()
+
+    def test_a_hand_close_is_refused_while_a_caught_card_waits(self, client, repo):
+        repo.has_caught_awaiting_decision.return_value = True
+        r = client.patch("/missing-pets/p1", json={"status": "Found"})
+        assert r.status_code == 409
+        repo.update_missing_pet_owned.assert_not_called()
+
+    def test_another_owners_pet_reads_as_not_found(self, client, repo):
+        repo.get_owned_pet_state.return_value = None
+        r = client.patch("/missing-pets/p1", json={"status": "Found"})
+        assert r.status_code == 404
+        repo.update_missing_pet_owned.assert_not_called()
+
+    def test_a_name_edit_needs_no_state_read(self, client, repo):
+        r = client.patch("/missing-pets/p1", json={"pet_name": "Mali"})
+        assert r.status_code == 200
+        repo.get_owned_pet_state.assert_not_called()
+
+
+class TestConcurrentChange:
+    def test_a_report_closed_in_between_is_a_409_not_an_overwrite(self, client, repo):
+        """Regression (code review 2026-10-08): the owner closed the search by
+        confirming a Caught sighting while this edit was in flight. The write
+        is conditional on the status read, so it matches nothing and the
+        route refuses rather than turning "Found" into "Resolved"."""
+        repo.update_missing_pet_owned.return_value = None
+        r = client.patch("/missing-pets/p1", json={"status": "Found"})
+        assert r.status_code == 409
+        assert repo.update_missing_pet_owned.call_args.kwargs["expected_status"] == "Searching"
+        repo.close_sightings_for_pet.assert_not_called()

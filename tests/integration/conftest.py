@@ -52,6 +52,7 @@ DROP_PATTERN_MIGRATION = (
 RENAME_MIGRATION = (
     BACKEND_ROOT / "migrations" / "2026_09_09_rename_display_name_to_username.sql"
 )
+BOUNTY_MIGRATION = BACKEND_ROOT / "migrations" / "2026_10_08_bounty_settlement.sql"
 IMAGE_TAG = "petty-bounty-test-pg:pg16"
 
 
@@ -106,6 +107,9 @@ def _apply_schema(dsn: str) -> None:
                                      # every file above is applied verbatim and was
                                      # written against the old column, so the rename
                                      # has to land after them, exactly as in prod.
+        BOUNTY_MIGRATION,            # Feature 6: owner-paid settlement; redefines
+                                     # owner_decide_sighting, so it lands after
+                                     # every earlier definition of that function.
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         for f in files:

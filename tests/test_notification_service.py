@@ -206,8 +206,8 @@ def test_never_logs_tokens(ready, fcm, caplog):
 
 # --------------------------------------------------------------------------- #
 # notify_nearby_hunters — the fan-out entry point (runs as a BackgroundTask).
-# It builds its own NotificationRepository from the raw client, so we patch that
-# construction + send_to_users. Category-Partition:
+# It receives its NotificationRepository from the route, so the test hands in a
+# double and spies send_to_users. Category-Partition:
 #   * firebase not ready            -> no-op                       [single]
 #   * get_nearby_hunters raises      -> swallowed, no send          [error]
 #   * get_nearby_hunters returns []  -> no-op                       [single]
@@ -216,43 +216,41 @@ def test_never_logs_tokens(ready, fcm, caplog):
 class TestNotifyNearbyHunters:
     @pytest.fixture
     def wired(self, monkeypatch):
-        """Patch the boundaries the fn builds/calls internally: the repo it
-        constructs from the raw client, and send_to_users (spied)."""
+        """Double the port the fn is handed, and spy send_to_users."""
         repo = MagicMock(spec=NotificationRepository)
-        monkeypatch.setattr(ns, "SupabaseNotificationRepository", lambda db: repo)
         sends = []
         monkeypatch.setattr(ns, "send_to_users", lambda *a, **k: sends.append((a, k)))
         return SimpleNamespace(repo=repo, sends=sends)
 
     @staticmethod
-    def _notify():
+    def _notify(repo):
         ns.notify_nearby_hunters(
-            object(), "pet-1", 13.7563, 100.5018, "owner-1", 10.0, "Luna", "Dog",
+            repo, "pet-1", 13.7563, 100.5018, "owner-1", 10.0, "Luna", "Dog",
             max_age_hours=12,
         )
 
     def test_noop_when_firebase_not_ready(self, monkeypatch, wired):
         monkeypatch.setattr(ns, "is_firebase_ready", lambda: False)
-        self._notify()
+        self._notify(wired.repo)
         wired.repo.get_nearby_hunters.assert_not_called()
         assert wired.sends == []
 
     def test_swallows_nearby_query_failure(self, monkeypatch, wired):
         monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
         wired.repo.get_nearby_hunters.side_effect = RuntimeError("rpc down")
-        self._notify()  # must not raise
+        self._notify(wired.repo)  # must not raise
         assert wired.sends == []
 
     def test_noop_when_no_nearby_hunters(self, monkeypatch, wired):
         monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
         wired.repo.get_nearby_hunters.return_value = []
-        self._notify()
+        self._notify(wired.repo)
         assert wired.sends == []
 
     def test_sends_to_nearby_hunters_with_geo_and_payload(self, monkeypatch, wired):
         monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
         wired.repo.get_nearby_hunters.return_value = ["u1", "u2"]
-        self._notify()
+        self._notify(wired.repo)
         # geo query: WKT (lng lat), km->m, freshness window, owner excluded
         wired.repo.get_nearby_hunters.assert_called_once_with(
             "POINT(100.5018 13.7563)", 10000.0, 12, "owner-1"
@@ -278,17 +276,11 @@ class TestNotifyNearbyHunters:
 class TestNotifyPetOwners:
     @pytest.fixture
     def wired(self, monkeypatch):
-        """Double the two ports the function builds from the raw client, plus
-        send_to_users (whose RETURN VALUE is the delivery signal under test)."""
+        """Double the two ports the function is handed, plus send_to_users
+        (whose RETURN VALUE is the delivery signal under test)."""
         notif_repo = MagicMock(spec=NotificationRepository)
         sighting_repo = MagicMock()
         sighting_repo.get_pet_owners.return_value = {"p1": "owner-1"}
-        monkeypatch.setattr(
-            ns, "SupabaseNotificationRepository", lambda db: notif_repo
-        )
-        monkeypatch.setattr(
-            ns, "SupabaseSightingRepository", lambda db: sighting_repo
-        )
         monkeypatch.setattr(ns, "is_firebase_ready", lambda: True)
 
         sends = []
@@ -305,12 +297,12 @@ class TestNotifyPetOwners:
 
     def test_no_pets_short_circuits(self, wired):
         """A sighting that matched nothing has nobody to tell."""
-        assert ns.notify_pet_owners(object(), "s1", [], "h1") == []
+        assert ns.notify_pet_owners(wired.notif, wired.sightings, "s1", [], "h1") == []
         assert wired.sends == []
         wired.sightings.set_sighting_status.assert_not_called()
 
     def test_notifies_owner_and_advances_the_status(self, wired):
-        out = ns.notify_pet_owners(object(), "s1", ["p1"], "h1")
+        out = ns.notify_pet_owners(wired.notif, wired.sightings, "s1", ["p1"], "h1")
 
         assert out == ["owner-1"]
         assert wired.sends[0][0] == ["owner-1"]
@@ -324,7 +316,7 @@ class TestNotifyPetOwners:
         notification telling them about it."""
         wired.sightings.get_pet_owners.return_value = {"p1": "h1"}
 
-        out = ns.notify_pet_owners(object(), "s1", ["p1"], hunter_id="h1")
+        out = ns.notify_pet_owners(wired.notif, wired.sightings, "s1", ["p1"], hunter_id="h1")
 
         assert out == []
         assert wired.sends == []
@@ -337,7 +329,7 @@ class TestNotifyPetOwners:
             "p1": "owner-1", "p2": "owner-1", "p3": "owner-2",
         }
 
-        ns.notify_pet_owners(object(), "s1", ["p1", "p2", "p3"], "h1")
+        ns.notify_pet_owners(wired.notif, wired.sightings, "s1", ["p1", "p2", "p3"], "h1")
 
         assert wired.sends[0][0] == ["owner-1", "owner-2"]
 
@@ -346,7 +338,7 @@ class TestNotifyPetOwners:
         notified, so the sighting stays Pending_Analysis."""
         wired.state["delivered"] = 0
 
-        out = ns.notify_pet_owners(object(), "s1", ["p1"], "h1")
+        out = ns.notify_pet_owners(wired.notif, wired.sightings, "s1", ["p1"], "h1")
 
         assert out == []
         wired.sightings.set_sighting_status.assert_not_called()
@@ -355,18 +347,18 @@ class TestNotifyPetOwners:
         """Local dev without credentials must neither push nor pretend to."""
         sighting_repo = MagicMock()
         monkeypatch.setattr(ns, "is_firebase_ready", lambda: False)
-        monkeypatch.setattr(
-            ns, "SupabaseSightingRepository", lambda db: sighting_repo
-        )
 
-        assert ns.notify_pet_owners(object(), "s1", ["p1"], "h1") == []
+        assert ns.notify_pet_owners(
+            MagicMock(spec=NotificationRepository), sighting_repo,
+            "s1", ["p1"], "h1",
+        ) == []
         sighting_repo.set_sighting_status.assert_not_called()
 
     def test_owner_lookup_failure_is_swallowed(self, wired):
         """Runs as a BackgroundTask — it must never raise into the request."""
         wired.sightings.get_pet_owners.side_effect = RuntimeError("db down")
 
-        assert ns.notify_pet_owners(object(), "s1", ["p1"], "h1") == []
+        assert ns.notify_pet_owners(wired.notif, wired.sightings, "s1", ["p1"], "h1") == []
         assert wired.sends == []
 
     def test_status_write_failure_does_not_undo_a_delivered_push(self, wired):
@@ -374,7 +366,7 @@ class TestNotifyPetOwners:
         bookkeeping, not a failed notification."""
         wired.sightings.set_sighting_status.side_effect = RuntimeError("db down")
 
-        out = ns.notify_pet_owners(object(), "s1", ["p1"], "h1")
+        out = ns.notify_pet_owners(wired.notif, wired.sightings, "s1", ["p1"], "h1")
 
         assert out == ["owner-1"]      # still reported as notified
 
