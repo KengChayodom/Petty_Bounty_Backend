@@ -20,7 +20,6 @@ from app.repositories.user_repository import (
 )
 from app.schemas.admin import (
     AssignRoleRequest,
-    ResolveMissingPetRequest,
     ReviewReportRequest,
     VerifySightingRequest,
 )
@@ -276,51 +275,6 @@ async def review_report(
         message="Moderation decision recorded.",
         data=result,
     )
-
-
-@router.post(
-    "/missing-pets/{pet_id}/resolve",
-    response_model=StandardResponse,
-)
-async def resolve_missing_pet(
-    pet_id: str,
-    payload: ResolveMissingPetRequest,
-    service: AdminService = Depends(get_admin_service),
-    admin_id: str = Depends(require_admin),
-):
-    """
-    Settle the bounty on a case the OWNER has already closed.
-
-    Records the transfer against the sighting the owner confirmed as the catch
-    and moves the report from 'Found' to 'Resolved'. Since 2026-08-21 it does
-    NOT award any points: the clue scores were distributed when the owner
-    confirmed the rescue, possibly days earlier (see
-    `SightingService.decide_match`), and awarding here as well would pay every
-    hunter twice.
-
-    400 when the pet was never recovered ('Found' is the precondition), when
-    the nominated sighting is not the owner-confirmed catch, or when the bounty
-    was already settled.
-    """
-    try:
-        result = await service.resolve_missing_pet(
-            pet_id=pet_id,
-            final_sighting_id=payload.final_sighting_id,
-            slip_image_url=payload.slip_image_url,
-            reference_no=payload.reference_no,
-            verified_by=admin_id,
-        )
-        return StandardResponse(
-            status="success",
-            message="Missing pet resolved; bounty paid and clue scores distributed.",
-            data=result,
-        )
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to resolve pet: {e}"
-        )
 
 
 # ---------------------------------------------------------------------- #

@@ -221,6 +221,15 @@ class TestRoutes:
         assert r.status_code == 200
         service.admin_close_unpaid.assert_called_once_with("p1", "admin-1")
 
+    def test_the_old_admin_settlement_route_is_gone(self, client):
+        """The pre-Feature 6 route let an administrator record a payment as
+        Verified and resolve the report in one call, skipping the returning
+        hunter's confirmation. A report with a bounty now closes only through
+        the routes above."""
+        r = client.post("/admin/missing-pets/p1/resolve", json={
+            "final_sighting_id": "s1", "slip_image_url": "u"})
+        assert r.status_code == 404
+
 
 class TestMine:
     def test_mine_is_routed_before_the_pet_id(self, client, service):

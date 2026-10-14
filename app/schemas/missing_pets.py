@@ -144,9 +144,11 @@ class MissingPetUpdate(BaseModel):
     )
     status: Optional[str] = Field(
         None,
-        description="Updated status: 'Found' ends the search, 'Searching' "
-                    "re-opens it. 'Spotted' and 'Resolved' are not writable "
-                    "here — see OWNER_WRITABLE_STATUSES."
+        description="Updated status: 'Found' ends the search (stored as "
+                    "'Resolved' when nobody is owed). Once the report is "
+                    "'Found' or 'Resolved' the status cannot change, so it "
+                    "cannot be re-opened. 'Spotted' and 'Resolved' are not "
+                    "writable here — see OWNER_WRITABLE_STATUSES."
     )
     bounty_amount: Optional[float] = Field(
         None,
@@ -173,8 +175,8 @@ class MissingPetUpdate(BaseModel):
     # 'Spotted' and no row in production carries it.
     #
     # 'Resolved' is absent for the opposite reason: it means "the bounty has
-    # been paid", which only the administrator's settlement (resolve_missing_pet)
-    # may write, and it requires 'Found' first.
+    # been paid" (or nobody is owed), which only the Feature 6 settlement
+    # functions and the hand-close translation in pet_logic may write.
     #
     # A tuple, not a set, so the rejection message names the values in a stable
     # order instead of whatever the set happens to iterate as.
