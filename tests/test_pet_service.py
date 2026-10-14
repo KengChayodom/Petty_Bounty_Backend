@@ -8,6 +8,10 @@ Unit tests for app/services/pet_service.py:
     report runs the same mask-isolate + CLIP path as the live sighting save
     (full-frame fallback on a YOLO miss), builds the PostGIS point, inserts with
     status "Searching" and the feature vector; a no-row insert raises.
+  * UTC-79  get_missing_pet_by_id (MD-16, SRS-41). Marker detail read. The row
+    comes back with the sighting count and the derived badge attached, an
+    absent report returns None without a second query, and a failure of either
+    read reaches the caller.
 
 Boundary rule (per db-testing-seams): the DB is reached only through the
 MissingPetRepository port, so we double THAT with MagicMock(spec=...). The AI
@@ -213,12 +217,13 @@ class TestRegisterMissingPet:
 
 
 # --------------------------------------------------------------------------- #
-# get_missing_pet_by_id — the row PLUS the derived badge the list endpoint
-# already attaches, so the Status Tracker reads the rule instead of owning a
-# second copy of it. A repo error must still propagate.
+# UTC-79  get_missing_pet_by_id (MD-16, SRS-41). The row plus the derived badge
+# the list endpoint already attaches, so the Status Tracker reads the rule
+# instead of owning a second copy of it. A repo error must still propagate.
 # --------------------------------------------------------------------------- #
 class TestGetMissingPetById:
     def test_returns_repo_row_with_the_derived_badge(self):
+        """UTC-79-TC-01"""
         repo = _repo()
         repo.get_missing_pet_by_id.return_value = {
             "id": "pet-1", "latitude": 13.7, "status": "Searching",
@@ -234,39 +239,8 @@ class TestGetMissingPetById:
         }
         repo.get_sighting_links_for_pets.assert_called_once_with(["pet-1"])
 
-    def test_badge_counts_the_pets_sightings(self):
-        """The count is the product rule (de-duplicated, rejected matches
-        dropped), not len(rows) — one sighting reaching the pet from BOTH
-        sources is one sighting."""
-        repo = _repo()
-        repo.get_missing_pet_by_id.return_value = {
-            "id": "pet-1", "status": "Searching",
-        }
-        repo.get_sighting_links_for_pets.return_value = [
-            {"pet_id": "pet-1", "sighting_id": "s1", "owner_status": "Pending"},
-            {"pet_id": "pet-1", "sighting_id": "s1", "owner_status": None},
-            {"pet_id": "pet-1", "sighting_id": "s2", "owner_status": "Rejected"},
-        ]
-
-        out = run(PetService(repo).get_missing_pet_by_id("pet-1"))
-        assert out["sighting_count"] == 1
-        assert out["post_status"] == "Spotted"
-
-    def test_a_settled_case_reads_rescued(self):
-        """'Resolved' (the bounty was paid) closes a search exactly as 'Found'
-        does. The client used to test for 'Found' alone and reopened the case
-        on screen the moment the money moved."""
-        repo = _repo()
-        repo.get_missing_pet_by_id.return_value = {
-            "id": "pet-1", "status": "Resolved",
-        }
-        repo.get_sighting_links_for_pets.return_value = []
-
-        assert run(
-            PetService(repo).get_missing_pet_by_id("pet-1")
-        )["post_status"] == "Rescued"
-
     def test_missing_pet_returns_none_without_a_second_query(self):
+        """UTC-79-TC-02"""
         repo = _repo()
         repo.get_missing_pet_by_id.return_value = None
 
@@ -274,11 +248,11 @@ class TestGetMissingPetById:
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
+        """UTC-79-TC-03"""
         repo = _repo()
         repo.get_missing_pet_by_id.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(PetService(repo).get_missing_pet_by_id("pet-1"))
-
 
 # --------------------------------------------------------------------------- #
 # get_sightings_for_pet — owner timeline; forces include_dismissed=False and

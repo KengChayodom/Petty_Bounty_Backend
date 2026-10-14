@@ -7,7 +7,12 @@ All pure/sync — no DB, no network, no model load.
 The user's acceptance example is pinned directly: a grey pet must NOT surface
 for an orange sighting, but other greys still may. See
 Petty_Bounty_Brain/log.md and the colour section of api_flow.md.
+
+It also holds the other pure rules of sighting_logic: the owner decision and
+action type normalisers, and the removal of the hunter's own reports from a
+match list.
 """
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -371,3 +376,39 @@ class TestNormalizeActionType:
 
         with pytest.raises(ValueError):
             normalize_action_type(bad)
+
+
+class TestDropOwnReports:
+    """MD-91. A discovery sighting is never matched to the hunter's own
+    report. Ids are compared by their text, so a non-string id still matches
+    the string keys the owner lookup returns."""
+
+    HUNTER = "hunter-1"
+
+    def test_the_hunters_own_report_is_dropped(self):
+        """UTC-93-TC-01."""
+        from app.services.sighting_logic import drop_own_reports
+
+        out = drop_own_reports(
+            [{"id": "pet-1"}], {"pet-1": self.HUNTER}, self.HUNTER
+        )
+
+        assert out == []
+
+    def test_a_strangers_report_is_kept(self):
+        """UTC-93-TC-02."""
+        from app.services.sighting_logic import drop_own_reports
+
+        out = drop_own_reports(
+            [{"id": "pet-1"}], {"pet-1": "owner-2"}, self.HUNTER
+        )
+
+        assert out == [{"id": "pet-1"}]
+
+    def test_a_report_whose_owner_is_unknown_is_kept(self):
+        """UTC-93-TC-03. A failed lookup must not hide a stranger's pet."""
+        from app.services.sighting_logic import drop_own_reports
+
+        out = drop_own_reports([{"id": "pet-1"}], {}, self.HUNTER)
+
+        assert out == [{"id": "pet-1"}]

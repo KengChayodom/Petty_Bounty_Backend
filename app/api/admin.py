@@ -6,6 +6,7 @@ from app.api.dependencies import (
     get_bounty_service,
     get_notification_repository,
     get_pet_service,
+    get_sighting_service,
 )
 from app.core.auth import require_admin
 from app.repositories.admin_repository import SightingNotFound
@@ -27,6 +28,7 @@ from app.schemas.admin import (
 from app.schemas.common import PaginatedData, StandardResponse
 from app.services.admin_service import AdminService
 from app.services.pet_service import PetService
+from app.services.sighting_service import SightingService
 from app.repositories.bounty_repository import BountyConflict, BountyNotFound
 from app.services.bounty_service import BountyService
 from app.services.notification_service import send_to_users
@@ -37,6 +39,29 @@ router = APIRouter(
     prefix="/admin", tags=["Admin"],
     dependencies=[Depends(require_admin)],
 )
+
+
+@router.get("/sightings/{sighting_id}", response_model=StandardResponse)
+async def get_sighting_for_review(
+    sighting_id: str,
+    service: SightingService = Depends(get_sighting_service),
+):
+    """One sighting in full, feature_vector stripped, for the flag review.
+
+    A flag names the sighting but not its photograph, so the console reads the
+    sighting here before an administrator rules on the flag.
+    """
+    try:
+        row = await service.get_sighting_by_id(sighting_id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve sighting: {e}"
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sighting not found")
+    return StandardResponse(
+        status="success", message="Sighting retrieved successfully.", data=row,
+    )
 
 
 @router.patch(

@@ -1,10 +1,12 @@
 """
-Who may read one sighting, and the matches computed for it.
+Who may read the matches computed for one sighting.
 
-`GET /sightings/{id}` and `GET /sightings/{id}/matches` were authenticated on
-2026-09-09 but never scoped: any signed-in account holding a sighting id could
-read where an animal was seen, who reported it, and which missing pets it
-resembles. The owner timeline had already been scoped for exactly that reason.
+`GET /sightings/{id}/matches` was authenticated on 2026-09-09 but never scoped:
+any signed-in account holding a sighting id could read which missing pets a
+sighting resembles. The owner timeline had already been scoped for that reason.
+The single-sighting read that shared this rule was removed on 2026-10-14,
+nothing calling it. Administrators read a flagged sighting through
+`GET /admin/sightings/{id}` instead.
 
 Allowed: the hunter who reported it, and the owner of a pet it is linked to
 (matched by the AI, or named by a targeted report). Everyone else gets the same
@@ -57,54 +59,47 @@ def _sighting(**over):
     return row
 
 
-class TestReadingOneSighting:
-    def test_the_hunter_reads_their_own_sighting(self):
-        service, _ = _service(sighting=_sighting())
-        out = run(service.get_sighting_for_viewer("s1", "hunter-1"))
-        assert out["id"] == "s1"
-        assert "feature_vector" not in out
+def _matches_service(**kw):
+    """The real visibility rule, with the matching itself stood in for."""
+    service, repo = _service(**kw)
+    service.get_matches = AsyncMock(return_value=[{"id": "p1"}])
+    return service, repo
 
-    def test_the_owner_of_a_matched_pet_reads_it(self):
-        service, _ = _service(
+
+class TestWhoMayReadTheMatches:
+    def test_the_owner_of_a_matched_pet_may(self):
+        service, _ = _matches_service(
             sighting=_sighting(), links=["p1"], owners={"p1": "owner-1"},
         )
-        assert run(service.get_sighting_for_viewer("s1", "owner-1"))["id"] == "s1"
+        assert run(service.get_matches_for_viewer("s1", "owner-1")) == [{"id": "p1"}]
 
-    def test_the_owner_of_the_targeted_pet_reads_it(self):
-        service, _ = _service(
+    def test_the_owner_of_the_targeted_pet_may(self):
+        service, _ = _matches_service(
             sighting=_sighting(initial_target_pet_id="p9"),
             owners={"p9": "owner-9"},
         )
-        assert run(service.get_sighting_for_viewer("s1", "owner-9"))["id"] == "s1"
+        assert run(service.get_matches_for_viewer("s1", "owner-9")) == [{"id": "p1"}]
 
     def test_a_stranger_gets_the_same_answer_as_a_missing_sighting(self):
-        service, _ = _service(
+        service, _ = _matches_service(
             sighting=_sighting(), links=["p1"], owners={"p1": "owner-1"},
         )
         with pytest.raises(LookupError) as stranger:
-            run(service.get_sighting_for_viewer("s1", "stranger"))
+            run(service.get_matches_for_viewer("s1", "stranger"))
 
-        missing, _ = _service(sighting=None)
+        missing, _ = _matches_service(sighting=None)
         with pytest.raises(LookupError) as absent:
-            run(missing.get_sighting_for_viewer("s1", "stranger"))
+            run(missing.get_matches_for_viewer("s1", "stranger"))
 
         assert str(stranger.value) == str(absent.value)
 
-    def test_the_owner_of_an_unrelated_pet_is_a_stranger(self):
-        service, _ = _service(
-            sighting=_sighting(), links=["p1"],
-            owners={"p1": "owner-1", "p2": "owner-2"},
-        )
-        with pytest.raises(LookupError):
-            run(service.get_sighting_for_viewer("s1", "owner-2"))
-
     def test_a_withdrawn_sighting_is_hidden_from_the_owner_but_not_the_hunter(self):
         row = _sighting(verification_status="Dismissed")
-        service, _ = _service(sighting=row, links=["p1"], owners={"p1": "owner-1"})
+        service, _ = _matches_service(sighting=row, links=["p1"], owners={"p1": "owner-1"})
 
         with pytest.raises(LookupError):
-            run(service.get_sighting_for_viewer("s1", "owner-1"))
-        assert run(service.get_sighting_for_viewer("s1", "hunter-1"))["id"] == "s1"
+            run(service.get_matches_for_viewer("s1", "owner-1"))
+        assert run(service.get_matches_for_viewer("s1", "hunter-1")) == [{"id": "p1"}]
 
 
 class TestReadingTheMatches:
@@ -150,18 +145,8 @@ def _client(service, user_id):
 
 
 class TestTheRoutesAskWhoIsReading:
-    """These go through the real service, so they fail if a route is ever
+    """This goes through the real service, so it fails if the route is ever
     changed back to the unscoped read."""
-
-    def test_a_stranger_cannot_read_a_sighting(self):
-        service, _ = _service(sighting=_sighting())
-        assert _client(service, "stranger").get("/sightings/s1").status_code == 404
-
-    def test_the_hunter_can(self):
-        service, _ = _service(sighting=_sighting())
-        r = _client(service, "hunter-1").get("/sightings/s1")
-        assert r.status_code == 200
-        assert r.json()["data"]["id"] == "s1"
 
     def test_a_stranger_cannot_read_the_matches(self):
         service, repo = _service(sighting=_sighting())

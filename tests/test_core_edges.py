@@ -1,14 +1,13 @@
 """
-Edge branches in core config + auth that the route/service suites don't hit.
+Edge branches in core config that the route/service suites don't hit.
 
   * Settings.__init__ refuses to boot without the required Supabase env vars.
-  * _extract_token falls through to the raw Authorization header when the
-    HTTPBearer credentials are present but blank.
+
+The `_extract_token` case that lived here moved to tests/test_auth.py on
+2026-10-13, where it is one of the cases of that method's own unit block.
 """
 import pytest
-from fastapi.security import HTTPAuthorizationCredentials
 
-from app.core.auth import _extract_token
 from app.core.config import Settings
 
 
@@ -24,11 +23,3 @@ class TestConfigRequiredSettings:
         monkeypatch.setattr(Settings, "SUPABASE_SERVICE_KEY", "")
         with pytest.raises(ValueError):
             Settings()
-
-
-class TestExtractTokenFallthrough:
-    def test_blank_bearer_credentials_falls_through_to_raw_header(self):
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="   ")
-        # credentials present but blank -> the `if token:` guard is False, so it
-        # falls through to the raw Authorization header (bare-token fallback).
-        assert _extract_token("Bearer raw-tok", creds) == "raw-tok"

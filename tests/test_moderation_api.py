@@ -15,7 +15,7 @@ pattern as tests/test_me_profile_api.py.
 `PATCH /admin/reports/{id}` — MD-44: 400 / 404 / 409 / 500
 `DELETE /admin/missing-pets/{id}` — MD-42: 404 / 500
 """
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -430,3 +430,37 @@ class TestAdminPetDetailRoute:
             and "GET" in getattr(r, "methods", set())
         )
         assert require_admin in [d.call for d in route.dependant.dependencies]
+
+
+# --------------------------------------------------------------------------- #
+# GET /admin/sightings/{id}: the sighting a flag names, read for the review.
+# The flag names the sighting but not its photograph, so the console reads the
+# sighting through this route before an administrator rules. The service read itself is
+# tested in tests/test_sighting_service.py::TestGetSightingById.
+# --------------------------------------------------------------------------- #
+class TestAdminSightingReviewRoute:
+    @staticmethod
+    def _client(row):
+        service = MagicMock()
+        service.get_sighting_by_id = AsyncMock(return_value=row)
+        app = FastAPI()
+        app.include_router(admin_api.router)
+        app.dependency_overrides[require_admin] = lambda: "admin-1"
+        app.dependency_overrides[admin_api.get_sighting_service] = lambda: service
+        return TestClient(app), service
+
+    def test_tc04_an_administrator_reads_the_flagged_sighting(self):
+        """UTC-32-TC-04. The administrator is neither the hunter nor an owner."""
+        client, service = self._client({"id": "s1", "image_url": "http://img"})
+
+        r = client.get("/admin/sightings/s1")
+
+        assert r.status_code == 200
+        assert r.json()["data"] == {"id": "s1", "image_url": "http://img"}
+        service.get_sighting_by_id.assert_awaited_once_with("s1")
+
+    def test_tc05_an_unknown_sighting_is_a_404(self):
+        """UTC-32-TC-05."""
+        client, _ = self._client(None)
+
+        assert client.get("/admin/sightings/ghost").status_code == 404
