@@ -4,10 +4,14 @@ trust boundary.
 
 Covered (per test_plan.md / test_traceability.md):
   * UTC-01 _strip_bearer                  (MD-05, SRS-21)
-  * UTC-02 _resolve_user_id               (MD-07, SRS-21)
   * UTC-03 get_current_user_id            (MD-02, SRS-13) + auth-guard e2e
-  * UTC-04 get_current_user_id_optional   (MD-03, SRS-21)
   * UTC-05 require_admin                  (MD-04, SRS-22)
+  * UTC-77 _validate_token                (MD-01, SRS-13, SRS-21)
+  * UTC-78 _extract_token                 (MD-06, SRS-13, SRS-21)
+
+UTC-02 and UTC-04 tested `_resolve_user_id` and `get_current_user_id_optional`,
+which nothing in the application called. Both were removed on 2026-10-13, and
+the cases of UTC-02 that reached `_validate_token` now sit in UTC-77.
 
 SRS-21 = extract & validate the JWT to authorize requests; SRS-22 = role-based
 access control restricting admin functions; SRS-13 = maintain the authenticated
@@ -32,6 +36,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.core import auth
 
@@ -132,30 +137,54 @@ class TestStripBearer:
 
 
 # --------------------------------------------------------------------------- #
-# _resolve_user_id — validates against Supabase, never raises
+# _validate_token — validates against Supabase, never raises
 # --------------------------------------------------------------------------- #
-class TestResolveUserId:
+class TestValidateToken:
     def test_valid_token_returns_supabase_user_id(self, monkeypatch):
         client, _ = _install_client(monkeypatch, user_id="user-123")
-        assert auth._resolve_user_id("Bearer good") == "user-123"
-        assert client.auth.tokens_seen == ["good"]  # prefix stripped before call
+        assert auth._validate_token("good") == "user-123"
+        assert client.auth.tokens_seen == ["good"]  # passed through unchanged
 
-    def test_none_header_short_circuits_without_calling_supabase(self, monkeypatch):
+    @pytest.mark.parametrize("token", [None, ""])
+    def test_no_token_short_circuits_without_calling_supabase(self, monkeypatch, token):
         client, calls = _install_client(monkeypatch, user_id="user-123")
-        assert auth._resolve_user_id(None) is None
+        assert auth._validate_token(token) is None
         # Guards an extra network round-trip on every anonymous request.
         assert calls["n"] == 0
         assert client.auth.tokens_seen == []
 
     def test_supabase_returns_no_user_yields_none(self, monkeypatch):
         _install_client(monkeypatch, user_id=None)
-        assert auth._resolve_user_id("Bearer whatever") is None
+        assert auth._validate_token("whatever") is None
 
     def test_supabase_raising_is_swallowed_to_none(self, monkeypatch):
         # Guards: an invalid/expired token must become a clean None (→401 later),
         # never an unhandled 500.
         _install_client(monkeypatch, raises=True)
-        assert auth._resolve_user_id("Bearer expired") is None
+        assert auth._validate_token("expired") is None
+
+
+# --------------------------------------------------------------------------- #
+# _extract_token — which of the two sources supplies the token
+# --------------------------------------------------------------------------- #
+class TestExtractToken:
+    def test_bearer_credentials_win_over_the_raw_header(self):
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="from-scheme")
+        assert auth._extract_token("Bearer from-header", creds) == "from-scheme"
+
+    def test_blank_bearer_credentials_falls_through_to_raw_header(self):
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="   ")
+        # credentials present but blank -> the `if token:` guard is False, so it
+        # falls through to the raw Authorization header (bare-token fallback).
+        assert auth._extract_token("Bearer raw-tok", creds) == "raw-tok"
+
+    def test_no_credentials_reads_a_bare_token_from_the_header(self):
+        # A direct caller passes the Depends sentinel, not credentials. It is
+        # ignored, and a token sent without the "Bearer " prefix is still read.
+        assert auth._extract_token("bare-tok", object()) == "bare-tok"
+
+    def test_neither_source_yields_no_token(self):
+        assert auth._extract_token(None, None) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -190,24 +219,6 @@ class TestGetCurrentUserId:
         monkeypatch.setattr(auth.settings, "AUTH_DEV_BYPASS", True)
         _install_client(monkeypatch, user_id="real-user")
         assert auth.get_current_user_id("Bearer good") == "real-user"
-
-
-# --------------------------------------------------------------------------- #
-# get_current_user_id_optional — same resolution, never 401s
-# --------------------------------------------------------------------------- #
-class TestGetCurrentUserIdOptional:
-    def test_valid_token_returns_id(self, monkeypatch):
-        _install_client(monkeypatch, user_id="u-9")
-        assert auth.get_current_user_id_optional("Bearer good") == "u-9"
-
-    def test_invalid_without_bypass_returns_none_not_raise(self, monkeypatch):
-        _install_client(monkeypatch, raises=True)
-        assert auth.get_current_user_id_optional("Bearer bad") is None
-
-    def test_invalid_with_bypass_returns_test_user(self, monkeypatch):
-        monkeypatch.setattr(auth.settings, "AUTH_DEV_BYPASS", True)
-        _install_client(monkeypatch, raises=True)
-        assert auth.get_current_user_id_optional(None) == auth.TEST_USER_ID
 
 
 # --------------------------------------------------------------------------- #

@@ -89,16 +89,6 @@ def _validate_token(token: str | None) -> str | None:
     return None
 
 
-def _resolve_user_id(authorization: str | None) -> str | None:
-    """
-    Validate the bearer token from a raw `Authorization` header value and return
-    the user id (or None). Kept as a thin wrapper over `_validate_token` for
-    backward compatibility with `require_admin` and the existing unit tests that
-    call it directly with a header string.
-    """
-    return _validate_token(_strip_bearer(authorization))
-
-
 def _extract_token(
     authorization: str | None,
     credentials: HTTPAuthorizationCredentials | None,
@@ -145,19 +135,6 @@ def get_current_user_id(
         detail="Missing or invalid authentication token.",
         headers={"WWW-Authenticate": "Bearer"},
     )
-
-
-def get_current_user_id_optional(
-    authorization: str | None = Header(default=None, include_in_schema=False),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> str | None:
-    """Like `get_current_user_id` but returns None instead of raising 401."""
-    user_id = _validate_token(_extract_token(authorization, credentials))
-    if user_id:
-        return user_id
-    if settings.AUTH_DEV_BYPASS:
-        return TEST_USER_ID
-    return None
 
 
 def require_admin(

@@ -10,6 +10,9 @@ status model gets wrong in practice:
   * a fresh report crashing or vanishing from the list because nobody has
     reported a sighting for it yet;
   * the badge being computed in two places (server and client) and drifting.
+
+It also holds the other pure rules of the module: the insert payload, the
+administrator browse filters, and the owner's bounty and status edit rules.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +25,8 @@ from app.services.pet_logic import (
     POST_STATUS_PENDING,
     POST_STATUS_RESCUED,
     POST_STATUS_SPOTTED,
+    OwnerEditRefused,
+    apply_owner_edit_rules,
     attach_sighting_counts,
     build_missing_pet_payload,
     derive_post_status,
@@ -489,3 +494,89 @@ class TestNormalizeBrowseSpecies:
 
         for permitted in BROWSE_SPECIES_FILTERS:
             assert permitted in str(exc.value)
+
+
+class TestApplyOwnerEditRules:
+    """MD-90. The owner's bounty and status edit, checked against the report's
+    stored state, with a hand close translated to 'Resolved'."""
+
+    OPEN = {"status": "Searching", "bounty_amount": 100}
+
+    def test_a_raised_bounty_is_written_as_sent(self):
+        """UTC-92-TC-01. Raising the bounty on an open report is permitted."""
+        payload = {"bounty_amount": 200}
+
+        out = apply_owner_edit_rules(
+            self.OPEN, payload, caught_awaiting_decision=False
+        )
+
+        assert out == {"bounty_amount": 200}
+
+    def test_a_lowered_bounty_is_refused(self):
+        """UTC-92-TC-02."""
+        with pytest.raises(OwnerEditRefused, match="raised but not lowered"):
+            apply_owner_edit_rules(
+                self.OPEN, {"bounty_amount": 99.99},
+                caught_awaiting_decision=False,
+            )
+
+    @pytest.mark.parametrize("closed", ["Found", "Resolved"])
+    def test_the_bounty_is_frozen_once_the_report_is_closed(self, closed):
+        """UTC-92-TC-03. Even a raise is refused, payment being under way."""
+        with pytest.raises(OwnerEditRefused, match="bounty cannot be changed"):
+            apply_owner_edit_rules(
+                {"status": closed, "bounty_amount": 100},
+                {"bounty_amount": 500},
+                caught_awaiting_decision=False,
+            )
+
+    @pytest.mark.parametrize("closed", ["Found", "Resolved", "  resolved "])
+    def test_the_status_is_frozen_once_the_report_is_closed(self, closed):
+        """UTC-92-TC-04. The stored status is read without regard to casing
+        or surrounding space."""
+        with pytest.raises(OwnerEditRefused, match="status cannot be changed"):
+            apply_owner_edit_rules(
+                {"status": closed, "bounty_amount": 100},
+                {"status": "Searching"},
+                caught_awaiting_decision=False,
+            )
+
+    def test_a_hand_close_waits_for_a_caught_sighting_to_be_decided(self):
+        """UTC-92-TC-05."""
+        with pytest.raises(OwnerEditRefused, match="Decide the sighting"):
+            apply_owner_edit_rules(
+                self.OPEN, {"status": "Found"}, caught_awaiting_decision=True
+            )
+
+    def test_a_hand_close_with_nobody_to_pay_is_written_as_resolved(self):
+        """UTC-92-TC-06. The other fields travel unchanged, and the payload
+        the caller holds is not rewritten in place."""
+        payload = {"status": "Found", "pet_name": "Mochi"}
+
+        out = apply_owner_edit_rules(
+            self.OPEN, payload, caught_awaiting_decision=False
+        )
+
+        assert out == {"status": "Resolved", "pet_name": "Mochi"}
+        assert payload == {"status": "Found", "pet_name": "Mochi"}
+
+    def test_reopening_is_not_held_by_a_caught_sighting(self):
+        """UTC-92-TC-07. The awaiting flag only holds back a close."""
+        out = apply_owner_edit_rules(
+            {"status": "Spotted", "bounty_amount": 100},
+            {"status": "Searching"},
+            caught_awaiting_decision=True,
+        )
+
+        assert out == {"status": "Searching"}
+
+    def test_an_edit_without_bounty_or_status_passes_even_when_closed(self):
+        """UTC-92-TC-08. Neither rule reads a field the payload does not
+        carry, so a closed report may still have its name corrected."""
+        out = apply_owner_edit_rules(
+            {"status": "Resolved", "bounty_amount": 100},
+            {"pet_name": "Mochi"},
+            caught_awaiting_decision=False,
+        )
+
+        assert out == {"pet_name": "Mochi"}

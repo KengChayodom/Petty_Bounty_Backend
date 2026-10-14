@@ -5,7 +5,8 @@ The real YOLO/CLIP inference (model load + predict + encode) is the L4/slow
 concern; here every model boundary is stubbed, so what these tests actually
 exercise is the plumbing and the pure logic:
   * lazy-load + class-level caching of the two models,
-  * run_yolo_seg / clip_encode delegating to the (stubbed) model,
+  * run_yolo_seg (UTC-80) and clip_encode (UTC-81) delegating to the
+    (stubbed) model on a worker thread, and letting its failures through,
   * warmup_models running both and swallowing a load failure,
   * isolate_subject — the subject-selection loop + numpy mask handling, which
     is pure array work and needs no model at all.
@@ -15,6 +16,7 @@ exercise is the plumbing and the pure logic:
 """
 import asyncio
 import io
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -344,12 +346,25 @@ class TestModelLoading:
 
 
 # --------------------------------------------------------------------------- #
-# run_yolo_seg / clip_encode delegate to the (stubbed) model
+# run_yolo_seg and clip_encode hand the image to the (stubbed) model on a
+# worker thread and give back what it returns. A load or inference failure is
+# not caught, so it reaches the caller.
 # --------------------------------------------------------------------------- #
-class TestPipelineDelegation:
+class TestRunYoloSeg:
+    """UTC-80. run_yolo_seg."""
+
     def test_run_yolo_seg_delegates_to_predict(self, monkeypatch):
+        """UTC-80-TC-01. A given threshold reaches the model, the results come
+        back unchanged, and inference runs off the event loop's thread."""
+        loop_thread = threading.get_ident()
+        seen = {}
         model = MagicMock()
-        model.predict.return_value = "YOLO_RESULTS"
+
+        def predict(**kwargs):
+            seen["thread"] = threading.get_ident()
+            return "YOLO_RESULTS"
+
+        model.predict.side_effect = predict
         monkeypatch.setattr(AIManager, "get_yolo", lambda: model)
 
         out = run(AIManager.run_yolo_seg("PIL_IMAGE", conf=0.3))
@@ -358,17 +373,48 @@ class TestPipelineDelegation:
         model.predict.assert_called_once_with(
             source="PIL_IMAGE", conf=0.3, verbose=False
         )
+        assert seen["thread"] != loop_thread
+
+    def test_inference_error_propagates(self, monkeypatch):
+        """UTC-80-TC-02"""
+        model = MagicMock()
+        model.predict.side_effect = RuntimeError("inference failed")
+        monkeypatch.setattr(AIManager, "get_yolo", lambda: model)
+
+        with pytest.raises(RuntimeError, match="inference failed"):
+            run(AIManager.run_yolo_seg("PIL_IMAGE"))
+
+class TestClipEncode:
+    """UTC-81. clip_encode."""
 
     def test_clip_encode_returns_plain_list(self, monkeypatch):
+        """UTC-81-TC-01. The encoder's array comes back as a plain list with
+        the same values, and encoding runs off the event loop's thread."""
+        loop_thread = threading.get_ident()
+        seen = {}
         model = MagicMock()
-        model.encode.return_value = np.array([1.0, 2.0, 3.0])
+
+        def encode(image):
+            seen["thread"] = threading.get_ident()
+            return np.array([1.0, 2.0, 3.0])
+
+        model.encode.side_effect = encode
         monkeypatch.setattr(AIManager, "get_clip", lambda: model)
 
         out = run(AIManager.clip_encode("ISOLATED_IMG"))
 
         assert out == [1.0, 2.0, 3.0]              # ndarray -> list
         model.encode.assert_called_once_with("ISOLATED_IMG")
+        assert seen["thread"] != loop_thread
 
+    def test_encode_error_propagates(self, monkeypatch):
+        """UTC-81-TC-02"""
+        model = MagicMock()
+        model.encode.side_effect = RuntimeError("encode failed")
+        monkeypatch.setattr(AIManager, "get_clip", lambda: model)
+
+        with pytest.raises(RuntimeError, match="encode failed"):
+            run(AIManager.clip_encode("ISOLATED_IMG"))
 
 # --------------------------------------------------------------------------- #
 # embed_image — the ONE shared pipeline (download → YOLO → isolate → CLIP →
