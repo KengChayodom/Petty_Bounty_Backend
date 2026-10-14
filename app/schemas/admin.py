@@ -24,30 +24,6 @@ class VerifySightingRequest(BaseModel):
     )
 
 
-class ResolveMissingPetRequest(BaseModel):
-    """
-    Body of POST /admin/missing-pets/{id}/resolve.
-
-    The admin picks which Caught sighting becomes the bounty-paying
-    'final_sighting' — they may need to disambiguate when more than one
-    hunter claims to have caught the pet.
-    """
-
-    final_sighting_id: str = Field(
-        ...,
-        description="UUID of the Caught + Verified sighting whose hunter "
-                    "receives the full bounty payout.",
-    )
-    slip_image_url: str = Field(
-        ...,
-        description="URL of the bank-transfer slip image — proof of payout.",
-    )
-    reference_no: Optional[str] = Field(
-        None, max_length=255,
-        description="Transfer reference number (optional but useful for audit).",
-    )
-
-
 class ReviewReportRequest(BaseModel):
     """
     Body of PATCH /admin/reports/{report_id} (MD-44).

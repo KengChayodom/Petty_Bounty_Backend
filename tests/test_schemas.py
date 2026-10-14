@@ -104,8 +104,8 @@ class TestMissingPetUpdateValidators:
             MissingPetUpdate(status="Spotted")
 
     def test_resolved_is_refused_because_only_the_settlement_writes_it(self):
-        """'Resolved' means the bounty has been paid — the administrator's
-        resolve_missing_pet writes it, and only after the search is 'Found'."""
+        """'Resolved' means the bounty has been paid or nobody is owed — only
+        the Feature 6 settlement and the hand-close translation write it."""
         with pytest.raises(ValidationError):
             MissingPetUpdate(status="Resolved")
 

@@ -1,13 +1,11 @@
 """
-Unit tests for app/services/admin_service.py — verification, timeline, the
-resolve wrapper, and the Progress-II moderation methods — all through the
+Unit tests for app/services/admin_service.py — verification, timeline, and the
+Progress-II moderation methods — all through the
 repository ports (MagicMock(spec=...)).
 
 Category-Partition highlights:
   * verify_sighting: invalid status [error] / row not found [error] / success /
     unexpected repo error [error]
-  * resolve_missing_pet: the DB function's known RAISE prefixes are translated to
-    ValueError (400); any other error propagates as-is.
   * review_report (UTC-40): unknown [404] / already moderated [409] / dismiss /
     uphold / write-ordering / bad decision [400] / null target / db error [500]
   * review_report penalty (2026-08-20): per-reason default / admin override /
@@ -143,40 +141,6 @@ class TestGetSightingTimeline:
         repo.get_sighting_timeline.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(AdminService(repo).get_sighting_timeline("pet-1"))
-
-
-# --------------------------------------------------------------------------- #
-# resolve_missing_pet — the DB function's known RAISE prefixes -> 400 (ValueError)
-# --------------------------------------------------------------------------- #
-class TestResolveMissingPet:
-    def test_success_returns_repo_result(self):
-        repo = _repo()
-        repo.resolve_missing_pet.return_value = {"final_hunter_id": "h1"}
-        out = run(AdminService(repo).resolve_missing_pet(
-            "pet-1", "s1", "slip.jpg", "REF-1", "admin-1"))
-        assert out == {"final_hunter_id": "h1"}
-        repo.resolve_missing_pet.assert_called_once_with(
-            "pet-1", "s1", "slip.jpg", "REF-1", "admin-1")
-
-    @pytest.mark.parametrize("msg", [
-        "pet already resolved",
-        "final sighting is not a confirmed Caught sighting",
-        "pet has not been recovered yet (status Searching)",
-        "pet not found",
-    ])
-    def test_known_db_errors_become_valueerror(self, msg):
-        repo = _repo()
-        repo.resolve_missing_pet.side_effect = Exception(msg)
-        with pytest.raises(ValueError):
-            run(AdminService(repo).resolve_missing_pet(
-                "pet-1", "s1", "slip.jpg", None, "admin-1"))
-
-    def test_unknown_error_propagates_unchanged(self):
-        repo = _repo()
-        repo.resolve_missing_pet.side_effect = RuntimeError("connection reset")
-        with pytest.raises(RuntimeError):
-            run(AdminService(repo).resolve_missing_pet(
-                "pet-1", "s1", "slip.jpg", None, "admin-1"))
 
 
 # --------------------------------------------------------------------------- #

@@ -48,14 +48,6 @@ class AdminRepository(Protocol):
     def get_sighting_timeline(
         self, pet_id: str, limit: int, offset: int
     ) -> list[dict]: ...
-    def resolve_missing_pet(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: str | None,
-        verified_by: str,
-    ) -> object: ...
     def apply_score_penalty(
         self,
         user_id: str,

@@ -1,11 +1,7 @@
 """
-Admin service — sighting verification, sighting-timeline, the atomic
-pet-resolution call, and review of the moderation flag queue.
-
-The hard part of resolution (transferring the bounty + distributing F1 clue
-scores + flipping pet status, all atomically) is delegated to the
-`resolve_missing_pet` PostgreSQL function. This module is just the thin
-Python wrapper.
+Admin service — sighting verification, sighting-timeline, and review of the
+moderation flag queue. The bounty rulings of Feature 6 are in
+`BountyService`.
 
 All DB access goes through repository ports (app/repositories/); this service
 holds zero supabase-py calls. `AdminRepository` covers verification / timeline /
@@ -28,9 +24,10 @@ Since 2026-08-21 an administrator does not adjudicate sightings at all. Whether
 a photograph shows a particular animal is a question only its owner can answer,
 so the owner now decides every sighting and closes their own case, and
 confirming the rescue is what distributes the clue scores (see
-`SightingService.decide_match`). What is left here is moderation and MONEY:
-`resolve_missing_pet` records the bounty transfer against a case the owner has
-already closed. `verify_sighting` survives for the moderation half of the same
+`SightingService.decide_match`). What is left here is moderation; the money
+moved to Feature 6 (`BountyService`), where the returning hunter confirms a
+payment and an administrator rules only on what the two could not settle.
+`verify_sighting` survives for the moderation half of the same
 column — an upheld flag writes 'Dismissed' — and nothing writes 'Verified' any
 more.
 
@@ -154,57 +151,6 @@ class AdminService:
             return self.repo.get_sighting_timeline(pet_id, limit, offset)
         except Exception as e:
             logger.error("Error fetching timeline for pet %s: %s", pet_id, e)
-            raise
-
-    async def resolve_missing_pet(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: Optional[str],
-        verified_by: str,
-    ) -> dict:
-        """
-        Single-RPC resolution. The DB function raises on duplicate resolve
-        and on invalid final_sighting; both surface as PostgrestError which
-        we re-raise as ValueError so the API layer can return 400.
-        """
-        return await asyncio.to_thread(
-            self._resolve_missing_pet_sync, pet_id, final_sighting_id,
-            slip_image_url, reference_no, verified_by,
-        )
-
-    def _resolve_missing_pet_sync(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: Optional[str],
-        verified_by: str,
-    ) -> dict:
-        try:
-            result = self.repo.resolve_missing_pet(
-                pet_id, final_sighting_id, slip_image_url,
-                reference_no, verified_by,
-            )
-            logger.warning(
-                "Pet %s resolved by %s — final_sighting=%s",
-                pet_id, verified_by, final_sighting_id,
-            )
-            return result
-        except Exception as e:
-            msg = str(e)
-            # The DB function raises with these prefixes — translate to a
-            # client-friendly 400 instead of a 500. "has not been recovered
-            # yet" is the 2026-08-21 addition: the bounty follows the owner's
-            # resolution, so paying before they have closed the search is a
-            # sequencing mistake by the caller, not a server fault.
-            if ("already resolved" in msg
-                    or "not a confirmed Caught sighting" in msg
-                    or "has not been recovered yet" in msg
-                    or "not found" in msg):
-                raise ValueError(msg) from e
-            logger.error("Error resolving pet %s: %s", pet_id, e)
             raise
 
     # ---------------------------------------------------------------- #
