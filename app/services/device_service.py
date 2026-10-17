@@ -17,7 +17,7 @@ class DeviceService:
         self.repo = repo
 
     async def register(self, user_id: str, fcm_token: str, platform: str) -> dict:
-        """MD-09 — upsert the caller's FCM token.
+        """Upsert the caller's FCM token.
 
         Raises:
             RuntimeError: the upsert returned no row.
@@ -34,7 +34,7 @@ class DeviceService:
         return created
 
     async def unregister(self, user_id: str, fcm_token: str) -> None:
-        """MD-10 — drop the caller's FCM token on logout.
+        """Drop the caller's FCM token on logout.
 
         Scoped by BOTH user_id and fcm_token, so a client can only delete its
         own token. Deleting a token that is already gone is a benign no-op.

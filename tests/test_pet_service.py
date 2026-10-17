@@ -1,14 +1,14 @@
 """
 Unit tests for app/services/pet_service.py:
 
-  * UTC-12  get_nearby_missing_pets (MD-15, SRS-27) — Home Map proximity query:
+  * get_nearby_missing_pets — Home Map proximity query:
     WKT centre in POINT(lng lat) form, km->m conversion, limit passthrough,
     empty-result normalisation, transport-error re-raise.
-  * UTC-33  register_missing_pet (MD-37, SRS-56–65, trigger of SRS-24) — owner
+  * register_missing_pet (and the trigger of the nearby-hunter push) — owner
     report runs the same mask-isolate + CLIP path as the live sighting save
     (full-frame fallback on a YOLO miss), builds the PostGIS point, inserts with
     status "Searching" and the feature vector; a no-row insert raises.
-  * UTC-79  get_missing_pet_by_id (MD-16, SRS-41). Marker detail read. The row
+  * get_missing_pet_by_id. Marker detail read. The row
     comes back with the sighting count and the derived badge attached, an
     absent report returns None without a second query, and a failure of either
     read reaches the caller.
@@ -46,7 +46,7 @@ def _repo():
 
 
 # --------------------------------------------------------------------------- #
-# UTC-12  get_nearby_missing_pets
+# get_nearby_missing_pets
 # --------------------------------------------------------------------------- #
 class TestGetNearbyMissingPets:
     def test_builds_wkt_centre_metre_radius_and_limit(self):
@@ -85,7 +85,7 @@ class TestGetNearbyMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-33  register_missing_pet
+# register_missing_pet
 # --------------------------------------------------------------------------- #
 def _make_pet(**overrides):
     data = {
@@ -197,7 +197,7 @@ class TestRegisterMissingPet:
         repo.insert_missing_pet.assert_not_called()
 
     def test_insert_failure_is_wrapped_with_the_same_context(self, monkeypatch):
-        """UTC-33-TC-05 [error] - the insert category has two error choices and
+        """TC-05 [error] - the insert category has two error choices and
         they answer differently: storing no row is a ValueError the route reads
         as a failed creation, while a transport failure is wrapped as the
         generic error the route reads as a server fault. Framing only the first
@@ -217,13 +217,13 @@ class TestRegisterMissingPet:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-79  get_missing_pet_by_id (MD-16, SRS-41). The row plus the derived badge
+# get_missing_pet_by_id. The row plus the derived badge
 # the list endpoint already attaches, so the Status Tracker reads the rule
 # instead of owning a second copy of it. A repo error must still propagate.
 # --------------------------------------------------------------------------- #
 class TestGetMissingPetById:
     def test_returns_repo_row_with_the_derived_badge(self):
-        """UTC-79-TC-01"""
+        """TC-01"""
         repo = _repo()
         repo.get_missing_pet_by_id.return_value = {
             "id": "pet-1", "latitude": 13.7, "status": "Searching",
@@ -240,7 +240,7 @@ class TestGetMissingPetById:
         repo.get_sighting_links_for_pets.assert_called_once_with(["pet-1"])
 
     def test_missing_pet_returns_none_without_a_second_query(self):
-        """UTC-79-TC-02"""
+        """TC-02"""
         repo = _repo()
         repo.get_missing_pet_by_id.return_value = None
 
@@ -248,7 +248,7 @@ class TestGetMissingPetById:
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
-        """UTC-79-TC-03"""
+        """TC-03"""
         repo = _repo()
         repo.get_missing_pet_by_id.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
@@ -275,7 +275,7 @@ class TestGetSightingsForPet:
         with pytest.raises(RuntimeError):
             run(PetService(repo).get_sightings_for_pet("pet-1"))
 
-    # --- owner scoping, added 2026-09-09 (UTC-38-TC-03 to TC-05) ------------ #
+    # --- owner scoping, added 2026-09-09 (TC-03 to TC-05) ------------ #
     # Being signed in was the only check on this read until that date, so any
     # authenticated account could pull any owner's timeline — and these rows
     # carry where a pet was seen plus the hunter's name and telephone number.
@@ -317,7 +317,7 @@ class TestGetSightingsForPet:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-34  get_my_missing_pets (MD-38, SRS-68) — the owner's "My Reports" list.
+# get_my_missing_pets — the owner's "My Reports" list.
 #
 # Called as the test plan writes it, `PetService(pet_repo)
 # .get_my_missing_pets(owner_id)`: the repository arrives through the
@@ -330,7 +330,7 @@ class TestGetSightingsForPet:
 # --------------------------------------------------------------------------- #
 class TestGetMyMissingPets:
     def test_returns_only_the_callers_reports(self):
-        """UTC-34-TC-01 — the caller's own id is what reaches the repo."""
+        """TC-01 — the caller's own id is what reaches the repo."""
         repo = _repo()
         repo.get_by_owner.side_effect = lambda owner_id: {
             "u1": [{"id": "pet-1", "owner_id": "u1", "status": "Searching"}],
@@ -344,7 +344,7 @@ class TestGetMyMissingPets:
         repo.get_by_owner.assert_called_once_with("u1")
 
     def test_empty_when_owner_has_none(self):
-        """UTC-34-TC-02 — an owner with no reports gets [], not None, and no
+        """TC-02 — an owner with no reports gets [], not None, and no
         count query is fired for an empty list of ids."""
         repo = _repo()
         repo.get_by_owner.return_value = []
@@ -353,7 +353,7 @@ class TestGetMyMissingPets:
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_error_is_reraised(self):
-        """UTC-34-TC-03 — DB failure propagates (API maps it to 500)."""
+        """TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.get_by_owner.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
@@ -425,7 +425,7 @@ class TestGetMyMissingPets:
             run(PetService(repo).get_my_missing_pets("u1"))
 
     def test_an_aged_out_report_with_no_sighting_reads_expired(self):
-        """UTC-34-TC-09 [single] - the fourth badge, and the boundary of the
+        """TC-09 [single] - the fourth badge, and the boundary of the
         expiry column. A report that aged out with nothing to show for it is
         no longer matched by the read paths, so the owner is waiting on
         something that can no longer happen and the card must say so. The
@@ -446,7 +446,7 @@ class TestGetMyMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-36  list_all_missing_pets (MD-41, SRS-71) — admin browse.
+# list_all_missing_pets — admin browse.
 #
 # The distinction that matters is "no filter" vs "filter on None": passing
 # status=None must mean every status, never `status IS NULL`. Both TC-01 and
@@ -459,7 +459,7 @@ class TestGetMyMissingPets:
 # --------------------------------------------------------------------------- #
 class TestListAllMissingPets:
     def test_applies_status_filter_when_given(self):
-        """UTC-36-TC-01 — a supplied status is forwarded verbatim."""
+        """TC-01 — a supplied status is forwarded verbatim."""
         repo = _repo()
         repo.list_all.return_value = Page(
             [{"id": "pet-1", "status": "Searching"}], 1,
@@ -472,7 +472,7 @@ class TestListAllMissingPets:
         repo.list_all.assert_called_once_with("Searching", None, limit=10000, offset=0)
 
     def test_no_status_filter_when_none(self):
-        """UTC-36-TC-02 — status=None reaches the repo as None (= no filter)."""
+        """TC-02 — status=None reaches the repo as None (= no filter)."""
         repo = _repo()
         repo.list_all.return_value = Page([{"id": "pet-1"}, {"id": "pet-2"}], 2)
 
@@ -482,21 +482,21 @@ class TestListAllMissingPets:
         repo.list_all.assert_called_once_with(None, None, 20, 0)
 
     def test_error_is_reraised(self):
-        """UTC-36-TC-03 — DB failure propagates (API maps it to 500)."""
+        """TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.list_all.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(PetService(repo).list_all_missing_pets())
 
     def test_empty_page_returns_empty_list(self):
-        """UTC-36-TC-04 — an empty page is [], not None."""
+        """TC-04 — an empty page is [], not None."""
         repo = _repo()
         repo.list_all.return_value = Page([], 0)
         out = run(PetService(repo).list_all_missing_pets(limit=20, offset=0))
         assert out.items == [] and out.total == 0
 
     def test_total_is_the_filter_count_not_the_page_length(self):
-        """UTC-36-TC-05 — a full page of a larger result carries the real total.
+        """TC-05 — a full page of a larger result carries the real total.
 
         This is the whole point of the count: page 1 of 57 reports must say 57,
         because that is what tells the console pages 2 and 3 exist.
@@ -510,7 +510,7 @@ class TestListAllMissingPets:
         assert out.total == 57
 
     def test_a_stored_status_is_forwarded_with_the_window(self):
-        """UTC-36-TC-06 - the database path. Found and Resolved are stored
+        """TC-06 - the database path. Found and Resolved are stored
         values, so the predicate and the window both go to the query and the
         total the database reports is already correct. This is the choice
         TC-01 was believed to frame until the audit of 07/09/2026 found that
@@ -525,7 +525,7 @@ class TestListAllMissingPets:
         repo.list_all.assert_called_once_with("Found", None, 20, 0)
 
     def test_spotted_keeps_only_the_reports_that_have_a_sighting(self):
-        """UTC-36-TC-07 [property DERIVED] - Spotted is not a stored value.
+        """TC-07 [property DERIVED] - Spotted is not a stored value.
         Both Spotted and Searching sit in the database as status='Searching',
         and only the sighting count separates them, so the service reads the
         whole Searching bucket, counts, and filters. Nothing framed this
@@ -549,7 +549,7 @@ class TestListAllMissingPets:
         )
 
     def test_searching_keeps_only_the_reports_that_have_none(self):
-        """UTC-36-TC-08 [property DERIVED] - the other half of the same split.
+        """TC-08 [property DERIVED] - the other half of the same split.
         A console asking for Searching wants the reports nobody has answered
         yet, so a report carrying a sighting belongs to the Spotted bucket and
         must not appear in both."""
@@ -569,7 +569,7 @@ class TestListAllMissingPets:
         assert out.total == 1
 
     def test_the_derived_page_is_sliced_after_the_filter(self):
-        """UTC-36-TC-09 [if DERIVED] - the window cannot be applied by the
+        """TC-09 [if DERIVED] - the window cannot be applied by the
         query on this path, because the filter that decides membership runs
         after the rows come back. The total is therefore the depth of the
         filtered result and the page is cut from it here, which is what keeps
@@ -587,7 +587,7 @@ class TestListAllMissingPets:
         assert out.total == 5
 
     def test_the_species_filter_is_forwarded(self):
-        """UTC-36-TC-10 - the second filter of this browse, unframed until
+        """TC-10 - the second filter of this browse, unframed until
         07/09/2026. It is independent of the status filter, so a console
         narrowing to one species must not silently widen the status."""
         repo = _repo()
@@ -600,15 +600,15 @@ class TestListAllMissingPets:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-37  remove_missing_pet (MD-42, SRS-70) — admin removal.
+# remove_missing_pet — admin removal.
 #
-# UD-14's postcondition is "removed from the database and the search map", so
+# The removal's postcondition is "removed from the database and the search map", so
 # the deletion is real; "no row deleted" is the not-found signal, which the
 # service must turn into a ValueError rather than reporting a phantom success.
 # --------------------------------------------------------------------------- #
 class TestRemoveMissingPet:
     def test_removes_the_report(self):
-        """UTC-37-TC-01 — the row is deleted and the deleted row returned."""
+        """TC-01 — the row is deleted and the deleted row returned."""
         repo = _repo()
         repo.remove.return_value = {"id": "p1", "pet_name": "Mochi"}
 
@@ -618,21 +618,21 @@ class TestRemoveMissingPet:
         repo.remove.assert_called_once_with("p1")
 
     def test_not_found_raises_valueerror(self):
-        """UTC-37-TC-02 — nothing deleted => ValueError (API maps it to 404)."""
+        """TC-02 — nothing deleted => ValueError (API maps it to 404)."""
         repo = _repo()
         repo.remove.return_value = None
         with pytest.raises(ValueError):
             run(PetService(repo).remove_missing_pet("ghost", "a1"))
 
     def test_error_is_reraised(self):
-        """UTC-37-TC-03 — DB failure propagates (API maps it to 500)."""
+        """TC-03 — DB failure propagates (API maps it to 500)."""
         repo = _repo()
         repo.remove.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(PetService(repo).remove_missing_pet("p1", "a1"))
 
     def test_removal_is_audit_logged_with_the_admin(self, caplog):
-        """The moderation action is recorded — MD-42 says the removal is a
+        """The moderation action is recorded — the method spec says the removal is a
         recorded action, and the log line is where that record lives."""
         repo = _repo()
         repo.remove.return_value = {"id": "p1"}

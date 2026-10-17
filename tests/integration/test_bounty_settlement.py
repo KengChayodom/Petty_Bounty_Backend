@@ -308,22 +308,3 @@ class TestReviewFixes:
         self._reject(conn, seed, pet, owner, 73)
         _pay(conn, pet, owner, slip="http://slip/2.jpg")
         assert self._kinds(conn, pet) == []
-
-    def test_backfill_closes_found_reports_with_nobody_to_pay(self, conn, seed):
-        owner = seed.user(username="Owner")
-        hand_closed = seed.missing_pet(owner_id=owner, status="Found", bounty=1000)
-        zero = seed.missing_pet(owner_id=owner, status="Found", bounty=0)
-        _call(conn, "SELECT bounty_backfill_existing()", ())
-        assert pet_status(conn, hand_closed) == "Resolved"
-        assert pet_status(conn, zero) == "Resolved"
-
-    def test_backfill_stamps_found_at_on_reports_with_a_hunter(self, conn, seed):
-        owner = seed.user(username="Owner")
-        hunter = seed.user(username="Hunter")
-        pet = seed.missing_pet(owner_id=owner, status="Found", bounty=1000)
-        catch = seed.sighting(hunter_id=hunter, action="Caught")
-        seed.sighting_match(sighting_id=catch, missing_pet_id=pet, owner_status="Confirmed")
-        _call(conn, "SELECT bounty_backfill_existing()", ())
-        assert pet_status(conn, pet) == "Found"
-        assert _one(conn, "SELECT found_at IS NOT NULL FROM missing_pets WHERE id = %s", (pet,))[0]
-        _call(conn, "SELECT refer_bounty_unpaid(%s, %s)", (pet, hunter))

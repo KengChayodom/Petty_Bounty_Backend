@@ -13,10 +13,6 @@ is tested here against the real function rather than against a double:
     does a card that was confirmed and later dismissed by moderation;
   * ranking is NEWEST first, one seat per hunter, 25/15/10/5/5, capped at five;
   * the payout happens EXACTLY ONCE, guarded by the search being closed.
-
-The bounty half is tested alongside it: `resolve_missing_pet` must no longer
-award anything, or every hunter would be paid twice — once at rescue, once when
-the administrator settles the money days later.
 """
 import uuid
 
@@ -435,86 +431,3 @@ def _pending_in_order(conn, pet_id):
             (pet_id,),
         )
         return [r[0] for r in cur.fetchall()]
-
-
-# --------------------------------------------------------------------------- #
-# resolve_missing_pet — money only, and only after the owner has closed
-# --------------------------------------------------------------------------- #
-class TestBountySettlement:
-    def _rescued_case(self, conn, seed):
-        owner, helper, catcher = seed.user(), seed.user(), seed.user()
-        pet = seed.missing_pet(owner_id=owner, bounty=5000)
-        helped = _card(seed, pet, hunter=helper, created_at="2026-01-01")
-        catch = _card(seed, pet, hunter=catcher, created_at="2026-01-02",
-                      action="Caught")
-        _decide(conn, pet, helped, owner, "Confirmed")
-        _decide(conn, pet, catch, owner, "Confirmed")
-        return pet, catch, catcher, helper
-
-    def _resolve(self, conn, pet, sighting, admin):
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT resolve_missing_pet(%s, %s, %s, %s, %s)",
-                (pet, sighting, "http://img/slip.jpg", "REF-1", admin),
-            )
-            return cur.fetchone()[0]
-
-    def test_settlement_pays_the_bounty_and_awards_nothing(self, conn, seed):
-        """The scores were distributed at rescue time, days earlier. Awarding
-        here as well — which the old function did — would pay everyone twice."""
-        admin = seed.user(role="admin")
-        pet, catch, catcher, helper = self._rescued_case(conn, seed)
-        before = {u: total_score(conn, u) for u in (catcher, helper)}
-
-        out = self._resolve(conn, pet, catch, admin)
-
-        assert out["awards"] == []
-        assert out["bounty_amount"] == 5000
-        assert pet_status(conn, pet) == "Resolved"
-        assert row_count(conn, "bounty_transactions", "missing_pet_id", pet) == 1
-        assert {u: total_score(conn, u) for u in (catcher, helper)} == before
-
-    def test_a_search_the_owner_has_not_closed_cannot_be_paid(self, conn, seed):
-        """The bounty follows the owner's resolution. Paying first would settle
-        a case nobody has said is over."""
-        admin, owner, hunter = seed.user(role="admin"), seed.user(), seed.user()
-        pet = seed.missing_pet(owner_id=owner)
-        catch = _card(seed, pet, hunter=hunter, created_at="2026-01-01",
-                      action="Caught")
-
-        with pytest.raises(
-            psycopg.errors.RaiseException, match="has not been recovered yet",
-        ):
-            with conn.transaction():
-                self._resolve(conn, pet, catch, admin)
-
-    def test_paying_a_sighting_the_owner_did_not_confirm_is_refused(
-        self, conn, seed,
-    ):
-        """Eligibility is the owner's confirmation now, not an administrator's
-        own verification — nothing writes 'Verified' any more."""
-        admin = seed.user(role="admin")
-        pet, catch, _, helper = self._rescued_case(conn, seed)
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT s.id FROM sightings s WHERE s.hunter_id = %s", (helper,)
-            )
-            helper_sighting = cur.fetchone()[0]
-
-        with pytest.raises(
-            psycopg.errors.RaiseException, match="not a confirmed Caught sighting",
-        ):
-            with conn.transaction():
-                self._resolve(conn, pet, helper_sighting, admin)
-        assert catch is not None
-
-    def test_settling_twice_is_refused(self, conn, seed):
-        admin = seed.user(role="admin")
-        pet, catch, _, _ = self._rescued_case(conn, seed)
-
-        self._resolve(conn, pet, catch, admin)
-        with pytest.raises(
-            psycopg.errors.RaiseException, match="already resolved",
-        ):
-            with conn.transaction():
-                self._resolve(conn, pet, catch, admin)

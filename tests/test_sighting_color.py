@@ -379,14 +379,14 @@ class TestNormalizeActionType:
 
 
 class TestDropOwnReports:
-    """MD-91. A discovery sighting is never matched to the hunter's own
+    """A discovery sighting is never matched to the hunter's own
     report. Ids are compared by their text, so a non-string id still matches
     the string keys the owner lookup returns."""
 
     HUNTER = "hunter-1"
 
     def test_the_hunters_own_report_is_dropped(self):
-        """UTC-93-TC-01."""
+        """TC-01."""
         from app.services.sighting_logic import drop_own_reports
 
         out = drop_own_reports(
@@ -396,7 +396,7 @@ class TestDropOwnReports:
         assert out == []
 
     def test_a_strangers_report_is_kept(self):
-        """UTC-93-TC-02."""
+        """TC-02."""
         from app.services.sighting_logic import drop_own_reports
 
         out = drop_own_reports(
@@ -406,7 +406,7 @@ class TestDropOwnReports:
         assert out == [{"id": "pet-1"}]
 
     def test_a_report_whose_owner_is_unknown_is_kept(self):
-        """UTC-93-TC-03. A failed lookup must not hide a stranger's pet."""
+        """TC-03. A failed lookup must not hide a stranger's pet."""
         from app.services.sighting_logic import drop_own_reports
 
         out = drop_own_reports([{"id": "pet-1"}], {}, self.HUNTER)

@@ -21,7 +21,6 @@ from app.repositories.user_repository import (
 )
 from app.schemas.admin import (
     AssignRoleRequest,
-    ResolveMissingPetRequest,
     ReviewReportRequest,
     VerifySightingRequest,
 )
@@ -150,7 +149,7 @@ async def list_all_missing_pets(
     pets: PetService = Depends(get_pet_service),
     admin_id: str = Depends(require_admin),
 ):
-    """MD-41 / SRS-70 — browse every missing-pet report for moderation.
+    """Browse every missing-pet report for moderation.
 
     Returns `{items, total, limit, offset}`. `total` counts every report
     matching `status`, not just this page, so the console can draw numbered
@@ -203,9 +202,9 @@ async def remove_missing_pet(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-42 / SRS-69 — remove a report that violates the platform guidelines.
+    Remove a report that violates the platform guidelines.
 
-    UD-14's postcondition is "removed from the database and the search map", so
+    The removal's postcondition is "removed from the database and the search map", so
     the row is deleted outright; the moderation action is recorded in the log.
     """
     try:
@@ -236,7 +235,7 @@ async def list_reports(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-51 — browse the moderation flag queue.
+    Browse the moderation flag queue.
 
     The listing `PATCH /admin/reports/{report_id}` acts from: without it an
     administrator can only review a flag whose identifier they already hold,
@@ -272,14 +271,14 @@ async def review_report(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-44 / SRS-72 — dismiss a flag, or uphold it and deduct the hunter's score.
+    Dismiss a flag, or uphold it and deduct the hunter's score.
 
     Upholding sets the flagged sighting to Dismissed and subtracts score from
-    the hunter who submitted it (UD-16 steps 4-5). **No account is banned or
+    the hunter who submitted it. **No account is banned or
     suspended** — that sanction was replaced by the deduction on 2026-08-20; see
     the `admin_service` module docstring for why. `penalty_points` overrides the
     per-reason default. A flag another admin has already decided returns 409
-    rather than being overwritten (UD-16 [E1]).
+    rather than being overwritten.
     """
     try:
         result = await service.review_report(
@@ -303,53 +302,8 @@ async def review_report(
     )
 
 
-@router.post(
-    "/missing-pets/{pet_id}/resolve",
-    response_model=StandardResponse,
-)
-async def resolve_missing_pet(
-    pet_id: str,
-    payload: ResolveMissingPetRequest,
-    service: AdminService = Depends(get_admin_service),
-    admin_id: str = Depends(require_admin),
-):
-    """
-    Settle the bounty on a case the OWNER has already closed.
-
-    Records the transfer against the sighting the owner confirmed as the catch
-    and moves the report from 'Found' to 'Resolved'. Since 2026-08-21 it does
-    NOT award any points: the clue scores were distributed when the owner
-    confirmed the rescue, possibly days earlier (see
-    `SightingService.decide_match`), and awarding here as well would pay every
-    hunter twice.
-
-    400 when the pet was never recovered ('Found' is the precondition), when
-    the nominated sighting is not the owner-confirmed catch, or when the bounty
-    was already settled.
-    """
-    try:
-        result = await service.resolve_missing_pet(
-            pet_id=pet_id,
-            final_sighting_id=payload.final_sighting_id,
-            slip_image_url=payload.slip_image_url,
-            reference_no=payload.reference_no,
-            verified_by=admin_id,
-        )
-        return StandardResponse(
-            status="success",
-            message="Missing pet resolved; bounty paid and clue scores distributed.",
-            data=result,
-        )
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to resolve pet: {e}"
-        )
-
-
 # ---------------------------------------------------------------------- #
-# Role assignment — UD-23 / SRS-93..98. Access control, not moderation:
+# Role assignment. Access control, not moderation:
 # nothing below can suspend, deactivate, or delete an account. Listing is
 # limited to the current admin set (always small); there is no route that
 # lists or searches all user accounts.
@@ -365,7 +319,7 @@ async def find_user_by_email(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-56 / SRS-93 — resolve ONE account from its exact email address.
+    Resolve ONE account from its exact email address.
 
     The lookup `PATCH /admin/users/{id}/role` acts from: without it an
     administrator can only change the role of an account whose identifier they
@@ -426,7 +380,7 @@ async def assign_user_role(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-57 / SRS-95-98 — grant administrator access to an account, or withdraw it.
+    Grant administrator access to an account, or withdraw it.
 
     **This is the only thing an administrator does to an account.** Setting
     'user' withdraws console access and leaves everything else alone — the
@@ -485,7 +439,7 @@ async def list_role_changes(
     admin_id: str = Depends(require_admin),
 ):
     """
-    MD-58 / SRS-97 — the record of every role grant and withdrawal, newest first.
+    The record of every role grant and withdrawal, newest first.
 
     Append-only: nothing edits or deletes a row, so an account's access history
     stays complete. Returns `{items, total, limit, offset}`.
@@ -531,7 +485,7 @@ async def _bounty(coro):
 
 @router.get("/bounty-queue", response_model=StandardResponse)
 async def bounty_queue(service: BountyService = Depends(get_bounty_service)):
-    """SRS-110: disputed payments, payments left unconfirmed past their
+    """Disputed payments, payments left unconfirmed past their
     three-day dispute window, reports referred as unpaid, and reports whose
     payment was rejected over three days ago and not paid again, oldest first.
     Each entry carries the report, both parties, the amount and any slip."""
@@ -549,7 +503,7 @@ async def rule_bounty_payment(
     notif_repo: NotificationRepository = Depends(get_notification_repository),
     admin_id: str = Depends(require_admin),
 ):
-    """SRS-111, SRS-113: confirm a payment (the report becomes "Resolved") or
+    """Confirm a payment (the report becomes "Resolved") or
     reject it (the report stays "Found" and the owner is notified to pay
     again). The ruling Administrator and the time are recorded."""
     result = await _bounty(service.admin_rule(payment_id, admin_id, payload.decision))
@@ -569,7 +523,7 @@ async def close_bounty_unpaid(
     service: BountyService = Depends(get_bounty_service),
     admin_id: str = Depends(require_admin),
 ):
-    """SRS-112, SRS-113: close an unpaid report as "Resolved", recording that
+    """Close an unpaid report as "Resolved", recording that
     the bounty was not paid, by whom and when."""
     result = await _bounty(service.admin_close_unpaid(pet_id, admin_id))
     return StandardResponse(status="success", message="Closed as unpaid.", data=result)

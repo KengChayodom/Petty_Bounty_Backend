@@ -1,12 +1,10 @@
 """
-Route unit tests for the FCM geo-push surface (UTC-07, UTC-08, UTC-09, UTC-11):
-  * POST /devices/register   — upsert keyed on fcm_token (re-registration reassigns)  [SRS-19]
-  * POST /devices/unregister — drop the caller's token on logout                       [SRS-20]
-  * POST /me/location        — write last_location + last_location_at for the JWT user [SRS-26]
-  * POST /missing-pets/      — fan out notify_nearby_hunters via BackgroundTasks  [SRS-24, SRS-25]
+Route unit tests for the FCM geo-push surface:
+  * POST /devices/register   — upsert keyed on fcm_token (re-registration reassigns)
+  * POST /devices/unregister — drop the caller's token on logout
+  * POST /me/location        — write last_location + last_location_at for the JWT user
+  * POST /missing-pets/      — fan out notify_nearby_hunters via BackgroundTasks
 
-Progress-I SRS traceability: SRS-19 (TestRegisterDevice), SRS-20 (TestUnregisterDevice),
-SRS-26 (TestUpdateLocation), SRS-24 + SRS-25 (TestMissingPetFanout).
 
 Boundary rule (per db-testing-seams): the auth dependency and the repository
 ports are the boundaries; both are replaced via FastAPI dependency_overrides
@@ -48,7 +46,7 @@ def _client(router, repo_dep, repo):
 
 
 # --------------------------------------------------------------------------- #
-# POST /devices/register  (SRS-19: capture/store the FCM token on login)
+# POST /devices/register  (capture/store the FCM token on login)
 # --------------------------------------------------------------------------- #
 class TestRegisterDevice:
     def test_upserts_with_jwt_user(self):
@@ -121,7 +119,7 @@ class TestRegisterDevice:
 
 
 # --------------------------------------------------------------------------- #
-# POST /devices/unregister  (SRS-20: drop the token on logout)
+# POST /devices/unregister  (drop the token on logout)
 # --------------------------------------------------------------------------- #
 class TestUnregisterDevice:
     def test_deletes_scoped_to_jwt_user_and_token(self):
@@ -153,7 +151,7 @@ class TestUnregisterDevice:
 
 
 # --------------------------------------------------------------------------- #
-# POST /me/location  (SRS-26: keep the hunter's location fresh for geo-alerts)
+# POST /me/location  (keep the hunter's location fresh for geo-alerts)
 # --------------------------------------------------------------------------- #
 class TestUpdateLocation:
     def test_writes_location_for_jwt_user(self):
@@ -194,7 +192,7 @@ class TestUpdateLocation:
 
 # --------------------------------------------------------------------------- #
 # POST /missing-pets/  — the geo-push fan-out
-# (SRS-24: push to hunters within 10 km; SRS-25: exclude the owner)
+# (push to hunters within 10 km, excluding the owner)
 # --------------------------------------------------------------------------- #
 class TestMissingPetFanout:
     _BODY = {

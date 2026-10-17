@@ -51,12 +51,12 @@ async def update_my_location(
 
 
 class ProfileUpdateRequest(BaseModel):
-    """Profile edit payload (MD-46: username, phone and photo). Every field
+    """Profile edit payload (username, phone and photo). Every field
     is optional so the client can save any one alone or all three together, but
     at least one must be present — an empty PATCH is rejected. `username`
-    carries the username (stored in the users.username column, SRS-73);
-    `photo_url` is the Object Storage address of a pre-uploaded picture (SRS-74);
-    `phone` is the mobile number (users.phone, SRS-99).
+    carries the username (stored in the users.username column);
+    `photo_url` is the Object Storage address of a pre-uploaded picture;
+    `phone` is the mobile number (users.phone).
 
     `phone` carries no format rule on purpose. The column is free text, the
     project has never specified one (the sign-up form does not check a format
@@ -74,10 +74,10 @@ async def update_my_profile(
     service: UserService = Depends(get_user_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """Edit the caller's own profile — username, phone and/or photo (MD-46).
+    """Edit the caller's own profile — username, phone and/or photo.
 
     Caller identity comes solely from the JWT; the update is self-scoped to that
-    row in `users`. Validation mirrors UD-17: a blank username -> 400, an
+    row in `users`. Validation mirrors the use case: a blank username -> 400, an
     unsupported photo format -> 400, a missing profile row -> 404.
     """
     try:

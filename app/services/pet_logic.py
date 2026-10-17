@@ -42,7 +42,7 @@ def _normalize_filter(value, permitted, name):
     """Map a caller-supplied filter onto its enumeration, or raise.
 
     `None` passes through and means "every value", not "a value which is null",
-    the convention MD-41 and MD-51 share. Anything else unrecognised raises
+    the convention the admin browse and the flag queue share. Anything else unrecognised raises
     ValueError so the route answers 400, rather than reaching PostgREST and
     failing there as an enumeration cast, which surfaces as a 500. Matching is
     case-insensitive but exact on the names, the same rule
@@ -60,12 +60,12 @@ def _normalize_filter(value, permitted, name):
 
 
 def normalize_browse_status(status):
-    """MD-41's `status` filter. See _normalize_filter."""
+    """The admin browse's `status` filter. See _normalize_filter."""
     return _normalize_filter(status, BROWSE_STATUS_FILTERS, "status")
 
 
 def normalize_browse_species(species):
-    """MD-41's `species` filter. See _normalize_filter."""
+    """The admin browse's `species` filter. See _normalize_filter."""
     return _normalize_filter(species, BROWSE_SPECIES_FILTERS, "species")
 
 
@@ -78,7 +78,7 @@ def is_closed_pet_status(pet_status: str | None) -> bool:
     """True when `pet_status` means the search is over (case-insensitive)."""
     return (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES
 
-# SRS-86: a post stops reaching new hunters once it passes its `expires_at`.
+# A post stops reaching new hunters once it passes its `expires_at`.
 # The read paths (`match_missing_pets`, `get_nearby_missing_pets`) filter
 # `mp.expires_at > NOW()`, and the badge below reads the same column — one
 # source of truth, no duplicated interval. The seven-day grant lives only in
