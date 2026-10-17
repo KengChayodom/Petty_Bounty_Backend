@@ -104,9 +104,7 @@ class OwnReportRefused(ValueError):
 
     def __init__(self, pet_id: str):
         self.pet_id = pet_id
-        super().__init__(
-            f"You cannot report a sighting on your own report ({pet_id})"
-        )
+        super().__init__("You cannot report a sighting on your own report")
 
 
 class SightingRepository(Protocol):

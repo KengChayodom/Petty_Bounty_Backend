@@ -138,7 +138,7 @@ def notify_nearby_hunters(
     send_to_users(
         repo,
         user_ids,
-        title="Missing pet nearby 🐾",
+        title="Missing pet nearby",
         body=f"{pet_name} ({species}) was just reported near you. Can you help?",
         data={"petId": pet_id},
     )

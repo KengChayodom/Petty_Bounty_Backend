@@ -95,6 +95,18 @@ class TestFlagSighting:
 
         repo.create_flag.assert_not_called()
 
+    def test_withdrawn_target_sighting_raises_not_found(self):
+        """TC-07 — a sighting an Administrator withdrew reads as no longer
+        available (API -> 404), and no flag is written."""
+        service, repo, _ = _service(
+            sighting={"id": "s1", "hunter_id": "h1", "verification_status": "Dismissed"},
+        )
+
+        with pytest.raises(FlagTargetNotFound, match="no longer available"):
+            run(service.flag_sighting("s1", "Spam", "r1"))
+
+        repo.create_flag.assert_not_called()
+
     def test_db_error_propagates(self):
         """TC-05 — insert failure surfaces (API maps it to 500)."""
         service, repo, _ = _service()

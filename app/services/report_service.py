@@ -58,7 +58,9 @@ class ReportService:
         self, sighting_id: str, reporter_id: str, payload: dict,
     ) -> dict:
         target = self.sighting_repo.get_sighting(sighting_id)
-        if not target:
+        # A withdrawn sighting is already off every owner timeline, so there is
+        # nothing left to flag.
+        if not target or target.get("verification_status") == "Dismissed":
             raise FlagTargetNotFound(sighting_id)
 
         created = self.repo.create_flag(payload)
