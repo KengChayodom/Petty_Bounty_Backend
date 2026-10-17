@@ -7,8 +7,6 @@ it all — the upsert-on-fcm_token reassign/refresh contract that
 SupabaseDeviceTokenRepository.upsert_device_token relies on so a token moving
 accounts reassigns cleanly instead of duplicating.
 
-Progress-I SRS traceability: SRS-19 (register/upsert on fcm_token),
-SRS-20 (unregister scoped to the caller's own token).
 """
 import psycopg
 import pytest

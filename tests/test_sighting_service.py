@@ -14,22 +14,22 @@ the sighting_matches on-conflict/idempotency contract) are NOT asserted here —
 they belong to the adapter integration suite (TEST_PLAN §4 #5).
 
 Progress-I SRS traceability:
-  * SRS-33 — the server refuses to save when no cat/dog/bird is detected
+  * The server refuses to save when no cat/dog/bird is detected
     (TestProcessAndSaveCacheMiss::test_miss_yolo_finds_nothing_raises_and_skips_insert).
-  * SRS-34 — the sighting save persists the USER-confirmed species + the cached
-    vector, returns the ranked matches (with their cosine similarity scores,
-    SRS-38), and links candidate pets via sighting_matches
+  * The sighting save persists the USER-confirmed species + the cached
+    vector, returns the ranked matches (with their cosine similarity scores),
+    and links candidate pets via sighting_matches
     (TestProcessAndSaveCacheHit::{test_persists_user_species_and_cached_vector_not_yolo,
     test_persists_matches_into_sighting_matches}, TestGetMatches, TestPersistMatches).
-  * SRS-49 — the TARGETED flow: the hunter reports one known pet straight to its
+  * The TARGETED flow: the hunter reports one known pet straight to its
     owner (pet-detail "Report Sighting"). It stores initial_target_pet_id, skips
     the CLIP vector + match RPC, and goes through the dedicated
     save_targeted_sighting method (its own endpoint POST /sightings/targeted),
     NOT a skip_matching flag (TestSaveTargetedSighting).
-  * SRS-46 — the species-correction dropdown ("No" -> pick correct species) is a
+  * The species-correction dropdown ("No" -> pick correct species) is a
     DISCOVERY re-submit: the client calls createSightingWithMatch, which goes
     through process_and_save_sighting (matching runs again with the corrected
-    species). It has no target pet, so it is distinct from SRS-49
+    species). It has no target pet, so it is distinct from the targeted flow
     (TestProcessAndSaveCacheHit::test_persists_user_species_and_cached_vector_not_yolo).
 """
 import asyncio
@@ -322,7 +322,7 @@ class TestProcessAndSaveCacheHit:
 
 
 # --------------------------------------------------------------------------- #
-# save_targeted_sighting — the pet-detail TARGETED path (UTC-26, MD-36). The
+# save_targeted_sighting — the pet-detail TARGETED path. The
 # hunter reports ONE known pet straight to its owner: no CLIP vector, no match
 # RPC, initial_target_pet_id set, matches always empty. Its own method + its
 # own endpoint (POST /sightings/targeted), NOT a skip_matching flag.
@@ -491,7 +491,7 @@ class TestProcessAndSaveCacheMiss:
         assert "expected_species" not in kwargs
 
     def test_miss_yolo_finds_nothing_raises_and_skips_insert(self):
-        # SRS-33: when no cat/dog/bird is detected the server refuses to save a
+        # When no cat/dog/bird is detected the server refuses to save a
         # sighting (the UI surfaces "No target animal detected, please try again").
         # embed_image reports used_full_frame -> ValueError, no row written.
         sighting = make_sighting()
@@ -624,7 +624,7 @@ class TestProcessAndSaveErrorFrames:
 
 
 # --------------------------------------------------------------------------- #
-# analyze_sighting_image (UTC-14, SRS-32/33) — the heavy first step. We test its
+# analyze_sighting_image — the heavy first step. We test its
 # COORDINATION logic with a mocked AI manager + the real AnalyzeCache: the
 # success path returns the verify-screen payload and caches the full result; a
 # YOLO miss returns not_found without caching or encoding; a pipeline error
@@ -697,7 +697,7 @@ class TestAnalyzeSightingImage:
 
 
 # --------------------------------------------------------------------------- #
-# get_sighting_by_id (UTC-32) — single read with the internal feature vector
+# get_sighting_by_id — single read with the internal feature vector
 # stripped; an unknown id returns None (not an error); a DB error re-raises.
 # --------------------------------------------------------------------------- #
 class TestGetSightingById:
@@ -803,12 +803,12 @@ class TestGetHunterActivity:
         }
 
     def test_a_penalty_that_outlived_its_sighting_is_left_out_here(self):
-        """UTC-44-TC-04 - a deduction carrying no sighting is a separate choice
+        """TC-04 - a deduction carrying no sighting is a separate choice
         of the same category and was sharing TC-03's test method until
         2026-09-07. `sighting_id` is ON DELETE SET NULL, so a deduction can
         outlive what it punished; it must not crash the assembly and it must
         not attach itself to an unrelated sighting. It is still counted in the
-        cumulative summary of UTC-45."""
+        cumulative summary of get_hunter_stats."""
         repo = _repo()
         repo.count_sightings_for_hunter.return_value = 1
         repo.list_sightings_for_hunter.return_value = [{"id": "s1"}]
@@ -824,7 +824,7 @@ class TestGetHunterActivity:
         assert s1["score_penalty"] is None
 
     def test_a_sighting_can_carry_both_an_award_and_a_penalty(self):
-        """UTC-44-TC-06 - they are independent records: a sighting that earned points on one
+        """TC-06 - they are independent records: a sighting that earned points on one
         case can still have been flagged and upheld."""
         repo = _repo()
         repo.count_sightings_for_hunter.return_value = 1
@@ -924,7 +924,7 @@ class TestGetHunterStats:
         assert run(svc.get_hunter_stats("hunter-1"))["total_score"] == 0
 
     def test_a_deduction_with_no_points_counts_as_zero(self):
-        """UTC-45-TC-06 [single] - the boundary of the summed column. A
+        """TC-06 [single] - the boundary of the summed column. A
         deduction row whose points figure is absent must count as nothing
         rather than fail the whole card, which is a stats screen the hunter
         opens far more often than any administrator opens the queue."""
@@ -1114,7 +1114,7 @@ class TestConfirmSightingAction:
         repo.set_sighting_action_type.assert_not_called()
 
     def test_a_database_failure_is_not_a_missing_sighting(self):
-        """UTC-46-TC-09 [error] - the read has two error choices and only one
+        """TC-09 [error] - the read has two error choices and only one
         was framed until 2026-09-07. A read that finds nothing is a missing
         sighting, which the route reports as 404, and a read that fails is a
         server fault, which it reports as 500. Collapsing the two would tell a
@@ -1149,7 +1149,7 @@ class TestConfirmSightingAction:
         repo.set_sighting_action_type.assert_not_called()
 
     def test_reversed_withdrawal_does_not_lock(self):
-        """'Verified' is written only to REVERSE a withdrawal (MD-50), and the
+        """'Verified' is written only to REVERSE a withdrawal, and the
         reversal puts the sighting back on the owner's timeline and back in
         their queue. Locking the hunter out of it would make the undo a
         partial one, so 'Verified' must not be read as a standing ruling."""

@@ -60,7 +60,7 @@ async def unregister_device(
     service: DeviceService = Depends(get_device_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """Drop the caller's FCM token on logout (SRS-20).
+    """Drop the caller's FCM token on logout.
 
     Scoped by BOTH user_id and fcm_token so a client can only delete its own
     token — never another account's. Deleting a token that is already gone

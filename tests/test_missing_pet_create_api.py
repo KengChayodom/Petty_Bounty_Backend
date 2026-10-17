@@ -1,17 +1,17 @@
 """
-Route tests for POST /missing-pets/ — the create half of the owner's report.
+Route tests for POST /missing-pets/ (`create_missing_pet`) — the create half of the owner's report.
 
-The service test (UTC-33, tests/test_pet_service.py::TestRegisterMissingPet)
-verifies what `register_missing_pet` stores. It cannot verify SRS-61, because
+The service test (tests/test_pet_service.py::TestRegisterMissingPet)
+verifies what `register_missing_pet` stores. It cannot verify the owner binding, because
 the owner identity is bound in the route and the service only ever sees the
 payload after the binding has happened. Nothing tested that binding on this
 path until 2026-09-10: the one test that looked like it did,
 `test_an_owner_id_in_the_body_is_ignored`, is in test_missing_pet_update_api.py
-and belongs to the EDIT route (SRS-65/66).
+and belongs to the EDIT route.
 
 Two things live only in this handler and are invisible to a service test:
 
-  1. SRS-61 — `pet.owner_id` is overwritten from the verified JWT before the
+  1. `pet.owner_id` is overwritten from the verified JWT before the
      service is called, so an owner id in the request body is discarded.
   2. Which HTTP status each domain outcome becomes: a ValueError out of the
      service is the client's fault (400), anything else is the server's (500).
@@ -69,7 +69,7 @@ def _env(monkeypatch, *, register=None):
 
 class TestCreateMissingPetRoute:
     def test_the_owner_is_taken_from_the_token(self, monkeypatch):
-        """UTC-74-TC-01 — SRS-61, the ordinary request."""
+        """TC-01 — the ordinary request."""
         env = _env(monkeypatch)
 
         r = env.client.post("/missing-pets/", json=_BODY)
@@ -78,7 +78,7 @@ class TestCreateMissingPetRoute:
         assert env.seen["pet"].owner_id == JWT_OWNER
 
     def test_an_owner_id_in_the_body_is_discarded(self, monkeypatch):
-        """UTC-74-TC-02 — SRS-61, the attack this requirement exists for.
+        """TC-02 — the attack this requirement exists for.
 
         A client that posts somebody else's identifier must not be able to
         file a report under it. The assertion is on the value the service was
@@ -95,7 +95,7 @@ class TestCreateMissingPetRoute:
         assert env.seen["pet"].owner_id == JWT_OWNER
 
     def test_the_stored_report_is_returned_in_the_envelope(self, monkeypatch):
-        """UTC-74-TC-03 — the row the service returned reaches the caller."""
+        """TC-03 — the row the service returned reaches the caller."""
         env = _env(monkeypatch)
 
         r = env.client.post("/missing-pets/", json=_BODY)
@@ -105,7 +105,7 @@ class TestCreateMissingPetRoute:
         assert body["data"]["id"] == "pet-123"
 
     def test_a_refused_report_is_the_callers_fault(self, monkeypatch):
-        """UTC-74-TC-04 — a ValueError out of the service is 400, not 500."""
+        """TC-04 — a ValueError out of the service is 400, not 500."""
         async def refusing(self, pet):
             raise ValueError("Invalid image URL")
 
@@ -117,7 +117,7 @@ class TestCreateMissingPetRoute:
         assert "Invalid image URL" in r.json()["detail"]
 
     def test_an_unexpected_failure_is_the_servers_fault(self, monkeypatch):
-        """UTC-74-TC-05 — anything that is not a ValueError is 500."""
+        """TC-05 — anything that is not a ValueError is 500."""
         async def exploding(self, pet):
             raise RuntimeError("DB connection lost")
 
@@ -138,10 +138,9 @@ class TestCreateMissingPetRoute:
     def test_a_payload_the_schema_refuses_never_reaches_the_service(
         self, monkeypatch, bad
     ):
-        """UTC-74-TC-06 — the schema refuses first, so the route writes nothing.
+        """TC-06 — the schema refuses first, so the route writes nothing.
 
-        This is the seam between the schema and MD-79: the validators of UTC-57
-        to UTC-59
+        This is the seam between the schema and the route: the schema validators
         decide the value, and what this case pins is that a refusal there is a
         422 and the service is never called at all.
         """

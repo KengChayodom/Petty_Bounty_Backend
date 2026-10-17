@@ -1,9 +1,9 @@
 """
-Route unit tests for POST /upload/pet-image  (UTC-13, MD-17, SRS-30 / UD-07).
+Route unit tests for POST /upload/pet-image .
 
-SRS-30 = upload the selected photo to secure cloud storage. (SRS-31, the
-"AI is analyzing" loading indicator, is the next step and is covered by
-analyze_sighting_image / UTC-14, not here.)
+Upload the selected photo to secure cloud storage. (The "AI is analyzing"
+loading indicator is the next step and is covered by analyze_sighting_image,
+not here.)
 
 Boundary rule: auth is overridden; the Supabase Storage surface
 (`storage.from_(bucket).upload(...) / .get_public_url(...)`) is a purpose-built

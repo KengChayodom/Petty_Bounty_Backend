@@ -28,6 +28,9 @@ def _create(**over):
 
 
 class TestMissingPetCreateValidators:
+    """`MissingPetCreate.species_must_be_valid`,
+    `characteristics_must_not_be_empty` and `validate_hex_color`."""
+
     def test_species_normalized_to_titlecase(self):
         assert MissingPetCreate(**_create(species="dog")).species == "Dog"
 
@@ -36,7 +39,7 @@ class TestMissingPetCreateValidators:
             MissingPetCreate(**_create(species="dragon"))
 
     def test_other_is_no_longer_a_species_a_report_may_carry(self):
-        """SRS-58 names Cat, Dog and Bird. 'Other' was accepted until
+        """The requirement names Cat, Dog and Bird. 'Other' was accepted until
         2026-09-10 and is not any more.
 
         It is asserted in every casing the normaliser produces, because the
@@ -52,7 +55,7 @@ class TestMissingPetCreateValidators:
             assert MissingPetCreate(**_create(species=accepted)).species == accepted
 
     def test_a_populated_characteristics_object_passes_through(self):
-        """UTC-58-TC-01 - the free-form description a hunter reads comes back
+        """TC-01 - the free-form description a hunter reads comes back
         exactly as it was given, so the refusal below is a refusal of
         emptiness and not of the field itself."""
         described = {"color": "brown", "collar": "red"}
@@ -61,7 +64,7 @@ class TestMissingPetCreateValidators:
         ).characteristics == described
 
     def test_empty_characteristics_rejected(self):
-        """UTC-58-TC-02 [error] - an empty object is not a description, so it
+        """TC-02 [error] - an empty object is not a description, so it
         is refused at the door rather than stored and discovered later."""
         with pytest.raises(ValidationError):
             MissingPetCreate(**_create(characteristics={}))
@@ -80,6 +83,9 @@ class TestMissingPetCreateValidators:
 
 
 class TestMissingPetUpdateValidators:
+    """`MissingPetUpdate.status_must_be_valid`, then the two edit-path rules
+    below."""
+
     def test_status_none_passes_through(self):
         assert MissingPetUpdate(status=None).status is None
 
@@ -104,8 +110,8 @@ class TestMissingPetUpdateValidators:
             MissingPetUpdate(status="Spotted")
 
     def test_resolved_is_refused_because_only_the_settlement_writes_it(self):
-        """'Resolved' means the bounty has been paid — the administrator's
-        resolve_missing_pet writes it, and only after the search is 'Found'."""
+        """'Resolved' means the bounty has been paid or nobody is owed — only
+        the Feature 6 settlement and the hand-close translation write it."""
         with pytest.raises(ValidationError):
             MissingPetUpdate(status="Resolved")
 
@@ -116,17 +122,18 @@ class TestMissingPetUpdateValidators:
             MissingPetUpdate(status="Spotted")
         assert "Status must be one of Searching, Found" in str(ei.value)
 
-    # UTC-61 - characteristics on the edit path, the same rule the create
-    # path enforces. Reached by constructing the schema, as UTC-60 above does:
+    # `MissingPetUpdate.characteristics_must_not_be_empty`: characteristics on
+    # the edit path, the same rule the create
+    # path enforces. Reached by constructing the schema, as the class above does:
     # that a refusal reaches no repository call is a property of the route and
-    # is framed once, by UTC-35-TC-08.
+    # is framed once, by TC-08.
     def test_characteristics_none_passes_through(self):
-        """UTC-61-TC-01 [single] - the field is optional, so an edit that does
+        """TC-01 [single] - the field is optional, so an edit that does
         not mention the description leaves the column alone."""
         assert MissingPetUpdate(characteristics=None).characteristics is None
 
     def test_a_populated_characteristics_object_passes_through(self):
-        """UTC-61-TC-02 - a description carrying entries is returned
+        """TC-02 - a description carrying entries is returned
         unchanged, which is what makes the refusal below specific to empty."""
         described = {"color": "White"}
         assert MissingPetUpdate(
@@ -134,22 +141,23 @@ class TestMissingPetUpdateValidators:
         ).characteristics == described
 
     def test_empty_characteristics_rejected(self):
-        """UTC-61-TC-03 [error] - without this rule one column would carry two
+        """TC-03 [error] - without this rule one column would carry two
         contracts, a create held to a populated value and an edit free to
         blank it, and an owner who sent an empty object would lose the
         description of their own lost pet."""
         with pytest.raises(ValidationError):
             MissingPetUpdate(characteristics={})
 
-    # UTC-62 - the coat colour on the edit path, the same rule and the same
-    # normalisation as the create path (UTC-59).
+    # `MissingPetUpdate.validate_hex_color`: the coat colour on the edit path,
+    # the same rule and the same
+    # normalisation as the create path.
     def test_hex_none_passes_through(self):
-        """UTC-62-TC-01 [single] - an edit that does not mention the colour
+        """TC-01 [single] - an edit that does not mention the colour
         leaves the column alone."""
         assert MissingPetUpdate(primary_color_hex=None).primary_color_hex is None
 
     def test_hex_valid_is_uppercased(self):
-        """UTC-62-TC-02 - the column holds #RRGGBB in upper case, so a
+        """TC-02 - the column holds #RRGGBB in upper case, so a
         lower-case triple is normalised on the way in and the two paths cannot
         write the same colour two ways."""
         assert MissingPetUpdate(
@@ -157,7 +165,7 @@ class TestMissingPetUpdateValidators:
         ).primary_color_hex == "#ABC123"
 
     def test_hex_malformed_rejected(self):
-        """UTC-62-TC-03 [error] - a value the colour re-ranking cannot parse is
+        """TC-03 [error] - a value the colour re-ranking cannot parse is
         refused, otherwise the report is silently dropped from its own owner's
         matches."""
         with pytest.raises(ValidationError):

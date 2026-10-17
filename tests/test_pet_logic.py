@@ -10,6 +10,9 @@ status model gets wrong in practice:
   * a fresh report crashing or vanishing from the list because nobody has
     reported a sighting for it yet;
   * the badge being computed in two places (server and client) and drifting.
+
+It also holds the other pure rules of the module: the insert payload, the
+administrator browse filters, and the owner's bounty and status edit rules.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -22,6 +25,8 @@ from app.services.pet_logic import (
     POST_STATUS_PENDING,
     POST_STATUS_RESCUED,
     POST_STATUS_SPOTTED,
+    OwnerEditRefused,
+    apply_owner_edit_rules,
     attach_sighting_counts,
     build_missing_pet_payload,
     derive_post_status,
@@ -75,7 +80,7 @@ class TestDerivePostStatus:
 
 
 class TestIsPostExpired:
-    """SRS-87. The predicate must agree with the SQL exactly, because the SQL
+    """The predicate must agree with the SQL exactly, because the SQL
     is what actually stops a post reaching hunters — disagreeing means the
     badge says one thing and the map does another."""
 
@@ -289,7 +294,7 @@ class TestCountSightings:
 
 
 # --------------------------------------------------------------------------- #
-# build_missing_pet_payload — the missing_pets INSERT contract (MD-63)
+# build_missing_pet_payload — the missing_pets INSERT contract
 #
 # Everything the report is stored as is decided here and nowhere else: the
 # projection the spatial queries read, the status that makes a report
@@ -317,7 +322,7 @@ class _Pet:
 
 class TestBuildMissingPetPayload:
     def test_the_location_is_a_point_with_longitude_first(self):
-        """UTC-63-TC-01 — SRS-62, the projection the spatial queries read.
+        """TC-01 — the projection the spatial queries read.
 
         PostGIS takes x then y, which is longitude then latitude, and getting
         the pair the wrong way round puts every report in the wrong hemisphere
@@ -330,7 +335,7 @@ class TestBuildMissingPetPayload:
         assert out["last_seen_location"] == "POINT(100.5018 13.7563)"
 
     def test_the_last_seen_time_is_stored_as_an_iso_timestamp(self):
-        """UTC-63-TC-02 — SRS-62, the time half."""
+        """TC-02 — the time half."""
         out = build_missing_pet_payload(
             _Pet(last_seen_time=datetime(2025, 1, 12, 10, 30, tzinfo=timezone.utc)),
             feature_vector=[0.1],
@@ -339,7 +344,7 @@ class TestBuildMissingPetPayload:
         assert out["last_seen_time"] == "2025-01-12T10:30:00+00:00"
 
     def test_a_new_report_opens_at_searching(self):
-        """UTC-63-TC-03 — SRS-64.
+        """TC-03 — the opening status.
 
         'Searching' is the status the matching RPC filters on, so a report
         stored at any other value is created and then never matched.
@@ -349,13 +354,13 @@ class TestBuildMissingPetPayload:
         assert out["status"] == "Searching"
 
     def test_the_vector_the_caller_supplies_is_the_one_stored(self):
-        """UTC-63-TC-04 — SRS-63's half that this function owns."""
+        """TC-04 — the half of the owner rule that this function owns."""
         out = build_missing_pet_payload(_Pet(), feature_vector=[0.25, 0.5])
 
         assert out["feature_vector"] == [0.25, 0.5]
 
     def test_every_other_field_travels_unchanged(self):
-        """UTC-63-TC-05 — the payload carries the report as it was given."""
+        """TC-05 — the payload carries the report as it was given."""
         pet = _Pet(
             owner_id="owner-9",
             pet_name="Mochi",
@@ -377,7 +382,7 @@ class TestBuildMissingPetPayload:
         assert out["primary_color_hex"] == "#112233"
 
     def test_the_owners_colour_wins_over_the_measured_one(self):
-        """UTC-63-TC-07 — the measured colour is only a default. An owner who
+        """TC-07 — the measured colour is only a default. An owner who
         chose a colour, including by changing the default, keeps it."""
         out = build_missing_pet_payload(
             _Pet(primary_color_hex="#8A7560"),
@@ -387,7 +392,7 @@ class TestBuildMissingPetPayload:
         assert out["primary_color_hex"] == "#8A7560"
 
     def test_no_owner_colour_falls_back_to_the_measured_one(self):
-        """UTC-63-TC-08 — when the default never reached the form (analyze
+        """TC-08 — when the default never reached the form (analyze
         failed, or an older client), the colour measured at registration is
         stored, so the report still takes part in colour matching."""
         out = build_missing_pet_payload(
@@ -398,7 +403,7 @@ class TestBuildMissingPetPayload:
         assert out["primary_color_hex"] == "#726860"
 
     def test_no_colour_on_either_side_stores_none(self):
-        """UTC-63-TC-09 — nothing chosen and nothing measured (a full-frame
+        """TC-09 — nothing chosen and nothing measured (a full-frame
         fallback) leaves the colour empty, and the report matches on CLIP only."""
         out = build_missing_pet_payload(
             _Pet(primary_color_hex=None), feature_vector=[0.1],
@@ -407,7 +412,7 @@ class TestBuildMissingPetPayload:
         assert out["primary_color_hex"] is None
 
     def test_the_expiry_is_left_to_the_column_default(self):
-        """UTC-63-TC-06 — SRS-86 is granted by the database, not here.
+        """TC-06 — the expiry is granted by the database, not here.
 
         `expires_at` has a column DEFAULT of NOW() + 7 days, and that DEFAULT is
         the single source of the grant. A payload that carried the key would
@@ -420,28 +425,28 @@ class TestBuildMissingPetPayload:
 
 # --------------------------------------------------------------------------- #
 # normalize_browse_status / normalize_browse_species — the admin browse filter
-# (MD-66). Both run before any I/O so an unrecognised value is a clean 400
+#. Both run before any I/O so an unrecognised value is a clean 400
 # rather than a failed enumeration cast surfacing as a 500.
 # --------------------------------------------------------------------------- #
 class TestNormalizeBrowseStatus:
-    """MD-73. The status half of the administrator browse filter."""
+    """The status half of the administrator browse filter."""
 
     def test_no_filter_means_every_report(self):
-        """UTC-68-TC-01 — absence is not a value to refuse."""
+        """TC-01 — absence is not a value to refuse."""
         assert normalize_browse_status(None) is None
 
     @pytest.mark.parametrize("stored", BROWSE_STATUS_FILTERS)
     def test_each_permitted_status_passes_through(self, stored):
-        """UTC-68-TC-02 — every value the column holds is accepted."""
+        """TC-02 — every value the column holds is accepted."""
         assert normalize_browse_status(stored) == stored
 
     def test_casing_and_surrounding_space_are_normalised(self):
-        """UTC-68-TC-03 — the console sends what the user typed."""
+        """TC-03 — the console sends what the user typed."""
         assert normalize_browse_status("  searching  ") == "Searching"
 
     @pytest.mark.parametrize("bad", ["Pending", "Expired", "Rescued", "Banned", ""])
     def test_a_bucket_the_column_does_not_hold_is_refused(self, bad):
-        """UTC-68-TC-04 — the three derived badge names are refused too.
+        """TC-04 — the three derived badge names are refused too.
 
         Pending, Expired and Rescued are `derive_post_status` names, not values
         the `status` column holds, so filtering on them would return nothing
@@ -451,7 +456,7 @@ class TestNormalizeBrowseStatus:
             normalize_browse_status(bad)
 
     def test_the_refusal_names_the_permitted_values(self):
-        """UTC-68-TC-05 — the message is what the 400 carries to the console."""
+        """TC-05 — the message is what the 400 carries to the console."""
         with pytest.raises(ValueError) as exc:
             normalize_browse_status("Banned")
 
@@ -460,32 +465,118 @@ class TestNormalizeBrowseStatus:
 
 
 class TestNormalizeBrowseSpecies:
-    """MD-74. The species half of the administrator browse filter."""
+    """The species half of the administrator browse filter."""
 
     def test_no_filter_means_every_report(self):
-        """UTC-69-TC-01 — absence is not a value to refuse."""
+        """TC-01 — absence is not a value to refuse."""
         assert normalize_browse_species(None) is None
 
     @pytest.mark.parametrize("stored", BROWSE_SPECIES_FILTERS)
     def test_each_permitted_species_passes_through(self, stored):
-        """UTC-69-TC-02 — 'Other' is still a browse filter, because reports
+        """TC-02 — 'Other' is still a browse filter, because reports
         created before 2026-09-10 hold it even though no new one may."""
         assert normalize_browse_species(stored) == stored
 
     def test_casing_and_surrounding_space_are_normalised(self):
-        """UTC-69-TC-03 — the console sends what the user typed."""
+        """TC-03 — the console sends what the user typed."""
         assert normalize_browse_species("  cat  ") == "Cat"
 
     @pytest.mark.parametrize("bad", ["Dragon", "Rabbit", ""])
     def test_a_species_outside_the_set_is_refused(self, bad):
-        """UTC-69-TC-04."""
+        """TC-04."""
         with pytest.raises(ValueError):
             normalize_browse_species(bad)
 
     def test_the_refusal_names_the_permitted_values(self):
-        """UTC-69-TC-05 — the message is what the 400 carries to the console."""
+        """TC-05 — the message is what the 400 carries to the console."""
         with pytest.raises(ValueError) as exc:
             normalize_browse_species("Dragon")
 
         for permitted in BROWSE_SPECIES_FILTERS:
             assert permitted in str(exc.value)
+
+
+class TestApplyOwnerEditRules:
+    """The owner's bounty and status edit, checked against the report's
+    stored state, with a hand close translated to 'Resolved'."""
+
+    OPEN = {"status": "Searching", "bounty_amount": 100}
+
+    def test_a_raised_bounty_is_written_as_sent(self):
+        """TC-01. Raising the bounty on an open report is permitted."""
+        payload = {"bounty_amount": 200}
+
+        out = apply_owner_edit_rules(
+            self.OPEN, payload, caught_awaiting_decision=False
+        )
+
+        assert out == {"bounty_amount": 200}
+
+    def test_a_lowered_bounty_is_refused(self):
+        """TC-02."""
+        with pytest.raises(OwnerEditRefused, match="raised but not lowered"):
+            apply_owner_edit_rules(
+                self.OPEN, {"bounty_amount": 99.99},
+                caught_awaiting_decision=False,
+            )
+
+    @pytest.mark.parametrize("closed", ["Found", "Resolved"])
+    def test_the_bounty_is_frozen_once_the_report_is_closed(self, closed):
+        """TC-03. Even a raise is refused, payment being under way."""
+        with pytest.raises(OwnerEditRefused, match="bounty cannot be changed"):
+            apply_owner_edit_rules(
+                {"status": closed, "bounty_amount": 100},
+                {"bounty_amount": 500},
+                caught_awaiting_decision=False,
+            )
+
+    @pytest.mark.parametrize("closed", ["Found", "Resolved", "  resolved "])
+    def test_the_status_is_frozen_once_the_report_is_closed(self, closed):
+        """TC-04. The stored status is read without regard to casing
+        or surrounding space."""
+        with pytest.raises(OwnerEditRefused, match="status cannot be changed"):
+            apply_owner_edit_rules(
+                {"status": closed, "bounty_amount": 100},
+                {"status": "Searching"},
+                caught_awaiting_decision=False,
+            )
+
+    def test_a_hand_close_waits_for_a_caught_sighting_to_be_decided(self):
+        """TC-05."""
+        with pytest.raises(OwnerEditRefused, match="Decide the sighting"):
+            apply_owner_edit_rules(
+                self.OPEN, {"status": "Found"}, caught_awaiting_decision=True
+            )
+
+    def test_a_hand_close_with_nobody_to_pay_is_written_as_resolved(self):
+        """TC-06. The other fields travel unchanged, and the payload
+        the caller holds is not rewritten in place."""
+        payload = {"status": "Found", "pet_name": "Mochi"}
+
+        out = apply_owner_edit_rules(
+            self.OPEN, payload, caught_awaiting_decision=False
+        )
+
+        assert out == {"status": "Resolved", "pet_name": "Mochi"}
+        assert payload == {"status": "Found", "pet_name": "Mochi"}
+
+    def test_reopening_is_not_held_by_a_caught_sighting(self):
+        """TC-07. The awaiting flag only holds back a close."""
+        out = apply_owner_edit_rules(
+            {"status": "Spotted", "bounty_amount": 100},
+            {"status": "Searching"},
+            caught_awaiting_decision=True,
+        )
+
+        assert out == {"status": "Searching"}
+
+    def test_an_edit_without_bounty_or_status_passes_even_when_closed(self):
+        """TC-08. Neither rule reads a field the payload does not
+        carry, so a closed report may still have its name corrected."""
+        out = apply_owner_edit_rules(
+            {"status": "Resolved", "bounty_amount": 100},
+            {"pet_name": "Mochi"},
+            caught_awaiting_decision=False,
+        )
+
+        assert out == {"pet_name": "Mochi"}

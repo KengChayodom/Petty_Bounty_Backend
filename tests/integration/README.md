@@ -1,7 +1,7 @@
 # Integration tests — real ephemeral Postgres (pgvector + PostGIS)
 
 These tests run the deployed SQL — `match_missing_pets`, `sightings_for_pet`,
-`resolve_missing_pet`, and the `sighting_matches` UNIQUE constraint — against a
+the bounty settlement functions, and the `sighting_matches` UNIQUE constraint — against a
 **real, disposable Postgres** spun up per session via Testcontainers. No SQLite,
 no mocked DB: vector cosine, geography radius, schema constraints and the
 transactional payout are exactly what this layer exists to verify.

@@ -430,7 +430,7 @@ class SightingService:
             )
 
         # Only 'Dismissed' locks. 'Verified' is written solely to REVERSE a
-        # dismissal (MD-50), and a reversal restores the sighting completely —
+        # dismissal, and a reversal restores the sighting completely —
         # back on the owner's timeline, back in their queue — so freezing the
         # hunter out of it would make the undo a partial one. A row whose
         # verification_status is missing is treated as Pending: the column is
@@ -657,18 +657,6 @@ class SightingService:
         if pet_ids and viewer_id in self.repo.get_pet_owners(sorted(pet_ids)).values():
             return row
         raise denied
-
-    async def get_sighting_for_viewer(self, sighting_id: str, viewer_id: str) -> dict:
-        """One sighting for a caller, refused unless they are allowed to see it.
-
-        Raises:
-            LookupError: no such sighting, or the caller may not read it
-                (API -> 404 for both).
-        """
-        row = await asyncio.to_thread(
-            self._sighting_visible_to, sighting_id, viewer_id
-        )
-        return strip_feature_vector(row)
 
     async def get_matches_for_viewer(
         self, sighting_id: str, viewer_id: str,

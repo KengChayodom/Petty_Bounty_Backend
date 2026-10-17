@@ -157,7 +157,7 @@ class PetService:
         self, owner_id: str
     ) -> list[dict]:
         """
-        MD-38 — the owner's "My Reports" list.
+        The owner's "My Reports" list.
 
         Scoping is structural: the port takes an owner_id, so there is no query
         shape here that could return another owner's reports. Newest-first
@@ -200,11 +200,11 @@ class PetService:
         species: str | None = None,
     ) -> Page:
         """
-        MD-41 — platform-wide browse for moderation.
+        Platform-wide browse for moderation.
 
         `status=None` means "every status", not "status IS NULL"; the filter is
         applied by the repository only when one was supplied. The admin gate
-        itself lives in require_admin (MD-04), not here.
+        itself lives in require_admin, not here.
 
         `post_status` (Pending / Spotted / Expired / Rescued) is attached to
         every row so the admin console can display the derived badge instead of
@@ -218,7 +218,7 @@ class PetService:
         """
         # Normalised BEFORE any I/O, so an unrecognised filter is a 400 at the
         # edge rather than a failed enumeration cast surfacing as a 500 — the
-        # same rule MD-51's queue listing follows.
+        # same rule the flag queue listing follows.
         status = normalize_browse_status(status)
         species = normalize_browse_species(species)
         try:
@@ -276,9 +276,9 @@ class PetService:
         self, pet_id: str, admin_id: str
     ) -> dict:
         """
-        MD-42 — remove a report that violates the guidelines.
+        Remove a report that violates the guidelines.
 
-        UD-14's postcondition is "removed from the database and the search map",
+        The removal's postcondition is "removed from the database and the search map",
         so this is a hard delete rather than a hidden flag. The moderation
         action is recorded in the log at WARNING level — the same audit
         convention verify_sighting uses.
@@ -376,7 +376,7 @@ class PetService:
         self, pet_id: str, owner_id: str, payload: dict,
     ) -> dict:
         """
-        MD-39 — apply an owner's partial edit to a report they own.
+        Apply an owner's partial edit to a report they own.
 
         Owner-scoped: the read and the write both match on `owner_id`, so a
         report that does not exist and one owned by somebody else are the same
