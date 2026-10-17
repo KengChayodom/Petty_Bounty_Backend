@@ -1,5 +1,5 @@
 -- ============================================================
--- Feature: uphold a flag by DEDUCTING SCORE, not by banning (SRS-73 revision)
+-- Feature: uphold a flag by DEDUCTING SCORE, not by banning
 -- Apply via Supabase SQL Editor or `supabase db push`.
 --
 -- Replaces the never-implemented "ban the reported user" outcome. Banning was

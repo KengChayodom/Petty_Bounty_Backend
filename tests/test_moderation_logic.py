@@ -27,11 +27,11 @@ from app.services.moderation_logic import (
 
 class TestNormalizeFlagReason:
     @pytest.mark.parametrize("supplied,expected", [
-        # the enum spellings (UD-16's Input Specification)
+        # the enum spellings (the use case's Input Specification)
         ("Spam", "Spam"),
         ("Not_a_pet", "Not_a_pet"),
         ("Inappropriate_image", "Inappropriate_image"),
-        # the prose spellings (MD-43's parameter table)
+        # the prose spellings (the method spec's parameter table)
         ("Not a pet", "Not_a_pet"),
         ("Inappropriate image", "Inappropriate_image"),
         # user-interface casing / padding
@@ -51,11 +51,11 @@ class TestNormalizeFlagReason:
 class TestNormalizeFlagDecision:
     @pytest.mark.parametrize("supplied,expected", [
         ("Dismissed", DECISION_DISMISS),
-        ("Dismiss Flag", DECISION_DISMISS),          # UD-16's Action wording
+        ("Dismiss Flag", DECISION_DISMISS),          # the use case's Action wording
         ("Reviewed_Penalty", DECISION_UPHOLD),
         ("Reviewed_Ban", DECISION_UPHOLD),           # pre-2026-08-20 enum name
-        ("Reviewed and banned", DECISION_UPHOLD),    # MD-44's wording
-        ("Uphold and Ban User", DECISION_UPHOLD),    # UD-16's Action wording
+        ("Reviewed and banned", DECISION_UPHOLD),    # the method spec's wording
+        ("Uphold and Ban User", DECISION_UPHOLD),    # the use case's Action wording
         ("Uphold and Penalise User", DECISION_UPHOLD),
     ])
     def test_maps_onto_the_enum(self, supplied, expected):
@@ -91,7 +91,7 @@ class TestNormalizeFlagStatusFilter:
 
     def test_none_means_every_status_not_a_null_status(self):
         """None passes through untouched so the adapter can skip the predicate
-        entirely — the MD-41 convention. Returning a string here would filter
+        entirely — the admin browse convention. Returning a string here would filter
         the queue down to one bucket by accident."""
         assert normalize_flag_status_filter(None) is None
 
@@ -129,12 +129,12 @@ class TestBuildFlagPayload:
 
 
 class TestResolvePenaltyPoints:
-    """UTC-55 — how many points an upheld flag costs its hunter.
+    """How many points an upheld flag costs its hunter.
 
     These were framed through AdminService.review_report until 09/09/2026, which
     meant standing up two repository stubs, a Pending flag and a sighting
     carrying a hunter just to read back a number this function returns on its
-    own. The rules live here; UTC-40 keeps only the seam, meaning that whatever
+    own. The rules live here; the review_report tests keep only the seam, meaning that whatever
     this returns is what reaches the deduction.
     """
 

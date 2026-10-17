@@ -3,19 +3,14 @@ Unit tests for app/core/auth.py — the Feature #1 (Authentication) server-side
 trust boundary.
 
 Covered (per test_plan.md / test_traceability.md):
-  * UTC-01 _strip_bearer                  (MD-05, SRS-21)
-  * UTC-03 get_current_user_id            (MD-02, SRS-13) + auth-guard e2e
-  * UTC-05 require_admin                  (MD-04, SRS-22)
-  * UTC-77 _validate_token                (MD-01, SRS-13, SRS-21)
-  * UTC-78 _extract_token                 (MD-06, SRS-13, SRS-21)
+  * _strip_bearer
+  * get_current_user_id            + auth-guard e2e
+  * require_admin
+  * _validate_token
+  * _extract_token
 
-UTC-02 and UTC-04 tested `_resolve_user_id` and `get_current_user_id_optional`,
-which nothing in the application called. Both were removed on 2026-10-13, and
-the cases of UTC-02 that reached `_validate_token` now sit in UTC-77.
-
-SRS-21 = extract & validate the JWT to authorize requests; SRS-22 = role-based
-access control restricting admin functions; SRS-13 = maintain the authenticated
-session.
+The module extracts and validates the JWT to authorize requests, restricts
+admin functions by role, and maintains the authenticated session.
 
 Every protected route depends on this module, and a silent regression here is a
 security hole (auth bypass) or a lockout (false 401). The logic is pure and

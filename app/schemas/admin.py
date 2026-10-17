@@ -24,38 +24,14 @@ class VerifySightingRequest(BaseModel):
     )
 
 
-class ResolveMissingPetRequest(BaseModel):
-    """
-    Body of POST /admin/missing-pets/{id}/resolve.
-
-    The admin picks which Caught sighting becomes the bounty-paying
-    'final_sighting' — they may need to disambiguate when more than one
-    hunter claims to have caught the pet.
-    """
-
-    final_sighting_id: str = Field(
-        ...,
-        description="UUID of the Caught + Verified sighting whose hunter "
-                    "receives the full bounty payout.",
-    )
-    slip_image_url: str = Field(
-        ...,
-        description="URL of the bank-transfer slip image — proof of payout.",
-    )
-    reference_no: Optional[str] = Field(
-        None, max_length=255,
-        description="Transfer reference number (optional but useful for audit).",
-    )
-
-
 class ReviewReportRequest(BaseModel):
     """
-    Body of PATCH /admin/reports/{report_id} (MD-44).
+    Body of PATCH /admin/reports/{report_id}.
 
     `decision` is a plain string rather than a Literal so an unrecognised value
     comes back as the 400 the spec calls for (raised by
     `moderation_logic.normalize_flag_decision`) instead of FastAPI's 422, and so
-    the UD-16 wording ("Dismiss Flag" / "Uphold and Ban User") is accepted
+    the use-case wording ("Dismiss Flag" / "Uphold and Ban User") is accepted
     alongside the enum values.
     """
 
@@ -86,7 +62,7 @@ class ReviewReportRequest(BaseModel):
 
 class AssignRoleRequest(BaseModel):
     """
-    Body of PATCH /admin/users/{target_user_id}/role (MD-57).
+    Body of PATCH /admin/users/{target_user_id}/role.
 
     `role` is a plain string rather than a Literal for the same reason
     `ReviewReportRequest.decision` is: an unrecognised value comes back as the

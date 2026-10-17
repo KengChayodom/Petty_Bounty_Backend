@@ -76,9 +76,9 @@ class MissingPetCreate(BaseModel):
     @field_validator('species')
     @classmethod
     def species_must_be_valid(cls, v: str) -> str:
-        """Validate and normalize the species value (SRS-58).
+        """Validate and normalize the species value.
 
-        'Other' was accepted until 2026-09-10 and is not any more. SRS-58 names
+        'Other' was accepted until 2026-09-10 and is not any more. The requirement names
         Cat, Dog and Bird and nothing else, the client's own `PetSpecies` enum
         offers only those three, and `AIManager.TARGET_ANIMALS` cannot isolate
         an 'Other', so such a report only ever stored a full-frame vector that
@@ -144,9 +144,11 @@ class MissingPetUpdate(BaseModel):
     )
     status: Optional[str] = Field(
         None,
-        description="Updated status: 'Found' ends the search, 'Searching' "
-                    "re-opens it. 'Spotted' and 'Resolved' are not writable "
-                    "here — see OWNER_WRITABLE_STATUSES."
+        description="Updated status: 'Found' ends the search (stored as "
+                    "'Resolved' when nobody is owed). Once the report is "
+                    "'Found' or 'Resolved' the status cannot change, so it "
+                    "cannot be re-opened. 'Spotted' and 'Resolved' are not "
+                    "writable here — see OWNER_WRITABLE_STATUSES."
     )
     bounty_amount: Optional[float] = Field(
         None,
@@ -173,8 +175,8 @@ class MissingPetUpdate(BaseModel):
     # 'Spotted' and no row in production carries it.
     #
     # 'Resolved' is absent for the opposite reason: it means "the bounty has
-    # been paid", which only the administrator's settlement (resolve_missing_pet)
-    # may write, and it requires 'Found' first.
+    # been paid" (or nobody is owed), which only the Feature 6 settlement
+    # functions and the hand-close translation in pet_logic may write.
     #
     # A tuple, not a set, so the rejection message names the values in a stable
     # order instead of whatever the set happens to iterate as.

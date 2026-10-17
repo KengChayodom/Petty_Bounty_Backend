@@ -3,7 +3,7 @@ Route tests for the owner side of the sighting loop (2026-08-17).
 
 The report closure that used to sit here as TestEndSearchClosesSightings
 moved to tests/test_missing_pet_update_api.py on 2026-09-07. It is one
-handler and therefore one UTC-35 category-partition table, and three of
+handler and therefore one category-partition table, and three of
 the five tests here repeated frames that file already carried.
 
 Two things live only in the route layer and are invisible to a service test:

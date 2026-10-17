@@ -5,7 +5,7 @@ The real YOLO/CLIP inference (model load + predict + encode) is the L4/slow
 concern; here every model boundary is stubbed, so what these tests actually
 exercise is the plumbing and the pure logic:
   * lazy-load + class-level caching of the two models,
-  * run_yolo_seg (UTC-80) and clip_encode (UTC-81) delegating to the
+  * run_yolo_seg and clip_encode delegating to the
     (stubbed) model on a worker thread, and letting its failures through,
   * warmup_models running both and swallowing a load failure,
   * isolate_subject — the subject-selection loop + numpy mask handling, which
@@ -261,13 +261,13 @@ def _png_bytes(w, h, colour=(10, 20, 30)):
 
 
 class TestDownloadImage:
-    """UTC-19 — download_image. One happy case, plus both error arcs the
+    """download_image. One happy case, plus both error arcs the
     method leaves to the caller: an HTTP status failure (raise_for_status)
     and a transport failure (get). Neither is a branch in our own code, so
     branch coverage cannot stand in for them."""
 
     def test_fetches_and_decodes_to_rgb(self, monkeypatch):
-        """UTC-19-TC-01 — the URL is fetched once and decoded to PIL RGB.
+        """TC-01 — the URL is fetched once and decoded to PIL RGB.
 
         The size is deliberately asymmetric (7x11) so a width/height swap in
         the decode cannot pass unnoticed."""
@@ -284,7 +284,7 @@ class TestDownloadImage:
         assert client.requested_urls == ["http://img/x.png"]
 
     def test_http_status_error_propagates(self, monkeypatch):
-        """UTC-19-TC-02 — a 4xx/5xx surfaces to the caller, never a None or a
+        """TC-02 — a 4xx/5xx surfaces to the caller, never a None or a
         half-decoded image. raise_for_status is the only thing that can fail
         here, so the case pins that it is actually called."""
         boom = httpx.HTTPStatusError(
@@ -302,7 +302,7 @@ class TestDownloadImage:
         assert client.requested_urls == ["http://img/missing.png"]
 
     def test_transport_error_propagates(self, monkeypatch):
-        """UTC-19-TC-03 — a connection failure surfaces as httpx.HTTPError
+        """TC-03 — a connection failure surfaces as httpx.HTTPError
         rather than being swallowed into a None the pipeline would then try
         to hand to YOLO."""
         client = _FakeClient(b"", get_exc=httpx.ConnectError("dns down"))
@@ -351,10 +351,10 @@ class TestModelLoading:
 # not caught, so it reaches the caller.
 # --------------------------------------------------------------------------- #
 class TestRunYoloSeg:
-    """UTC-80. run_yolo_seg."""
+    """run_yolo_seg."""
 
     def test_run_yolo_seg_delegates_to_predict(self, monkeypatch):
-        """UTC-80-TC-01. A given threshold reaches the model, the results come
+        """TC-01. A given threshold reaches the model, the results come
         back unchanged, and inference runs off the event loop's thread."""
         loop_thread = threading.get_ident()
         seen = {}
@@ -376,7 +376,7 @@ class TestRunYoloSeg:
         assert seen["thread"] != loop_thread
 
     def test_inference_error_propagates(self, monkeypatch):
-        """UTC-80-TC-02"""
+        """TC-02"""
         model = MagicMock()
         model.predict.side_effect = RuntimeError("inference failed")
         monkeypatch.setattr(AIManager, "get_yolo", lambda: model)
@@ -385,10 +385,10 @@ class TestRunYoloSeg:
             run(AIManager.run_yolo_seg("PIL_IMAGE"))
 
 class TestClipEncode:
-    """UTC-81. clip_encode."""
+    """clip_encode."""
 
     def test_clip_encode_returns_plain_list(self, monkeypatch):
-        """UTC-81-TC-01. The encoder's array comes back as a plain list with
+        """TC-01. The encoder's array comes back as a plain list with
         the same values, and encoding runs off the event loop's thread."""
         loop_thread = threading.get_ident()
         seen = {}
@@ -408,7 +408,7 @@ class TestClipEncode:
         assert seen["thread"] != loop_thread
 
     def test_encode_error_propagates(self, monkeypatch):
-        """UTC-81-TC-02"""
+        """TC-02"""
         model = MagicMock()
         model.encode.side_effect = RuntimeError("encode failed")
         monkeypatch.setattr(AIManager, "get_clip", lambda: model)

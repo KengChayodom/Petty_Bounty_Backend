@@ -64,7 +64,7 @@ async def get_bounty(
     """The payment state of one closed report, for its owner or its returning
     hunter; anyone else gets 404.
 
-    SRS-104, SRS-105, SRS-107: for an owner who still owes the bounty, the
+    For an owner who still owes the bounty, the
     response carries the hunter's profile phone as their PromptPay number when
     it is a Thai mobile number, else null, so the app can show the QR code or
     say the hunter's payout details are awaited.
@@ -80,7 +80,7 @@ async def submit_payment(
     service: BountyService = Depends(get_bounty_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """SRS-106: the owner submits a payment for an unpaid report, the slip
+    """The owner submits a payment for an unpaid report, the slip
     image and an optional reference number, recorded as awaiting confirmation.
     404 when the report is not the caller's; 409 when it is not awaiting a
     payment or already has one awaiting confirmation or confirmed."""
@@ -96,7 +96,7 @@ async def answer_payment(
     service: BountyService = Depends(get_bounty_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """SRS-108: the returning hunter, and no one else, confirms a payment at
+    """The returning hunter, and no one else, confirms a payment at
     any time or disputes it within its three-day dispute window. Confirming
     resolves the report; a dispute sends it to the Administrator's queue."""
     data = await _run(service.hunter_answer(payment_id, user_id, payload.answer))
@@ -109,7 +109,7 @@ async def refer_unpaid(
     service: BountyService = Depends(get_bounty_service),
     user_id: str = Depends(get_current_user_id),
 ):
-    """SRS-109: the returning hunter refers an unpaid report to the
+    """The returning hunter refers an unpaid report to the
     Administrator, within three days of it becoming "Found"."""
     data = await _run(service.refer_unpaid(pet_id, user_id))
     return StandardResponse(status="success", message="Referred as unpaid.", data=data)

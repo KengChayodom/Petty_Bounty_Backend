@@ -1,5 +1,5 @@
 -- ============================================================
--- Feature 4 — administrator role assignment (URS-23, SRS-94..98, UD-23)
+-- Feature 4 — administrator role assignment
 -- Apply via Supabase SQL Editor or `supabase db push`.
 --
 -- The console reads `users.role` on every request (require_admin) but nothing
@@ -10,12 +10,12 @@
 -- What this is NOT: the account list / search / suspend / deactivate subsystem
 -- struck on 2026-08-21. Nothing here can suspend, deactivate, or delete an
 -- account, and find_user_by_email resolves ONE account from a full address
--- rather than returning a page — see MD-58's note on why that line matters.
+-- rather than returning a page — see the method spec's note on why that line matters.
 --
 -- Adds:
 --   1. role_changes        — append-only audit of every grant and withdrawal
---   2. find_user_by_email()— exact-address lookup across auth.users (MD-58)
---   3. assign_user_role()  — guards + role write + audit row, atomically (MD-59)
+--   2. find_user_by_email()— exact-address lookup across auth.users
+--   3. assign_user_role()  — guards + role write + audit row, atomically
 -- ============================================================
 
 BEGIN;

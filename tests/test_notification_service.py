@@ -1,9 +1,9 @@
 """
-Unit tests for app/services/notification_service.send_to_users (UTC-10, MD-12, SRS-24).
+Unit tests for app/services/notification_service.send_to_users.
 
-Progress-I SRS traceability: SRS-24 (a push is sent to nearby hunters — the
-multicast token/title/body/data assertions) and SRS-25 (owner exclusion is
-enforced upstream by get_nearby_hunters; see integration/test_get_nearby_hunters).
+A push is sent to nearby hunters (the multicast token/title/body/data
+assertions). Owner exclusion is enforced upstream by get_nearby_hunters; see
+integration/test_get_nearby_hunters.
 
 Boundary rule (per db-testing-seams): the DB is reached only through the
 NotificationRepository port owned by this codebase, so we double THAT with

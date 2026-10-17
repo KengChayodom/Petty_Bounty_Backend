@@ -101,7 +101,7 @@ async def get_my_missing_pets(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    MD-38 / SRS-67 — the owner's "My Reports" list, newest first.
+    The owner's "My Reports" list, newest first.
 
     ⚠️  Declared BEFORE `/{pet_id}`: FastAPI matches routes in declaration
     order, so with the parameterised route first, "me" would be captured as a
@@ -275,7 +275,7 @@ async def update_missing_pet(
     Owner-scoped: a report that does not exist and one owned by somebody else
     both answer 404, so the endpoint never reveals that a report exists.
 
-    Feature 6 (SRS-100, SRS-102, SRS-103): the bounty may be raised but never
+    Feature 6: the bounty may be raised but never
     lowered, and neither it nor the status may change once the report is
     "Found". Closing by hand is refused while a "Caught" sighting awaits the
     owner's decision. Otherwise it closes straight to "Resolved", there being

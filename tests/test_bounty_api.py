@@ -1,5 +1,5 @@
 """Unit tests for the Feature 6 bounty routes and service
-(UTC-82 to UTC-91, MD-80 to MD-89).
+.
 
 The SQL functions are tested against a real database in
 tests/integration/test_bounty_settlement.py. These cover what sits above them:
@@ -86,7 +86,7 @@ def _async(value=None, exc=None):
 
 
 # --------------------------------------------------------------------------- #
-# UTC-82: get_bounty and the view it returns
+# get_bounty and the view it returns
 # --------------------------------------------------------------------------- #
 class TestGetBounty:
     # Route level
@@ -135,7 +135,7 @@ class TestGetBounty:
             run(BountyService(repo).get_view("p1", "owner-1"))
 
 # --------------------------------------------------------------------------- #
-# UTC-83: submit_payment
+# submit_payment
 # --------------------------------------------------------------------------- #
 class TestSubmitPayment:
     def test_submit_passes_the_caller_as_owner(self, client, service):
@@ -167,7 +167,7 @@ class TestSubmitPayment:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-84: answer_payment
+# answer_payment
 # --------------------------------------------------------------------------- #
 class TestAnswerPayment:
     # Route level
@@ -197,7 +197,7 @@ class TestAnswerPayment:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-85: refer_unpaid
+# refer_unpaid
 # --------------------------------------------------------------------------- #
 class TestReferUnpaid:
     def test_refer_unpaid_passes_the_caller(self, client, service):
@@ -210,7 +210,7 @@ class TestReferUnpaid:
         assert client.post("/bounty/p1/unpaid").status_code == 409
 
 # --------------------------------------------------------------------------- #
-# UTC-86: my_bounties
+# my_bounties
 # --------------------------------------------------------------------------- #
 class TestMyBounties:
     def test_mine_is_routed_before_the_pet_id(self, client, service):
@@ -227,7 +227,7 @@ class TestMyBounties:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-87: bounty_queue
+# bounty_queue
 # --------------------------------------------------------------------------- #
 class TestBountyQueue:
     def test_admin_queue(self, client, service):
@@ -241,7 +241,7 @@ class TestBountyQueue:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-88: rule_bounty_payment
+# rule_bounty_payment
 # --------------------------------------------------------------------------- #
 class TestRuleBountyPayment:
     # Route level
@@ -282,7 +282,7 @@ class TestRuleBountyPayment:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-89: close_bounty_unpaid
+# close_bounty_unpaid
 # --------------------------------------------------------------------------- #
 class TestCloseBountyUnpaid:
     def test_admin_close_unpaid(self, client, service):
@@ -295,8 +295,17 @@ class TestCloseBountyUnpaid:
         service.admin_close_unpaid.side_effect = _async(exc=BountyConflict("x"))
         assert client.post("/admin/missing-pets/p1/close-unpaid").status_code == 409
 
+    def test_the_old_admin_settlement_route_is_gone(self, client):
+        """The pre-Feature 6 route let an administrator record a payment as
+        Verified and resolve the report in one call, skipping the returning
+        hunter's confirmation. A report with a bounty now closes only through
+        the routes above."""
+        r = client.post("/admin/missing-pets/p1/resolve", json={
+            "final_sighting_id": "s1", "slip_image_url": "u"})
+        assert r.status_code == 404
+
 # --------------------------------------------------------------------------- #
-# UTC-90: is_thai_mobile
+# is_thai_mobile
 # --------------------------------------------------------------------------- #
 class TestIsThaiMobile:
     def test_none_is_not_a_mobile_number(self):
@@ -315,7 +324,7 @@ class TestIsThaiMobile:
         assert is_thai_mobile("081234567") is False
 
 # --------------------------------------------------------------------------- #
-# UTC-91: translate_db_error
+# translate_db_error
 # --------------------------------------------------------------------------- #
 class TestTranslateDbError:
     @pytest.mark.parametrize("msg", [

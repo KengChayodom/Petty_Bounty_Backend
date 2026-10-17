@@ -1,6 +1,5 @@
 """
-Unit tests for administrator role assignment — UTC-51, UTC-52, UTC-53
-(MD-56 to MD-58, SRS-94 to SRS-98, UD-23).
+Unit tests for administrator role assignment .
 
 Written against `progress_2/test_plan.md` §3.1.14 Roles Module. The boundary is
 the `UserRepository` port, doubled with `MagicMock(spec=...)`: stubbed for return
@@ -17,12 +16,12 @@ Category-Partition highlights:
     db error
 
 What is deliberately NOT tested here:
-  * That a withdrawn role stops working (SRS-98) is a property of
+  * That a withdrawn role stops working is a property of
     `require_admin`, which is Feature 1's gate with its own coverage. Nothing in
-    MD-57 revokes anything, so there is no behaviour of this method to assert.
-  * That the two guards of SRS-96 hold when two administrators act at the same
+    `assign_user_role` revokes anything, so there is no behaviour of this method to assert.
+  * That the two role-change guards hold when two administrators act at the same
     moment is a property of the `assign_user_role` procedure and belongs to
-    tests/integration/ — same reading as MD-53's rule set.
+    tests/integration/.
 """
 import asyncio
 from unittest.mock import MagicMock
@@ -56,7 +55,7 @@ ACCOUNT = {"id": "u2", "username": "Kus", "role": "user"}
 
 
 # --------------------------------------------------------------------------- #
-# UTC-51 — find_user_by_email (MD-56, SRS-94)
+# find_user_by_email
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_tc01_exact_address_returns_one_account(self):
@@ -81,7 +80,7 @@ class TestFindUserByEmail:
         assert result == ACCOUNT
 
     def test_tc04_unknown_address(self):
-        """UTC-51-TC-03 [error] - an address nobody holds is a missing account,
+        """TC-03 [error] - an address nobody holds is a missing account,
         and the port was asked for it exactly as typed, so no near miss is
         expanded into a prefix and no account is disclosed by having nearly
         matched.
@@ -128,7 +127,7 @@ class TestFindUserByEmail:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-52 — assign_user_role (MD-57, SRS-95 to SRS-98)
+# assign_user_role
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_tc01_grants_the_administrator_role(self):
@@ -244,7 +243,7 @@ class TestAssignUserRole:
             run(service.assign_user_role("u2", "admin", "a1"))
 
     def test_administrator_alias_is_accepted(self):
-        """UD-23 writes the actor as "Administrator"; the column holds 'admin'."""
+        """The use case writes the actor as "Administrator"; the column holds 'admin'."""
         service, repo = _service()
         repo.assign_user_role.return_value = {
             "changed": True, "id": "u2", "username": "Kus",
@@ -257,7 +256,7 @@ class TestAssignUserRole:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-53 — list_role_changes (MD-58, SRS-97 reading half)
+# list_role_changes (the reading half)
 # --------------------------------------------------------------------------- #
 class TestListRoleChanges:
     def test_tc01_returns_the_page_with_its_total(self):
@@ -312,7 +311,7 @@ class TestListRoleChanges:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-54: list the current administrators (MD-59, SRS-94 — the roster half)
+# List the current administrators (the roster half)
 #
 # The Roles screen pairs the blind email lookup with a roster of who holds the
 # role today, because withdrawing access from a departing administrator means
@@ -336,7 +335,7 @@ class TestListAdmins:
     def test_tc02_the_roster_carries_no_email_address(self):
         """`users` holds no email column, so the roster cannot report one.
 
-        MD-59 was specified as returning an address and the adapter never
+        The method was specified as returning an address and the adapter never
         selected one. Pinning the shape here keeps the two from drifting apart
         again, and keeps the roster to the three columns it can actually read.
         """
@@ -352,7 +351,7 @@ class TestListAdmins:
     def test_tc03_no_administrators_is_a_success(self):
         """An empty roster is a page with nobody on it, not a not-found.
 
-        The last-administrator guard of SRS-96 makes this state unreachable in
+        The last-administrator guard makes this state unreachable in
         practice, so the case exists to prove the read does not treat it as an
         error if it ever is.
         """

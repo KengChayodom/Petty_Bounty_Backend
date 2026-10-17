@@ -1,8 +1,8 @@
 """
 Route unit tests for the Rank List boards.
 
-  UTC-49  GET /leaderboard/users     (MD-54, SRS-91/92)
-  UTC-50  GET /leaderboard/bounties  (MD-55, SRS-93)
+  GET /leaderboard/users
+  GET /leaderboard/bounties
 
 These two are the one documented exception to the repository seam — they are
 straight ordered reads with no schema of their own, so they live in the route
@@ -13,13 +13,13 @@ chainable double that records the query it was asked to build.
 What is worth asserting is not that a list comes back. It is:
 
   * the caller's standing is GLOBAL, counted as "how many strictly outscore me,
-    plus one" — not their index in the returned page. SRS-92 says the figure must
+    plus one" — not their index in the returned page. The requirement says the figure must
     read the same on every page, and a rank computed from the page would not.
   * the page carries a second sort key. Ordering by score alone lets a row shift
     between two requests when scores tie, so pagination would repeat or skip
-    hunters (SRS-91, SRS-93).
+    hunters.
   * the bounty board excludes closed searches, or it advertises rewards for pets
-    that have already been found (SRS-93).
+    that have already been found.
 """
 from unittest.mock import MagicMock
 
@@ -113,9 +113,9 @@ def _user(uid, score, name=None):
     }
 
 
-# ----------------------------------------------------------------- UTC-49 ---
+# ---------------------------------------------------------- users board ---
 class TestLeaderboardUsers:
-    """UTC-49 · MD-54 `leaderboard_users` · SRS-91, SRS-92."""
+    """`leaderboard_users`."""
 
     def test_tc01_ranks_run_from_one_and_follow_the_offset(self):
         page = [_user("a", 90), _user("b", 80), _user("c", 70)]
@@ -140,7 +140,7 @@ class TestLeaderboardUsers:
         assert fake.calls("gt") == [(("total_score", 90), {}), (("total_score", 80), {})]
 
     def test_tc03_my_standing_is_the_same_on_a_later_page(self):
-        # SRS-92: the pinned figure must not move when the page does.
+        # The pinned figure must not move when the page does.
         deep = [_user(f"u{i}", 10) for i in range(3)]
         fake = _Supabase(_Result(deep), _Result(count=40), _Result([_user("me-1", 80)]), _Result(count=2))
         r = _client(fake).get("/leaderboard/users?offset=40")
@@ -159,7 +159,7 @@ class TestLeaderboardUsers:
         assert r.json()["data"]["me"]["rank"] == 1
 
     def test_tc05_the_page_carries_a_tiebreak_after_the_score(self):
-        # SRS-91: without the second key, equal scores can shift between requests
+        # Without the second key, equal scores can shift between requests
         # and a hunter is shown twice or not at all across page boundaries.
         fake = _Supabase(_Result([]), _Result([_user("me-1", 0)]), _Result(count=0))
         _client(fake).get("/leaderboard/users")
@@ -188,9 +188,9 @@ class TestLeaderboardUsers:
         assert TestClient(app).get("/leaderboard/users").status_code == 401
 
 
-# ----------------------------------------------------------------- UTC-50 ---
+# -------------------------------------------------------- bounties board ---
 class TestLeaderboardBounties:
-    """UTC-50 · MD-55 `leaderboard_bounties` · SRS-93."""
+    """`leaderboard_bounties`."""
 
     @staticmethod
     def _pet(pid, amount):
@@ -245,7 +245,7 @@ class TestLeaderboardBounties:
 
     @pytest.mark.parametrize("qs", ["limit=0", "limit=101", "offset=-1"])
     def test_tc07_out_of_range_paging_is_refused_before_any_query(self, qs):
-        """UTC-50-TC-07 [error] - this board declares the same bounds as the
+        """TC-07 [error] - this board declares the same bounds as the
         hunter board and had no case for them until 2026-09-07, so the two
         blocks disagreed about which choices of the window category were
         framed while the two routes enforce the identical rule."""

@@ -12,7 +12,7 @@ import asyncio
 from app.repositories.user_repository import UserRepository
 from app.utils.postgis import create_postgis_point
 
-# Object-Storage photo formats accepted for the profile picture (MD-46).
+# Object-Storage photo formats accepted for the profile picture.
 ALLOWED_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 
@@ -59,7 +59,7 @@ class UserService:
         self.repo = repo
 
     async def get_profile(self, user_id: str) -> dict:
-        """MD-08 — the caller's `users` row.
+        """The caller's `users` row.
 
         Raises:
             UserProfileNotFound: no profile row for this account.
@@ -69,7 +69,7 @@ class UserService:
     async def update_location(
         self, user_id: str, latitude: float, longitude: float,
     ) -> dict | None:
-        """MD-14 — store the device's position and timestamp.
+        """Store the device's position and timestamp.
 
         Returns the updated row, or None when the account has no profile row.
         """
@@ -86,7 +86,7 @@ class UserService:
         photo_url: str | None = None,
         phone: str | None = None,
     ) -> dict | None:
-        """MD-46 — edit the caller's username, phone and/or photo.
+        """Edit the caller's username, phone and/or photo.
 
         Returns the updated row, or None when the account has no profile row.
 
