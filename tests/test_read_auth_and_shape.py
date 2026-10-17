@@ -85,16 +85,12 @@ class TestTheOwnerTimelineIsScopedToItsOwner:
 
 
 class TestTheSightingReadsRequireACaller:
-    """Both were anonymous until 2026-09-09."""
+    """It was anonymous until 2026-09-09."""
 
-    @pytest.mark.parametrize("path", [
-        "/sightings/s1",
-        "/sightings/s1/matches",
-    ])
-    def test_an_unauthenticated_read_is_refused(self, path):
+    def test_an_unauthenticated_read_is_refused(self):
         client = TestClient(_app(sightings_api, user_id=None),
                             raise_server_exceptions=False)
-        assert client.get(path).status_code == 401
+        assert client.get("/sightings/s1/matches").status_code == 401
 
 
 class TestTheMatchesResponse:

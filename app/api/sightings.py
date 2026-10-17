@@ -118,7 +118,7 @@ async def report_targeted_sighting(
     {sighting, matches: []} (same shape as POST /sightings/ so the client
     parses both identically).
 
-    SRS-101: a report on the caller's own pet is refused with 400; the
+    A report on the caller's own pet is refused with 400; the
     discovery route drops the caller's own pets from its matches.
     """
     # Identity comes from the verified JWT, never from the request body.
@@ -260,32 +260,3 @@ async def get_ranking(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ranking query failed: {e}")
 
-
-@router.get("/{sighting_id}", response_model=StandardResponse)
-async def get_sighting(
-    sighting_id: str,
-    service: SightingService = Depends(get_sighting_service),
-    user_id: str = Depends(get_current_user_id),
-):
-    """Fetch a single sighting record (feature_vector stripped).
-
-    Authenticated since 2026-09-09 and scoped to the sighting's own hunter or
-    the owner of a pet it is linked to. The row carries where an animal was seen
-    and who reported it, which the owner timeline endpoint has always refused to
-    serve to a stranger for that reason. A sighting the caller may not read is a
-    404, the same as one that does not exist.
-    """
-    try:
-        sighting = await service.get_sighting_for_viewer(sighting_id, user_id)
-        return StandardResponse(
-            status="success",
-            message="Sighting retrieved successfully.",
-            data=sighting,
-        )
-    except LookupError as le:
-        # No such sighting, or the caller may not read it. One answer for both.
-        raise HTTPException(status_code=404, detail=str(le))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to retrieve sighting: {e}"
-        )

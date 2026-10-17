@@ -49,7 +49,7 @@ class UploadService:
     async def upload_pet_image(
         self, filename: str | None, content_type: str | None, data: bytes,
     ) -> dict:
-        """MD-17 — store a validated photo under a fresh name.
+        """Store a validated photo under a fresh name.
 
         Returns `{image_url, filename}`.
 

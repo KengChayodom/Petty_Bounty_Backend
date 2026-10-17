@@ -4,18 +4,18 @@ Route tests for the Progress-II moderation endpoints.
 The service tests above verify the decisions; these verify the one thing that
 lives only in the route layer and that every MD entry states explicitly — the
 HTTP status each domain outcome becomes. Getting 404 vs 409 vs 400 wrong is
-invisible to a service test and very visible to the admin panel (UD-16 [E1]
+invisible to a service test and very visible to the admin panel (the console
 needs 409 to show "already moderated" instead of a generic failure).
 
 Seams: the auth dependencies (`get_current_user_id` / `require_admin`) and the
 repository ports, swapped through FastAPI dependency_overrides — the same
 pattern as tests/test_me_profile_api.py.
 
-`POST /reports`   — MD-43: 400 bad reason, 404 unknown sighting, 500 failure
-`PATCH /admin/reports/{id}` — MD-44: 400 / 404 / 409 / 500
-`DELETE /admin/missing-pets/{id}` — MD-42: 404 / 500
+`POST /reports`   — 400 bad reason, 404 unknown sighting, 500 failure
+`PATCH /admin/reports/{id}` — 400 / 404 / 409 / 500
+`DELETE /admin/missing-pets/{id}` — 404 / 500
 """
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -79,7 +79,7 @@ def _async_returns(value):
 
 
 # --------------------------------------------------------------------------- #
-# POST /reports — MD-43
+# POST /reports
 # --------------------------------------------------------------------------- #
 class TestFlagSightingRoute:
     def test_bad_reason_yields_400(self):
@@ -123,7 +123,7 @@ class TestFlagSightingRoute:
 
 
 # --------------------------------------------------------------------------- #
-# GET /admin/reports — MD-51
+# GET /admin/reports
 # --------------------------------------------------------------------------- #
 class TestListReportsRoute:
     def test_forwards_filter_and_pagination(self):
@@ -185,7 +185,7 @@ class TestListReportsRoute:
 
 
 # --------------------------------------------------------------------------- #
-# PATCH /admin/reports/{report_id} — MD-44
+# PATCH /admin/reports/{report_id}
 # --------------------------------------------------------------------------- #
 class TestReviewReportRoute:
     @pytest.mark.parametrize("exc,expected", [
@@ -267,7 +267,7 @@ class TestReviewReportRoute:
 
 
 # --------------------------------------------------------------------------- #
-# GET/DELETE /admin/missing-pets — MD-41, MD-42
+# GET/DELETE /admin/missing-pets
 # --------------------------------------------------------------------------- #
 class TestAdminMissingPetRoutes:
     def test_list_forwards_the_status_filter(self):
@@ -323,7 +323,7 @@ class TestAdminMissingPetRoutes:
 
 
 # --------------------------------------------------------------------------- #
-# GET /missing-pets/me — MD-38
+# GET /missing-pets/me
 # --------------------------------------------------------------------------- #
 class TestMyReportsRoute:
     def _client(self, repo, user_id="u1"):
@@ -363,8 +363,8 @@ class TestMyReportsRoute:
 
 
 # --------------------------------------------------------------------------- #
-# GET /admin/missing-pets/{pet_id} — MD-60 / SRS-70 (the "review" half).
-# UTC-56. The browse half is MD-41 and is covered above; this is the detail
+# GET /admin/missing-pets/{pet_id} (the "review" half).
+# The browse half is covered above; this is the detail
 # read the console opens from that listing. The route is a gate plus a
 # pass-through, so what is verifiable here is that it forwards the identifier,
 # projects nothing of its own, turns an absent row into 404, does NOT turn a
@@ -373,8 +373,10 @@ class TestMyReportsRoute:
 # tests/test_auth.py::TestRequireAdmin — it is not re-tested here.
 # --------------------------------------------------------------------------- #
 class TestAdminPetDetailRoute:
+    """Route `get_missing_pet` of the admin router."""
+
     def test_tc01_returns_the_row_the_service_projected(self):
-        """UTC-56-TC-01 — the route reshapes nothing. The derived badge and the
+        """TC-01 — the route reshapes nothing. The derived badge and the
         numeric coordinates the RPC projects reach the caller untouched."""
         repo = MagicMock(spec=MissingPetRepository)
         repo.get_missing_pet_by_id.return_value = {
@@ -392,7 +394,7 @@ class TestAdminPetDetailRoute:
         repo.get_missing_pet_by_id.assert_called_once_with("p1")
 
     def test_tc02_unknown_identifier_yields_404(self):
-        """UTC-56-TC-02 — no row is a 404, not an empty 200."""
+        """TC-02 — no row is a 404, not an empty 200."""
         repo = MagicMock(spec=MissingPetRepository)
         repo.get_missing_pet_by_id.return_value = None
 
@@ -402,7 +404,7 @@ class TestAdminPetDetailRoute:
         repo.get_sighting_links_for_pets.assert_not_called()
 
     def test_tc03_a_database_failure_is_not_a_404(self):
-        """UTC-56-TC-03 — a failing read must not be reported as a missing
+        """TC-03 — a failing read must not be reported as a missing
         report. Answering 404 here would tell a moderator the report had been
         deleted when the database was merely unreachable."""
         repo = MagicMock(spec=MissingPetRepository)
@@ -421,7 +423,7 @@ class TestAdminPetDetailRoute:
         assert r.status_code == 500
 
     def test_tc04_the_route_is_behind_the_administrator_gate(self):
-        """UTC-56-TC-04 — the gate is declared on this route. Without it the
+        """TC-04 — the gate is declared on this route. Without it the
         detail read would expose an owner's contact details to any caller,
         which the browse listing above is protected from."""
         route = next(
@@ -430,3 +432,37 @@ class TestAdminPetDetailRoute:
             and "GET" in getattr(r, "methods", set())
         )
         assert require_admin in [d.call for d in route.dependant.dependencies]
+
+
+# --------------------------------------------------------------------------- #
+# GET /admin/sightings/{id}: the sighting a flag names, read for the review.
+# The flag names the sighting but not its photograph, so the console reads the
+# sighting through this route before an administrator rules. The service read itself is
+# tested in tests/test_sighting_service.py::TestGetSightingById.
+# --------------------------------------------------------------------------- #
+class TestAdminSightingReviewRoute:
+    @staticmethod
+    def _client(row):
+        service = MagicMock()
+        service.get_sighting_by_id = AsyncMock(return_value=row)
+        app = FastAPI()
+        app.include_router(admin_api.router)
+        app.dependency_overrides[require_admin] = lambda: "admin-1"
+        app.dependency_overrides[admin_api.get_sighting_service] = lambda: service
+        return TestClient(app), service
+
+    def test_tc04_an_administrator_reads_the_flagged_sighting(self):
+        """TC-04. The administrator is neither the hunter nor an owner."""
+        client, service = self._client({"id": "s1", "image_url": "http://img"})
+
+        r = client.get("/admin/sightings/s1")
+
+        assert r.status_code == 200
+        assert r.json()["data"] == {"id": "s1", "image_url": "http://img"}
+        service.get_sighting_by_id.assert_awaited_once_with("s1")
+
+    def test_tc05_an_unknown_sighting_is_a_404(self):
+        """TC-05."""
+        client, _ = self._client(None)
+
+        assert client.get("/admin/sightings/ghost").status_code == 404

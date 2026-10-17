@@ -1,5 +1,5 @@
 """
-FCM push fan-out (MD-11, MD-12, MD-13).
+FCM push fan-out.
 
 Everything here is guarded by `is_firebase_ready()` so it is a safe no-op when
 FIREBASE_CREDENTIALS is unset (the rest of the API still runs). Functions are

@@ -1,8 +1,6 @@
-"""The admin aggregate's repository port (verification / timeline / resolution).
+"""The admin aggregate's repository port (verification / timeline / penalties).
 
-One method per real DB op in admin_service.py. The resolve RPC's vendor error
-is intentionally NOT translated here — the service inspects the message to
-decide 400 vs 500, so the exception is left to propagate to it.
+One method per real DB op in admin_service.py.
 """
 from typing import Protocol
 
@@ -48,14 +46,6 @@ class AdminRepository(Protocol):
     def get_sighting_timeline(
         self, pet_id: str, limit: int, offset: int
     ) -> list[dict]: ...
-    def resolve_missing_pet(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: str | None,
-        verified_by: str,
-    ) -> object: ...
     def apply_score_penalty(
         self,
         user_id: str,

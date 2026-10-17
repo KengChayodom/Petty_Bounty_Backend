@@ -41,23 +41,6 @@ class SupabaseAdminRepository:
         }).execute()
         return res.data or []
 
-    def resolve_missing_pet(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: str | None,
-        verified_by: str,
-    ) -> object:
-        res = self._db.rpc("resolve_missing_pet", {
-            "p_pet_id":            pet_id,
-            "p_final_sighting_id": final_sighting_id,
-            "p_slip_image_url":    slip_image_url,
-            "p_reference_no":      reference_no,
-            "p_verified_by":       verified_by,
-        }).execute()
-        return res.data
-
     def apply_score_penalty(
         self,
         user_id: str,

@@ -1,15 +1,11 @@
 """
-Admin service — sighting verification, sighting-timeline, the atomic
-pet-resolution call, and review of the moderation flag queue.
-
-The hard part of resolution (transferring the bounty + distributing F1 clue
-scores + flipping pet status, all atomically) is delegated to the
-`resolve_missing_pet` PostgreSQL function. This module is just the thin
-Python wrapper.
+Admin service — sighting verification, sighting-timeline, and review of the
+moderation flag queue. The bounty rulings of Feature 6 are in
+`BountyService`.
 
 All DB access goes through repository ports (app/repositories/); this service
-holds zero supabase-py calls. `AdminRepository` covers verification / timeline /
-resolution; flag review additionally needs the queue itself (`ReportRepository`)
+holds zero supabase-py calls. `AdminRepository` covers verification / timeline;
+flag review additionally needs the queue itself (`ReportRepository`)
 and role assignment needs `UserRepository`. Both are optional constructor
 arguments so the rest of this service keeps its one-argument construction.
 
@@ -28,13 +24,14 @@ Since 2026-08-21 an administrator does not adjudicate sightings at all. Whether
 a photograph shows a particular animal is a question only its owner can answer,
 so the owner now decides every sighting and closes their own case, and
 confirming the rescue is what distributes the clue scores (see
-`SightingService.decide_match`). What is left here is moderation and MONEY:
-`resolve_missing_pet` records the bounty transfer against a case the owner has
-already closed. `verify_sighting` survives for the moderation half of the same
+`SightingService.decide_match`). What is left here is moderation; the money
+moved to Feature 6 (`BountyService`), where the returning hunter confirms a
+payment and an administrator rules only on what the two could not settle.
+`verify_sighting` survives for the moderation half of the same
 column — an upheld flag writes 'Dismissed' — and nothing writes 'Verified' any
 more.
 
-**Role assignment (added 2026-09-02, MD-56 to MD-58).** The one thing here that
+**Role assignment (added 2026-09-02).** The one thing here that
 does touch an account: an administrator may grant another account administrator
 access and withdraw it again. Read that against the paragraph above rather than
 as an exception to it. It changes what an account may do inside the CONSOLE,
@@ -78,7 +75,7 @@ logger = logging.getLogger(__name__)
 
 
 class AdminService:
-    """Verification, resolution, and flag moderation — admins only."""
+    """Verification and flag moderation — admins only."""
 
     def __init__(
         self,
@@ -156,59 +153,8 @@ class AdminService:
             logger.error("Error fetching timeline for pet %s: %s", pet_id, e)
             raise
 
-    async def resolve_missing_pet(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: Optional[str],
-        verified_by: str,
-    ) -> dict:
-        """
-        Single-RPC resolution. The DB function raises on duplicate resolve
-        and on invalid final_sighting; both surface as PostgrestError which
-        we re-raise as ValueError so the API layer can return 400.
-        """
-        return await asyncio.to_thread(
-            self._resolve_missing_pet_sync, pet_id, final_sighting_id,
-            slip_image_url, reference_no, verified_by,
-        )
-
-    def _resolve_missing_pet_sync(
-        self,
-        pet_id: str,
-        final_sighting_id: str,
-        slip_image_url: str,
-        reference_no: Optional[str],
-        verified_by: str,
-    ) -> dict:
-        try:
-            result = self.repo.resolve_missing_pet(
-                pet_id, final_sighting_id, slip_image_url,
-                reference_no, verified_by,
-            )
-            logger.warning(
-                "Pet %s resolved by %s — final_sighting=%s",
-                pet_id, verified_by, final_sighting_id,
-            )
-            return result
-        except Exception as e:
-            msg = str(e)
-            # The DB function raises with these prefixes — translate to a
-            # client-friendly 400 instead of a 500. "has not been recovered
-            # yet" is the 2026-08-21 addition: the bounty follows the owner's
-            # resolution, so paying before they have closed the search is a
-            # sequencing mistake by the caller, not a server fault.
-            if ("already resolved" in msg
-                    or "not a confirmed Caught sighting" in msg
-                    or "has not been recovered yet" in msg
-                    or "not found" in msg):
-                raise ValueError(msg) from e
-            logger.error("Error resolving pet %s: %s", pet_id, e)
-            raise
-
     # ---------------------------------------------------------------- #
-    # MD-51 — read the moderation flag queue (the listing MD-44 acts from)
+    # Read the moderation flag queue (the listing `review_report` acts from)
     # ---------------------------------------------------------------- #
     async def list_reports(
         self, status: str | None = None, limit: int = 20, offset: int = 0,
@@ -219,7 +165,7 @@ class AdminService:
         Returns the page AND the queue depth for the filter, which is what a
         moderator actually wants to know and what numbered pages are drawn from.
 
-        Exists because `review_report` (MD-44) takes a `report_id` an
+        Exists because `review_report` takes a `report_id` an
         administrator previously had no way to obtain: the flag queue could be
         written to and decided on, but never enumerated.
 
@@ -246,7 +192,7 @@ class AdminService:
             raise
 
     # ---------------------------------------------------------------- #
-    # MD-44 — review a moderation flag (UD-16)
+    # Review a moderation flag
     # ---------------------------------------------------------------- #
     async def review_report(
         self,
@@ -309,7 +255,7 @@ class AdminService:
 
         current = flag.get("status") or "Pending"
         if current != "Pending":
-            # UD-16 [E1] Action Conflict — do not overwrite the first decision.
+            # Action Conflict — do not overwrite the first decision.
             raise ReportAlreadyModerated(report_id, current)
 
         sighting_dismissed = False
@@ -427,13 +373,13 @@ class AdminService:
         )
 
     # ---------------------------------------------------------------- #
-    # MD-56 — resolve one account from its exact email address
+    # Resolve one account from its exact email address
     # ---------------------------------------------------------------- #
     async def find_user_by_email(self, email: str) -> dict:
         """
         Return the one account holding this address: id, username, role.
 
-        Exists because MD-57 takes an account identifier that an administrator
+        Exists because `assign_user_role` takes an account identifier that an administrator
         has no way to obtain. They know their colleague's email address and
         nothing else, the identifier being a value no person handles.
 
@@ -463,7 +409,7 @@ class AdminService:
         return row
 
     # ---------------------------------------------------------------- #
-    # MD-57 — grant or withdraw administrator access (UD-23)
+    # Grant or withdraw administrator access
     # ---------------------------------------------------------------- #
     async def assign_user_role(
         self, target_user_id: str, role: str, admin_id: str,
@@ -539,7 +485,7 @@ class AdminService:
         return result
 
     # ---------------------------------------------------------------- #
-    # MD-58 — read the role-change history (the reading half)
+    # Read the role-change history (the reading half)
     # ---------------------------------------------------------------- #
     async def list_role_changes(
         self,

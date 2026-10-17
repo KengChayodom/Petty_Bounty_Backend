@@ -1,12 +1,11 @@
 """
 Integration tests for the role-assignment procedures — find_user_by_email() and
-assign_user_role() (SRS-94 to SRS-98, MD-56/MD-57,
-migrations/2026_09_02_role_assignment.sql).
+assign_user_role() (migrations/2026_09_02_role_assignment.sql).
 
 Everything worth testing here lives in the database and is invisible to the unit
 suite, which stops at the repository port:
 
-  * the two guards of SRS-96 — self-demotion and the last administrator — are
+  * the two role-change guards — self-demotion and the last administrator — are
     enforced by the procedure, not by the service, because a count read in
     Python can be invalidated before the write lands;
   * atomicity — a refused change leaves the role AND the audit trail untouched,
@@ -15,7 +14,7 @@ suite, which stops at the repository port:
     which is what stops a replayed request padding the history (and is why
     `role_changes` carries a CHECK that the two roles differ);
   * `find_user_by_email` reaching across into `auth.users`, matching the whole
-    address and never a prefix — the line between MD-56 and the account search
+    address and never a prefix — the line between this lookup and the account search
     struck on 2026-08-21.
 
 The one property NOT covered: that the guards hold when two administrators act
@@ -24,7 +23,6 @@ transaction that is rolled back, so a second connection cannot see the seeded
 rows at all. What is testable here is that the guard is in the procedure rather
 than the service, which is the decision that makes the concurrent case safe.
 
-Progress-II SRS traceability: SRS-94, SRS-95, SRS-96, SRS-97.
 """
 import json
 import uuid
@@ -96,7 +94,7 @@ def _set_email(conn, user_id, email):
 
 
 # --------------------------------------------------------------------------- #
-# find_user_by_email — MD-56 / SRS-94
+# find_user_by_email
 # --------------------------------------------------------------------------- #
 class TestFindUserByEmail:
     def test_resolves_the_exact_address(self, conn, seed):
@@ -144,7 +142,7 @@ class TestFindUserByEmail:
 
 
 # --------------------------------------------------------------------------- #
-# assign_user_role — MD-57 / SRS-95, SRS-96, SRS-97
+# assign_user_role
 # --------------------------------------------------------------------------- #
 class TestAssignUserRole:
     def test_grants_the_role_and_records_the_change(self, conn, seed):

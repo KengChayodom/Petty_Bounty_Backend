@@ -1,7 +1,7 @@
 -- 2026-09-09 — `users.display_name` becomes `users.username`.
 --
 -- The application has called this value the USERNAME since Feature 4 was
--- specified (SRS-73, and the sign-up validator's "Enter a username"). Only the
+-- specified (the requirement, and the sign-up validator's "Enter a username"). Only the
 -- column kept the older name, which left one value carrying two names and every
 -- document explaining the discrepancy instead of the value.
 --
@@ -72,7 +72,7 @@ begin
 end;
 $function$;
 
--- ---------- 2. find_user_by_email (MD-57) ----------
+-- ---------- 2. find_user_by_email ----------
 -- The returned JSON key becomes 'username'; the admin console's AccountLookup
 -- type changes with it.
 CREATE OR REPLACE FUNCTION public.find_user_by_email(p_email text)
@@ -103,7 +103,7 @@ BEGIN
 END;
 $function$;
 
--- ---------- 3. assign_user_role (MD-58) ----------
+-- ---------- 3. assign_user_role ----------
 CREATE OR REPLACE FUNCTION public.assign_user_role(p_target_user_id uuid, p_role user_role, p_changed_by uuid)
  RETURNS json
  LANGUAGE plpgsql

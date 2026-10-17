@@ -1,14 +1,12 @@
 """
-Unit tests for app/services/admin_service.py — verification, timeline, the
-resolve wrapper, and the Progress-II moderation methods — all through the
+Unit tests for app/services/admin_service.py — verification, timeline, and the
+Progress-II moderation methods — all through the
 repository ports (MagicMock(spec=...)).
 
 Category-Partition highlights:
   * verify_sighting: invalid status [error] / row not found [error] / success /
     unexpected repo error [error]
-  * resolve_missing_pet: the DB function's known RAISE prefixes are translated to
-    ValueError (400); any other error propagates as-is.
-  * review_report (UTC-40): unknown [404] / already moderated [409] / dismiss /
+  * review_report: unknown [404] / already moderated [409] / dismiss /
     uphold / write-ordering / bad decision [400] / null target / db error [500]
   * review_report penalty (2026-08-20): per-reason default / admin override /
     explicit zero / out-of-range [400] / no hunter to charge
@@ -99,7 +97,7 @@ class TestVerifySighting:
             run(AdminService(repo).verify_sighting("s1", "Dismissed"))
 
     def test_dismissed_is_written_as_the_withdrawal(self):
-        """UTC-41-TC-05 - the other value of the permitted pair, and the only
+        """TC-05 - the other value of the permitted pair, and the only
         one production actually writes: nothing writes Verified any more, so
         framing that choice alone left the withdrawal itself unframed."""
         repo = _repo()
@@ -115,7 +113,7 @@ class TestVerifySighting:
         )
 
     def test_the_change_is_recorded(self, caplog):
-        """UTC-41-TC-06 - a moderation action leaves a record, the same
+        """TC-06 - a moderation action leaves a record, the same
         convention remove_missing_pet follows. Without it the withdrawal of a
         sighting cannot be questioned afterwards."""
         repo = _repo()
@@ -146,41 +144,7 @@ class TestGetSightingTimeline:
 
 
 # --------------------------------------------------------------------------- #
-# resolve_missing_pet — the DB function's known RAISE prefixes -> 400 (ValueError)
-# --------------------------------------------------------------------------- #
-class TestResolveMissingPet:
-    def test_success_returns_repo_result(self):
-        repo = _repo()
-        repo.resolve_missing_pet.return_value = {"final_hunter_id": "h1"}
-        out = run(AdminService(repo).resolve_missing_pet(
-            "pet-1", "s1", "slip.jpg", "REF-1", "admin-1"))
-        assert out == {"final_hunter_id": "h1"}
-        repo.resolve_missing_pet.assert_called_once_with(
-            "pet-1", "s1", "slip.jpg", "REF-1", "admin-1")
-
-    @pytest.mark.parametrize("msg", [
-        "pet already resolved",
-        "final sighting is not a confirmed Caught sighting",
-        "pet has not been recovered yet (status Searching)",
-        "pet not found",
-    ])
-    def test_known_db_errors_become_valueerror(self, msg):
-        repo = _repo()
-        repo.resolve_missing_pet.side_effect = Exception(msg)
-        with pytest.raises(ValueError):
-            run(AdminService(repo).resolve_missing_pet(
-                "pet-1", "s1", "slip.jpg", None, "admin-1"))
-
-    def test_unknown_error_propagates_unchanged(self):
-        repo = _repo()
-        repo.resolve_missing_pet.side_effect = RuntimeError("connection reset")
-        with pytest.raises(RuntimeError):
-            run(AdminService(repo).resolve_missing_pet(
-                "pet-1", "s1", "slip.jpg", None, "admin-1"))
-
-
-# --------------------------------------------------------------------------- #
-# UTC-40  review_report (MD-44, SRS-73) — dismiss or uphold a moderation flag.
+# review_report — dismiss or uphold a moderation flag.
 #
 # As-built note: the test plan writes the constructor as
 # `AdminService(report_repo, sighting_repo, user_repo)`. As built there is no
@@ -226,14 +190,14 @@ _PENDING_FLAG = {
 
 class TestReviewReport:
     def test_unknown_flag_raises_not_found(self):
-        """UTC-40-TC-01 — no such flag => ReportNotFound (API maps to 404)."""
+        """TC-01 — no such flag => ReportNotFound (API maps to 404)."""
         service, _, report_repo = _moderation_service(flag=None)
         with pytest.raises(ReportNotFound):
             run(service.review_report("ghost", "Dismissed", "a1"))
         report_repo.update_report.assert_not_called()
 
     def test_already_moderated_raises_conflict(self):
-        """UTC-40-TC-02 — UD-16 [E1]: a decided flag is never overwritten."""
+        """TC-02 — Action Conflict: a decided flag is never overwritten."""
         service, _, report_repo = _moderation_service(
             flag={"id": "r1", "sighting_id": "s1", "status": "Dismissed"},
         )
@@ -242,7 +206,7 @@ class TestReviewReport:
         report_repo.update_report.assert_not_called()
 
     def test_dismiss_writes_status_only(self):
-        """UTC-40-TC-03 — dismissing touches the flag and nothing else: the
+        """TC-03 — dismissing touches the flag and nothing else: the
         sighting stays visible to the owner."""
         service, repo, report_repo = _moderation_service(
             flag=dict(_PENDING_FLAG),
@@ -258,7 +222,7 @@ class TestReviewReport:
         repo.update_sighting_verification.assert_not_called()
 
     def test_uphold_dismisses_the_sighting(self):
-        """UTC-40-TC-04 — upholding withdraws the offending sighting so it
+        """TC-04 — upholding withdraws the offending sighting so it
         stops reaching owners, and closes the flag."""
         service, repo, report_repo = _moderation_service(
             flag=dict(_PENDING_FLAG),
@@ -502,7 +466,7 @@ class TestReviewReport:
         assert out["penalty"] is None
 
     def test_db_error_propagates(self):
-        """UTC-40-TC-05 — a repo failure surfaces (API maps it to 500)."""
+        """TC-05 — a repo failure surfaces (API maps it to 500)."""
         service, _, report_repo = _moderation_service(
             flag=dict(_PENDING_FLAG),
         )
@@ -522,7 +486,7 @@ class TestReviewReport:
             run(service.review_report("r1", "Dismissed", "a1"))
 
     def test_a_reason_outside_the_tariff_charges_the_mildest_default(self):
-        """UTC-40-TC-18 - the reason column selects the default deduction, and
+        """TC-18 - the reason column selects the default deduction, and
         a value the tariff table does not carry is the one choice of that
         category nothing framed. It must charge the mildest default rather
         than raise: the reason was already validated when the flag was
@@ -548,10 +512,10 @@ class TestReviewReport:
 
 
 # --------------------------------------------------------------------------- #
-# UTC-48  list_reports (MD-51) — read the queue that UTC-40 acts from.
+# list_reports — read the queue that review_report acts from.
 #
 # The gap this closes: review_report takes a report_id, and until now nothing
-# returned one. The queue was writable (MD-43) and decidable (MD-44) but never
+# returned one. The queue was writable and decidable but never
 # enumerable, so no admin screen could reach a flag.
 #
 # The contract worth pinning is the filter's THREE-WAY behaviour — a valid
@@ -575,27 +539,27 @@ def _queue_service(rows=None, total=None):
 
 class TestListReports:
     def test_forwards_a_valid_filter_and_pagination(self):
-        """UTC-48-TC-01 — the normalised bucket and the page reach the port."""
+        """TC-01 — the normalised bucket and the page reach the port."""
         service, report_repo = _queue_service(rows=[{"id": "r1"}])
         out = run(service.list_reports(status="Pending", limit=5, offset=10))
         assert out.items == [{"id": "r1"}]
         report_repo.list_reports.assert_called_once_with("Pending", 5, 10)
 
     def test_absent_filter_passes_none_meaning_every_status(self):
-        """UTC-48-TC-02 — None must survive to the adapter so the predicate is
+        """TC-02 — None must survive to the adapter so the predicate is
         skipped entirely. A string here would silently show one bucket only."""
         service, report_repo = _queue_service()
         run(service.list_reports())
         assert report_repo.list_reports.call_args.args[0] is None
 
     def test_filter_is_normalised_before_the_query(self):
-        """UTC-48-TC-03 — casing from a UI must not reach the enum verbatim."""
+        """TC-03 — casing from a UI must not reach the enum verbatim."""
         service, report_repo = _queue_service()
         run(service.list_reports(status="  reviewed_penalty  "))
         assert report_repo.list_reports.call_args.args[0] == "Reviewed_Penalty"
 
     def test_unknown_filter_raises_before_any_io(self):
-        """UTC-48-TC-04 — the 400 happens at the edge; the port is never
+        """TC-04 — the 400 happens at the edge; the port is never
         touched, so a bad filter cannot become a database error."""
         service, report_repo = _queue_service()
         with pytest.raises(ValueError):
@@ -603,20 +567,20 @@ class TestListReports:
         report_repo.list_reports.assert_not_called()
 
     def test_empty_queue_returns_empty_list(self):
-        """UTC-48-TC-05 — nothing to moderate is a success, not a 404."""
+        """TC-05 — nothing to moderate is a success, not a 404."""
         service, _ = _queue_service(rows=[])
         out = run(service.list_reports())
         assert out.items == [] and out.total == 0
 
     def test_db_error_propagates(self):
-        """UTC-48-TC-06 — a repo failure surfaces (API maps it to 500)."""
+        """TC-06 — a repo failure surfaces (API maps it to 500)."""
         service, report_repo = _queue_service()
         report_repo.list_reports.side_effect = RuntimeError("db down")
         with pytest.raises(RuntimeError):
             run(service.list_reports())
 
     def test_total_is_the_queue_depth_not_the_page_length(self):
-        """UTC-48-TC-07 — a page out of a deeper queue reports the depth.
+        """TC-07 — a page out of a deeper queue reports the depth.
 
         The moderator's question is "how much is waiting", and a full page
         answers it only by accident. The count is the filter's count, so a
