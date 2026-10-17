@@ -43,10 +43,11 @@ class ReportAlreadyModerated(ValueError):
 
 
 class FlagTargetNotFound(ValueError):
-    """The sighting being flagged does not exist — the flag's 404."""
+    """The sighting being flagged no longer exists, or an Administrator has
+    withdrawn it — the flag's 404."""
 
     def __init__(self, sighting_id: str):
-        super().__init__(f"Sighting {sighting_id} not found")
+        super().__init__("This sighting is no longer available")
         self.sighting_id = sighting_id
 
 
