@@ -70,7 +70,7 @@ class TestFindUserByEmail:
         assert not isinstance(result, list)
         assert set(result) >= {"id", "username", "role"}
 
-    def test_tc03_case_is_ignored(self):
+    def test_tc02_case_is_ignored(self):
         service, repo = _service()
         repo.find_by_email.return_value = ACCOUNT
 
@@ -79,7 +79,7 @@ class TestFindUserByEmail:
         repo.find_by_email.assert_called_once_with("hunter@example.com")
         assert result == ACCOUNT
 
-    def test_tc04_unknown_address(self):
+    def test_tc03_unknown_address(self):
         """TC-03 [error] - an address nobody holds is a missing account,
         and the port was asked for it exactly as typed, so no near miss is
         expanded into a prefix and no account is disclosed by having nearly
@@ -101,7 +101,7 @@ class TestFindUserByEmail:
         ["not-an-address", "no-at-sign.com", "@example.com", "a@b",
          "two@@example.com", "spaced address@example.com"],
     )
-    def test_tc05_malformed_address_rejected_before_the_lookup(self, address):
+    def test_tc04_malformed_address_rejected_before_the_lookup(self, address):
         service, repo = _service()
 
         with pytest.raises(ValueError):
@@ -110,7 +110,7 @@ class TestFindUserByEmail:
         repo.find_by_email.assert_not_called()
 
     @pytest.mark.parametrize("address", ["", "   ", None])
-    def test_tc06_empty_address_rejected(self, address):
+    def test_tc05_empty_address_rejected(self, address):
         service, repo = _service()
 
         with pytest.raises(ValueError):
@@ -118,7 +118,7 @@ class TestFindUserByEmail:
 
         repo.find_by_email.assert_not_called()
 
-    def test_tc07_database_error_propagates(self):
+    def test_tc06_database_error_propagates(self):
         service, repo = _service()
         repo.find_by_email.side_effect = RuntimeError("DB connection lost")
 
@@ -173,7 +173,7 @@ class TestAssignUserRole:
         # No round trip: the caller's own identifier is known without a read.
         repo.assign_user_role.assert_not_called()
 
-    def test_tc04b_promoting_yourself_is_not_the_self_demotion_case(self):
+    def test_tc05_promoting_yourself_is_not_the_self_demotion_case(self):
         """Re-asserting your own 'admin' is a no-op, not a withdrawal.
 
         The guard is about WITHDRAWING your own access. Refusing every write
@@ -190,7 +190,7 @@ class TestAssignUserRole:
         assert result["changed"] is False
         repo.assign_user_role.assert_called_once_with("a1", "admin", "a1")
 
-    def test_tc05_last_administrator_is_refused(self):
+    def test_tc06_last_administrator_is_refused(self):
         service, repo = _service()
         repo.assign_user_role.side_effect = RoleAssignmentRefused(
             "This is the only administrator. "
@@ -200,14 +200,14 @@ class TestAssignUserRole:
         with pytest.raises(RoleAssignmentRefused):
             run(service.assign_user_role("a2", "user", "a1"))
 
-    def test_tc06_unknown_account(self):
+    def test_tc07_unknown_account(self):
         service, repo = _service()
         repo.assign_user_role.side_effect = UserAccountNotFound("ghost")
 
         with pytest.raises(UserAccountNotFound):
             run(service.assign_user_role("ghost", "admin", "a1"))
 
-    def test_tc07_role_already_held_writes_nothing(self):
+    def test_tc08_role_already_held_writes_nothing(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
             "changed": False, "id": "u2", "username": "Kus",
@@ -222,7 +222,7 @@ class TestAssignUserRole:
         # the history.
         assert "role_change_id" not in result
 
-    def test_tc08_the_acting_administrator_is_recorded(self):
+    def test_tc09_the_acting_administrator_is_recorded(self):
         service, repo = _service()
         repo.assign_user_role.return_value = {
             "changed": True, "id": "u2", "username": "Kus",
@@ -235,14 +235,14 @@ class TestAssignUserRole:
         _, _, changed_by = repo.assign_user_role.call_args.args
         assert changed_by == "a1"
 
-    def test_tc09_database_error_propagates(self):
+    def test_tc11_database_error_propagates(self):
         service, repo = _service()
         repo.assign_user_role.side_effect = RuntimeError("DB connection lost")
 
         with pytest.raises(RuntimeError):
             run(service.assign_user_role("u2", "admin", "a1"))
 
-    def test_administrator_alias_is_accepted(self):
+    def test_tc10_administrator_alias_is_accepted(self):
         """The use case writes the actor as "Administrator"; the column holds 'admin'."""
         service, repo = _service()
         repo.assign_user_role.return_value = {
