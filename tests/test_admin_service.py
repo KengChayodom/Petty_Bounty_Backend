@@ -466,7 +466,7 @@ class TestReviewReport:
         assert out["penalty"] is None
 
     def test_db_error_propagates(self):
-        """TC-05 — a repo failure surfaces (API maps it to 500)."""
+        """TC-14 — a repo failure surfaces (API maps it to 500)."""
         service, _, report_repo = _moderation_service(
             flag=dict(_PENDING_FLAG),
         )
@@ -486,7 +486,7 @@ class TestReviewReport:
             run(service.review_report("r1", "Dismissed", "a1"))
 
     def test_a_reason_outside_the_tariff_charges_the_mildest_default(self):
-        """TC-18 - the reason column selects the default deduction, and
+        """The reason column selects the default deduction, and
         a value the tariff table does not carry is the one choice of that
         category nothing framed. It must charge the mildest default rather
         than raise: the reason was already validated when the flag was
