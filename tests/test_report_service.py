@@ -66,7 +66,7 @@ class TestFlagSighting:
         ("Inappropriate image", "Inappropriate_image"),
     ])
     def test_accepts_the_spec_spellings(self, supplied, stored):
-        """The method spec spells two reasons with spaces; the enum does not. They must
+        """TC-03 — the method spec spells two reasons with spaces; the enum does not. They must
         still be accepted, and stored in the enum's spelling."""
         service, repo, _ = _service()
 
@@ -75,7 +75,7 @@ class TestFlagSighting:
         assert repo.create_flag.call_args.args[0]["reason"] == stored
 
     def test_inserts_pending_with_reporter_from_the_token(self):
-        """TC-03 — status Pending and reporter_id from the caller."""
+        """TC-04 — status Pending and reporter_id from the caller."""
         service, repo, _ = _service()
 
         run(service.flag_sighting("s1", "Spam", "r1"))
@@ -86,7 +86,7 @@ class TestFlagSighting:
         assert payload["sighting_id"] == "s1"
 
     def test_unknown_target_sighting_raises_not_found(self):
-        """TC-04 — no such sighting => FlagTargetNotFound (API -> 404),
+        """TC-05 — no such sighting => FlagTargetNotFound (API -> 404),
         and no orphan row is written."""
         service, repo, _ = _service(sighting=None)
 
@@ -108,7 +108,7 @@ class TestFlagSighting:
         repo.create_flag.assert_not_called()
 
     def test_db_error_propagates(self):
-        """TC-05 — insert failure surfaces (API maps it to 500)."""
+        """TC-06 — insert failure surfaces (API maps it to 500)."""
         service, repo, _ = _service()
         repo.create_flag.side_effect = RuntimeError("db down")
 
