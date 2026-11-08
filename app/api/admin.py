@@ -1,0 +1,529 @@
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from app.api.dependencies import (
+    get_admin_service,
+    get_bounty_service,
+    get_notification_repository,
+    get_pet_service,
+    get_sighting_service,
+)
+from app.core.auth import require_admin
+from app.repositories.admin_repository import SightingNotFound
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.report_repository import (
+    ReportAlreadyModerated,
+    ReportNotFound,
+)
+from app.repositories.user_repository import (
+    RoleAssignmentRefused,
+    UserAccountNotFound,
+)
+from app.schemas.admin import (
+    AssignRoleRequest,
+    ReviewReportRequest,
+    VerifySightingRequest,
+)
+from app.schemas.common import PaginatedData, StandardResponse
+from app.services.admin_service import AdminService
+from app.services.pet_service import PetService
+from app.services.sighting_service import SightingService
+from app.repositories.bounty_repository import BountyConflict, BountyNotFound
+from app.services.bounty_service import BountyService
+from app.services.notification_service import send_to_users
+
+# Every route here needs an administrator, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/admin", tags=["Admin"],
+    dependencies=[Depends(require_admin)],
+)
+
+
+@router.get("/sightings/{sighting_id}", response_model=StandardResponse)
+async def get_sighting_for_review(
+    sighting_id: str,
+    service: SightingService = Depends(get_sighting_service),
+):
+    """One sighting in full, feature_vector stripped, for the flag review.
+
+    A flag names the sighting but not its photograph, so the console reads the
+    sighting here before an administrator rules on the flag.
+    """
+    try:
+        row = await service.get_sighting_by_id(sighting_id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve sighting: {e}"
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sighting not found")
+    return StandardResponse(
+        status="success", message="Sighting retrieved successfully.", data=row,
+    )
+
+
+@router.patch(
+    "/sightings/{sighting_id}/verification",
+    response_model=StandardResponse,
+)
+async def verify_sighting(
+    sighting_id: str,
+    payload: VerifySightingRequest,
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """Admin sets a sighting's verification_status to 'Verified' or 'Dismissed'.
+
+    'Dismissed' is the live half: it withdraws a sighting from every owner
+    timeline and from scoring, and it locks the hunter out of changing its
+    action_type (see `SightingActionLocked`). Upholding a flag writes the same
+    value, though through the repository directly rather than through here.
+    'Verified' is written only to REVERSE a withdrawal and restores all three.
+    It is not a ruling: the owner's confirmation took over both the scoring
+    (2026-08-21) and the bounty eligibility, so nothing is gated on it.
+    """
+    try:
+        row = await service.verify_sighting(
+            sighting_id, payload.verification_status,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Sighting marked {payload.verification_status}.",
+            data=row,
+        )
+    except SightingNotFound as nf:
+        raise HTTPException(status_code=404, detail=str(nf))
+    except ValueError as ve:
+        # A state outside the permitted pair is a malformed request, not a
+        # missing row. Both were 404 until 2026-09-09, which told a caller who
+        # mistyped the state that the sighting did not exist.
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to verify sighting: {e}"
+        )
+
+
+@router.get(
+    "/missing-pets/{pet_id}/sighting-timeline",
+    response_model=StandardResponse,
+)
+async def get_sighting_timeline(
+    pet_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """Full sighting timeline for a pet — includes Dismissed entries."""
+    try:
+        data = await service.get_sighting_timeline(
+            pet_id, limit=limit, offset=offset,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(data)} timeline entries.",
+            data=data,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load timeline: {e}"
+        )
+
+
+@router.get("/missing-pets", response_model=StandardResponse)
+async def list_all_missing_pets(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(
+        None,
+        description="Optional filter: Searching, Spotted, Found, or Resolved. "
+                    "Anything else is a 400.",
+    ),
+    species: str | None = Query(
+        None,
+        description="Optional filter: Cat, Dog, Bird, or Other. "
+                    "Anything else is a 400.",
+    ),
+    pets: PetService = Depends(get_pet_service),
+    admin_id: str = Depends(require_admin),
+):
+    """Browse every missing-pet report for moderation.
+
+    Returns `{items, total, limit, offset}`. `total` counts every report
+    matching `status`, not just this page, so the console can draw numbered
+    pages instead of guessing whether another page exists.
+
+    Both filters are normalised before any I/O, so an unrecognised value is a
+    400 rather than a failed enumeration cast surfacing as a 500. `Pending`,
+    `Expired` and `Rescued` are refused on purpose: they are badge names
+    `derive_post_status` produces for a card, not buckets this endpoint
+    implements.
+    """
+    try:
+        page = await pets.list_all_missing_pets(
+            limit=limit, offset=offset, status=status, species=species,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(page.items)} of {page.total} reports.",
+            data=PaginatedData(
+                items=page.items, total=page.total,
+                limit=limit, offset=offset,
+            ),
+        )
+    except ValueError as ve:
+        # An unrecognised filter, refused before any I/O. This handler must
+        # precede the generic one below, which would otherwise report a
+        # caller's typo as a server fault.
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list missing pets: {e}"
+        )
+
+@router.get("/missing-pets/{pet_id}")
+async def get_missing_pet(
+    pet_id: str,
+    pets: PetService = Depends(get_pet_service),
+    admin_id: str = Depends(require_admin),
+):
+    """Get a specific missing pet for admin details view."""
+    pet = await pets.get_missing_pet_by_id(pet_id)
+    if not pet:
+        raise HTTPException(status_code=404, detail="Pet not found")
+    return pet
+
+@router.delete("/missing-pets/{pet_id}", response_model=StandardResponse)
+async def remove_missing_pet(
+    pet_id: str,
+    pets: PetService = Depends(get_pet_service),
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Remove a report that violates the platform guidelines.
+
+    The removal's postcondition is "removed from the database and the search map", so
+    the row is deleted outright; the moderation action is recorded in the log.
+    """
+    try:
+        removed = await pets.remove_missing_pet(pet_id, admin_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to remove missing pet: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message="Missing pet report removed.",
+        data=removed,
+    )
+
+
+@router.get("/reports", response_model=StandardResponse)
+async def list_reports(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(
+        None,
+        description="Optional filter: Pending, Reviewed_Penalty, or "
+                    "Dismissed. Omit for every status.",
+    ),
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Browse the moderation flag queue.
+
+    The listing `PATCH /admin/reports/{report_id}` acts from: without it an
+    administrator can only review a flag whose identifier they already hold,
+    which no screen could supply.
+
+    Returns `{items, total, limit, offset}`; `total` is the depth of the queue
+    for the requested status, which is the number a moderator works against.
+    """
+    try:
+        page = await service.list_reports(
+            status=status, limit=limit, offset=offset,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list reports: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message=f"Retrieved {len(page.items)} of {page.total} flags.",
+        data=PaginatedData(
+            items=page.items, total=page.total, limit=limit, offset=offset,
+        ),
+    )
+
+
+@router.patch("/reports/{report_id}", response_model=StandardResponse)
+async def review_report(
+    report_id: str,
+    payload: ReviewReportRequest,
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Dismiss a flag, or uphold it and deduct the hunter's score.
+
+    Upholding sets the flagged sighting to Dismissed and subtracts score from
+    the hunter who submitted it. **No account is banned or
+    suspended** — that sanction was replaced by the deduction on 2026-08-20; see
+    the `admin_service` module docstring for why. `penalty_points` overrides the
+    per-reason default. A flag another admin has already decided returns 409
+    rather than being overwritten.
+    """
+    try:
+        result = await service.review_report(
+            report_id, payload.decision, admin_id,
+            penalty_points=payload.penalty_points,
+        )
+    except ReportNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ReportAlreadyModerated as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to review report: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message="Moderation decision recorded.",
+        data=result,
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Role assignment. Access control, not moderation:
+# nothing below can suspend, deactivate, or delete an account. Listing is
+# limited to the current admin set (always small); there is no route that
+# lists or searches all user accounts.
+# ---------------------------------------------------------------------- #
+@router.get("/users/lookup", response_model=StandardResponse)
+async def find_user_by_email(
+    email: str = Query(
+        ...,
+        description="The account's exact email address. Matched in full and "
+                    "case-insensitively — this is not a search.",
+    ),
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Resolve ONE account from its exact email address.
+
+    The lookup `PATCH /admin/users/{id}/role` acts from: without it an
+    administrator can only change the role of an account whose identifier they
+    already hold, which no screen could supply.
+
+    Returns one account or 404. It is not a listing and never will be: an
+    address that nearly matches discloses nothing, because the account browse
+    was struck on 2026-08-21 and returning a page here would rebuild it under
+    another name.
+    """
+    try:
+        account = await service.find_user_by_email(email)
+    except UserAccountNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to look up account: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message="Account found.",
+        data=account,
+    )
+
+
+@router.get("/users/admins", response_model=StandardResponse)
+async def list_admins(
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """Every account currently holding the admin role.
+
+    Not paginated: the admin set is a handful of people by design. This is
+    NOT the account listing struck on 2026-08-21 — it shows only the people
+    who can sign into this console, which is a property of the console, not
+    of the user base.
+    """
+    try:
+        admins = await service.list_admins()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list administrators: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message=f"{len(admins)} administrator(s).",
+        data=admins,
+    )
+
+
+@router.patch("/users/{target_user_id}/role", response_model=StandardResponse)
+async def assign_user_role(
+    target_user_id: str,
+    payload: AssignRoleRequest,
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """
+    Grant administrator access to an account, or withdraw it.
+
+    **This is the only thing an administrator does to an account.** Setting
+    'user' withdraws console access and leaves everything else alone — the
+    account keeps its username, photograph, score, sightings and reports, and
+    goes on using the product exactly as before. Nobody is suspended or banned;
+    that sanction was struck on 2026-08-21 and the sanction for an abusive
+    hunter remains the score deduction of `PATCH /admin/reports/{id}`.
+
+    Two changes are refused with 409: withdrawing your own access (ask another
+    administrator), and any change that would leave no administrator at all.
+    Both are enforced inside the database procedure, so they hold when two
+    administrators act at the same moment.
+
+    Assigning a role the account already holds returns `changed: false` and
+    writes no audit row.
+
+    The withdrawal takes effect on the affected account's NEXT REQUEST — their
+    session is not ended, because `require_admin` re-reads the role from the
+    database every time rather than trusting the token.
+    """
+    try:
+        result = await service.assign_user_role(
+            target_user_id, payload.role, admin_id,
+        )
+    except UserAccountNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RoleAssignmentRefused as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to assign role: {e}"
+        )
+    changed = bool(result.get("changed"))
+    return StandardResponse(
+        status="success",
+        message=(
+            f"Role set to {result.get('role_after')}." if changed
+            else f"Account already holds the role {result.get('role_after')}. "
+                 "Nothing changed."
+        ),
+        data=result,
+    )
+
+
+@router.get("/role-changes", response_model=StandardResponse)
+async def list_role_changes(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    target_user_id: str | None = Query(
+        None,
+        description="Optional: narrow the history to one account's changes.",
+    ),
+    service: AdminService = Depends(get_admin_service),
+    admin_id: str = Depends(require_admin),
+):
+    """
+    The record of every role grant and withdrawal, newest first.
+
+    Append-only: nothing edits or deletes a row, so an account's access history
+    stays complete. Returns `{items, total, limit, offset}`.
+    """
+    try:
+        page = await service.list_role_changes(
+            limit=limit, offset=offset, target_user_id=target_user_id,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list role changes: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message=f"Retrieved {len(page.items)} of {page.total} role changes.",
+        data=PaginatedData(
+            items=page.items, total=page.total, limit=limit, offset=offset,
+        ),
+    )
+
+
+
+# ---------------------------------------------------------------------- #
+# Feature 6 — the Administrator rules on bounty payments the owner and the
+# returning hunter could not settle themselves.
+# ---------------------------------------------------------------------- #
+class BountyRuling(BaseModel):
+    decision: str = Field(..., description="'Confirm' or 'Reject'")
+
+
+async def _bounty(coro):
+    try:
+        return await coro
+    except BountyNotFound as nf:
+        raise HTTPException(status_code=404, detail=str(nf))
+    except BountyConflict as bc:
+        raise HTTPException(status_code=409, detail=str(bc))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bounty request failed: {e}")
+
+
+@router.get("/bounty-queue", response_model=StandardResponse)
+async def bounty_queue(service: BountyService = Depends(get_bounty_service)):
+    """Disputed payments, payments left unconfirmed past their
+    three-day dispute window, reports referred as unpaid, and reports whose
+    payment was rejected over three days ago and not paid again, oldest first.
+    Each entry carries the report, both parties, the amount and any slip."""
+    rows = await _bounty(service.ruling_queue())
+    return StandardResponse(status="success", message=f"{len(rows)} case(s) to rule on.",
+                            data=rows)
+
+
+@router.post("/bounty-payments/{payment_id}/ruling", response_model=StandardResponse)
+async def rule_bounty_payment(
+    payment_id: str,
+    payload: BountyRuling,
+    background_tasks: BackgroundTasks,
+    service: BountyService = Depends(get_bounty_service),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
+    admin_id: str = Depends(require_admin),
+):
+    """Confirm a payment (the report becomes "Resolved") or
+    reject it (the report stays "Found" and the owner is notified to pay
+    again). The ruling Administrator and the time are recorded."""
+    result = await _bounty(service.admin_rule(payment_id, admin_id, payload.decision))
+    if result.get("status") == "Rejected" and result.get("owner_id"):
+        background_tasks.add_task(
+            send_to_users, notif_repo,
+            [str(result["owner_id"])], "Bounty payment rejected",
+            "Your bounty payment could not be confirmed. Please pay the hunter again.",
+            {"type": "bounty_payment_rejected", "payment_id": str(payment_id)},
+        )
+    return StandardResponse(status="success", message="Ruling recorded.", data=result)
+
+
+@router.post("/missing-pets/{pet_id}/close-unpaid", response_model=StandardResponse)
+async def close_bounty_unpaid(
+    pet_id: str,
+    service: BountyService = Depends(get_bounty_service),
+    admin_id: str = Depends(require_admin),
+):
+    """Close an unpaid report as "Resolved", recording that
+    the bounty was not paid, by whom and when."""
+    result = await _bounty(service.admin_close_unpaid(pet_id, admin_id))
+    return StandardResponse(status="success", message="Closed as unpaid.", data=result)

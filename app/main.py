@@ -1,30 +1,140 @@
+"""
+Petty Bounty FastAPI Application.
+
+This is the main entry point for the FastAPI backend.
+"""
+import logging
 import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
-from dotenv import load_dotenv
-from supabase import create_client, Client
+from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+from app.core.config import settings
+from app.core.database import close_supabase_client
+from app.core.firebase import init_firebase
+from app.api import (
+    admin, auth, bounty, dev_auth, devices, hunters, leaderboard, me, missing_pets,
+    reports, sightings, upload,
+)
+# 💡 นำเข้า AIManager เพื่อใช้โหลดโมเดลตอนสตาร์ทเซิร์ฟเวอร์
+from app.services.ai_service import AIManager
 
-app = FastAPI(title="Petty Bounty API")
+logger = logging.getLogger(__name__)
 
-# ตั้งค่าเชื่อมต่อ Supabase
-url: str = os.environ.get("SUPABASE_URL")
-key: str = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
 
-@app.get("/")
-def root():
-    return {"message": "Petty Bounty API is running! http://127.0.0.1:8000/docs"}
+# Pin OMP/MKL thread count to the host's CPU count BEFORE torch / onnxruntime
+# import any further. Without this, ORT and torch each spin up their own pool
+# and oversubscribe the CPU, which on small servers thrashes more than it
+# parallelises. Safe-default; override with the env var per deploy.
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
 
-# API ทดสอบดึงข้อมูลจากตาราง users
-@app.get("/test-db")
-def test_db():
+
+async def _warm_identity_index() -> None:
+    from app.api.dependencies import get_missing_pet_repository
+    from app.core.database import get_supabase_client
+    from app.services.identity_index import warm_from_repo
+
     try:
-        response = supabase.table("users").select("*").execute()
-        return {"status": "success", "data": response.data}
+        await warm_from_repo(get_missing_pet_repository(get_supabase_client()))
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error("Identity index warm-up failed: %s", e, exc_info=True)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, port=8000)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events."""
+    # --- Startup (ทำงานก่อนที่เซิร์ฟเวอร์จะเปิดรับ Request แรก) ---
+    if settings.ENABLE_UNAUTHED_ADMIN:
+        logger.warning(
+            "ENABLE_UNAUTHED_ADMIN=true — /admin/* endpoints are open with "
+            "NO authentication. Acceptable for local dev only. Disable "
+            "before any shared or public deploy."
+        )
+    else:
+        logger.info(
+            "Admin endpoints gated: require_admin needs a valid JWT whose "
+            "users.role is 'admin'."
+        )
+
+    # Initialize Firebase Admin for FCM push (SRS-FR-12). Non-fatal: logs a
+    # warning and disables push if FIREBASE_CREDENTIALS is unset/invalid.
+    init_firebase()
+
+    print("Load Ai model & Warm up")
+    import asyncio
+    await asyncio.to_thread(AIManager.warmup_models)
+
+    print("Loaded and Warmed up AI models successfully")
+
+    if settings.IDENTITY_RERANK_ENABLED:
+        # Background, so the server takes requests while it runs. A match that
+        # arrives first builds any missing vector itself (ensure_vectors).
+        asyncio.create_task(_warm_identity_index())
+
+    yield  # จุดนี้คือช่วงที่เซิร์ฟเวอร์รันทำงานปกติ
+
+    # --- Shutdown (ทำงานตอนที่เรากดปิดเซิร์ฟเวอร์) ---
+    await close_supabase_client()
+   
+
+
+# Create FastAPI app instance
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version=settings.VERSION,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Configure CORS. Credentials stay off: auth is a bearer header, never a cookie,
+# and "*" with credentials on would let any site make credentialed calls.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allow_origins(),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(auth.router)
+app.include_router(missing_pets.public_router)  # before .router: /nearby is not a {pet_id}
+app.include_router(missing_pets.router)
+app.include_router(upload.router)
+app.include_router(sightings.router)
+app.include_router(hunters.router)
+app.include_router(admin.router)
+app.include_router(devices.router)
+app.include_router(me.router)
+app.include_router(reports.router)
+app.include_router(leaderboard.router)
+app.include_router(bounty.router)
+
+# DEV-ONLY: mount auth convenience endpoints ONLY when explicitly enabled.
+# When the flag is off these routes are never registered (404), not just
+# disabled. Keep ENABLE_DEV_AUTH false/unset in any shared or public deploy.
+if settings.ENABLE_DEV_AUTH:
+    app.include_router(dev_auth.router)
+    logger.warning(
+        "DEV AUTH endpoints enabled (/dev/login, /dev/register) — "
+        "do not use in production."
+    )
+
+
+@app.get("/", tags=["Root"])
+def root():
+    """Root endpoint providing API information."""
+    return {
+        "message": "Petty Bounty API is running!",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "version": settings.VERSION
+    }
+
+
+@app.get("/health", tags=["Health"])
+def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy"}

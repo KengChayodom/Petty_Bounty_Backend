@@ -1,0 +1,318 @@
+"""Pure, I/O-free logic extracted from PetService."""
+from datetime import datetime, timezone
+
+from app.utils.postgis import create_postgis_point
+
+# The four states a report is shown in (three decided 2026-08-17, EXPIRED added
+# 2026-08-21). They are DERIVED, never stored: `missing_pets.status` says only
+# whether the search is still open, and the rest comes from the report's own
+# `expires_at` and from counting the sightings recorded against the pet.
+#
+# Deriving rather than storing is what keeps the badge honest when a sighting
+# goes away — an admin dismissing a bogus sighting drops the count, so a report
+# whose only sighting was bogus falls back to PENDING by itself. A stored badge
+# would have to be recomputed at every place a sighting can disappear, and would
+# quietly claim "someone has seen your pet" the first time one was missed.
+#
+# This is the ONE vocabulary for the badge. `pet_status` is a storage column
+# with a different word list (Searching / Spotted / Found / Resolved) and a
+# different job — it is the matching filter, not the label — so clients must
+# read `post_status` and never re-derive from `status` themselves.
+POST_STATUS_PENDING = "Pending"    # search open, nobody has reported a sighting
+POST_STATUS_SPOTTED = "Spotted"    # search open, at least one sighting exists
+POST_STATUS_EXPIRED = "Expired"    # aged out with no sighting to show for it
+POST_STATUS_RESCUED = "Rescued"    # the owner closed the search
+
+# The values `GET /admin/missing-pets` accepts as its `status` filter, and the
+# only ones its route description advertises. Two of them are stored (`Found`,
+# `Resolved`) and two are derived from the sighting count over the one stored
+# bucket `Searching`, which is why the browse splits on them rather than passing
+# them straight to the query.
+#
+# `Pending`, `Expired` and `Rescued` are deliberately NOT here. They are badge
+# names produced by derive_post_status for a card, not filters this endpoint
+# implements, and accepting them would mean silently returning the wrong bucket.
+BROWSE_STATUS_FILTERS = ("Searching", "Spotted", "Found", "Resolved")
+
+# `pet_species` (sql.txt:7). The browse forwards this straight to the query.
+BROWSE_SPECIES_FILTERS = ("Cat", "Dog", "Bird", "Other")
+
+
+def _normalize_filter(value, permitted, name):
+    """Map a caller-supplied filter onto its enumeration, or raise.
+
+    `None` passes through and means "every value", not "a value which is null",
+    the convention the admin browse and the flag queue share. Anything else unrecognised raises
+    ValueError so the route answers 400, rather than reaching PostgREST and
+    failing there as an enumeration cast, which surfaces as a 500. Matching is
+    case-insensitive but exact on the names, the same rule
+    moderation_logic.normalize_flag_status_filter follows.
+    """
+    if value is None:
+        return None
+    key = value.strip().lower()
+    for permitted_value in permitted:
+        if permitted_value.lower() == key:
+            return permitted_value
+    raise ValueError(
+        f"{name} must be one of {', '.join(permitted)}; got {value!r}"
+    )
+
+
+def normalize_browse_status(status):
+    """The admin browse's `status` filter. See _normalize_filter."""
+    return _normalize_filter(status, BROWSE_STATUS_FILTERS, "status")
+
+
+def normalize_browse_species(species):
+    """The admin browse's `species` filter. See _normalize_filter."""
+    return _normalize_filter(species, BROWSE_SPECIES_FILTERS, "species")
+
+
+# `pet_status` values that mean the search is over. 'Resolved' is written by the
+# resolve RPC; 'Found' is what the owner's End Search button writes.
+_CLOSED_PET_STATUSES = frozenset({"found", "resolved"})
+
+
+def is_closed_pet_status(pet_status: str | None) -> bool:
+    """True when `pet_status` means the search is over (case-insensitive)."""
+    return (pet_status or "").strip().lower() in _CLOSED_PET_STATUSES
+
+# A post stops reaching new hunters once it passes its `expires_at`.
+# The read paths (`match_missing_pets`, `get_nearby_missing_pets`) filter
+# `mp.expires_at > NOW()`, and the badge below reads the same column — one
+# source of truth, no duplicated interval. The seven-day grant lives only in
+# the column DEFAULT (`NOW() + INTERVAL '7 days'`); extending one post is a
+# plain UPDATE of `expires_at` and needs no change here.
+
+# `sighting_matches.owner_status` — the owner's verdict on one AI match. A
+# rejected match is not a sighting of this pet.
+OWNER_REJECTED = "Rejected"
+
+
+def build_missing_pet_payload(
+    pet, *, feature_vector, measured_color_hex: str | None = None,
+) -> dict:
+    """The missing_pets INSERT payload — location as a PostGIS POINT, status
+    seeded to 'Searching', and the CLIP feature vector attached.
+
+    `primary_color_hex` is the owner's colour when they chose one, otherwise
+    `measured_color_hex`, the coat colour extracted from the photo the same
+    way a sighting's is. The app offers that measured colour as the default,
+    so this fallback only matters when the default never reached the form.
+
+    `expires_at` is deliberately absent: the column DEFAULT (`NOW() + INTERVAL
+    '7 days'`) is the single source of the seven-day grant.
+    """
+    location_point = create_postgis_point(pet.latitude, pet.longitude)
+    return {
+        "owner_id": pet.owner_id,
+        "pet_name": pet.pet_name,
+        "species": pet.species,
+        "characteristics": pet.characteristics,
+        "bounty_amount": pet.bounty_amount,
+        "last_seen_location": location_point,
+        "last_seen_time": pet.last_seen_time.isoformat(),
+        "image_url": str(pet.image_url),
+        "feature_vector": feature_vector,
+        "status": "Searching",
+        "primary_color_hex": pet.primary_color_hex or measured_color_hex,
+    }
+
+
+def _parse_timestamp(value) -> datetime | None:
+    """A timestamp as an aware datetime, or None if it cannot be read.
+
+    PostgREST hands timestamps back as ISO strings, but a caller that already
+    holds a row from a driver may have a real datetime — accept both. A value
+    that parses to a naive datetime is read as UTC, which is what the column
+    stores (`timestamp with time zone`, written by NOW()).
+
+    Returning None rather than raising is deliberate: see `is_post_expired`.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        # Postgres/PostgREST emit 'Z' for UTC, which fromisoformat rejects
+        # before Python 3.11.
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def is_post_expired(expires_at, *, now: datetime | None = None) -> bool:
+    """Whether a report has passed its `expires_at`.
+
+    The comparison mirrors the SQL predicate exactly. The read paths keep a post
+    while `expires_at > NOW()`, so expiry is the negation of that and the
+    boundary instant itself counts as expired — a post the database has already
+    stopped matching must never still read ACTIVE SEARCH.
+
+    An unreadable or absent `expires_at` is NOT expired. The alternative is to
+    grey out a live search because one timestamp arrived in a shape we did not
+    expect, and hiding a findable pet is the worse failure.
+    """
+    expires = _parse_timestamp(expires_at)
+    if expires is None:
+        return False
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return expires <= reference
+
+
+def derive_post_status(
+    pet_status: str | None,
+    sighting_count: int,
+    expires_at=None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """The badge shown on an owner's report card.
+
+    Precedence, highest first:
+
+    * **RESCUED** — a closed search wins over everything: a recovered pet reads
+      RESCUED even though sightings were reported along the way, and even if it
+      was recovered after the post expired. Those sightings are how it got home,
+      not an argument that it is still missing.
+    * **SPOTTED** — at least one sighting has come in.
+    * **EXPIRED** — nothing has come in AND the post has aged out: it
+      no longer matches new sightings and is off the map, so the owner is
+      waiting on something that can no longer happen.
+    * **PENDING** — nothing has come in yet, but the post is still live.
+
+    EXPIRED ranks BELOW spotted on purpose. An expired post that collected
+    sightings still has a queue its owner must work through — the row is
+    untouched by expiry and the case can still be closed and paid — so badging
+    it EXPIRED would grey out the one report that needs action. Expiry is the
+    whole story only when there is no story: the post aged out with nothing to
+    show for it.
+
+    `expires_at` is optional: a caller that does not have it gets the pre-expiry
+    behaviour rather than a wrong answer.
+    """
+    if is_closed_pet_status(pet_status):
+        return POST_STATUS_RESCUED
+    if sighting_count > 0:
+        return POST_STATUS_SPOTTED
+    return (
+        POST_STATUS_EXPIRED if is_post_expired(expires_at, now=now)
+        else POST_STATUS_PENDING
+    )
+
+
+def count_sightings(links: list[dict]) -> dict[str, int]:
+    """How many sightings count towards each pet, from the raw link rows.
+
+    Two rules, both product decisions rather than storage details, which is why
+    they live here instead of in the query:
+
+    * **One sighting counts once.** A hunter can report a pet from its detail
+      page AND have the photo match it, producing a row from each source; that
+      is one person having seen the pet once.
+    * **A match the owner Rejected does not count.** They told us it is not
+      their pet — continuing to count it would leave the report reading
+      "someone has seen your pet" on the strength of a sighting they have
+      already dismissed.
+    """
+    seen: dict[str, set[str]] = {}
+    for link in links:
+        pet_id = link.get("pet_id")
+        sighting_id = link.get("sighting_id")
+        if not pet_id or not sighting_id:
+            continue
+        if link.get("owner_status") == OWNER_REJECTED:
+            continue
+        seen.setdefault(pet_id, set()).add(sighting_id)
+    return {pet_id: len(ids) for pet_id, ids in seen.items()}
+
+
+def attach_sighting_counts(
+    pets: list[dict],
+    counts: dict[str, int],
+    *,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Add `sighting_count` and `post_status` to each report.
+
+    A pet absent from `counts` has had no sightings — it must read 0, not raise
+    and not go missing from the list, because "nobody has reported anything" is
+    the ordinary state of a fresh report rather than an error.
+
+    `now` is sampled once for the whole list rather than per row, so a list
+    being rendered across an `expires_at` boundary cannot show two reports
+    expiring in the same second on opposite sides of it.
+
+    Returns new dicts; the input rows are not mutated.
+    """
+    reference = now or datetime.now(timezone.utc)
+    enriched = []
+    for pet in pets:
+        count = counts.get(pet.get("id"), 0)
+        enriched.append({
+            **pet,
+            "sighting_count": count,
+            "post_status": derive_post_status(
+                pet.get("status"), count, pet.get("expires_at"), now=reference,
+            ),
+        })
+    return enriched
+
+
+
+class OwnerEditRefused(ValueError):
+    """An owner's edit that the report's state does not allow. The route
+    answers 409: the request is well formed, the report is just past the point
+    where that change is permitted."""
+
+
+def apply_owner_edit_rules(
+    current: dict, payload: dict, *, caught_awaiting_decision: bool
+) -> dict:
+    """Check an owner's PATCH against the report's state, and translate a hand
+    close.
+
+    - The bounty may be raised, never lowered, and is frozen once the report is
+      "Found" or "Resolved".
+    - The status cannot change once the report is "Found" or "Resolved": from
+      "Found" on, only the payment process moves it.
+    - Closing by hand (status "Found") is refused while a "Caught" sighting
+      awaits the owner's decision. Otherwise there is nobody to pay, so the
+      report closes straight to "Resolved".
+
+    Returns the payload to write, which may differ from the one given.
+    """
+    out = dict(payload)
+    closed = is_closed_pet_status(current.get("status"))
+
+    if "bounty_amount" in out:
+        if closed:
+            raise OwnerEditRefused(
+                "The bounty cannot be changed once the pet has been found"
+            )
+        if float(out["bounty_amount"]) < float(current.get("bounty_amount") or 0):
+            raise OwnerEditRefused("The bounty can be raised but not lowered")
+
+    if "status" in out:
+        if closed:
+            raise OwnerEditRefused(
+                "The report's status cannot be changed once the pet has been found"
+            )
+        if out["status"] == "Found":
+            if caught_awaiting_decision:
+                raise OwnerEditRefused(
+                    "Decide the sighting that says the pet was caught before "
+                    "closing the report"
+                )
+            out["status"] = "Resolved"
+    return out

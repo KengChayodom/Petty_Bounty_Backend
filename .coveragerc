@@ -1,0 +1,28 @@
+# Coverage config for the FAST unit suite.
+#
+# The number is meant to reflect the unit-testable business layer — services,
+# pure logic, repository ports (Protocols), and the AI plumbing. Layers that a
+# unit test cannot meaningfully exercise are omitted so the percentage is honest
+# rather than diluted:
+#
+#   * supabase-py ADAPTERS — thin vendor translation, executed only against a
+#     real database. Their SQL/RPC/constraints are verified in tests/integration/
+#     (raw psycopg), so they are never run by the unit suite.
+#   * ROUTE handlers — thin FastAPI controllers; the logic they wrap is unit-
+#     tested in the services and integration-tested in the DB.
+#   * INFRASTRUCTURE / bootstrap — app lifespan, Supabase + Firebase lifecycle.
+
+[run]
+branch = True
+omit =
+    app/repositories/supabase_*.py
+    app/api/*.py
+    app/main.py
+    app/core/database.py
+    app/core/firebase.py
+
+[report]
+show_missing = True
+exclude_also =
+    if __name__ == .__main__.:
+    raise NotImplementedError

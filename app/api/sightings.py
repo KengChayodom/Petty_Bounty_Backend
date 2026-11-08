@@ -1,0 +1,262 @@
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+
+from app.api.dependencies import (
+    get_notification_repository,
+    get_sighting_repository,
+    get_sighting_service,
+)
+from app.core.auth import get_current_user_id
+from app.repositories.notification_repository import NotificationRepository
+from app.repositories.sighting_repository import (
+    SightingActionLocked,
+    SightingRepository,
+)
+from app.schemas.common import StandardResponse
+from app.schemas.sightings import (
+    AnalyzeRequest,
+    SightingActionUpdate,
+    SightingCreate,
+    TargetedSightingCreate,
+)
+from app.services.notification_service import notify_pet_owners
+from app.services.sighting_service import SightingService
+
+# Every route here needs a signed-in caller, declared ONCE for the whole router so a route added later inherits it.
+# The routes still ask for the id where they use it, which FastAPI resolves once per request.
+router = APIRouter(
+    prefix="/sightings", tags=["Sightings"],
+    dependencies=[Depends(get_current_user_id)],
+)
+
+
+@router.post("/analyze", response_model=StandardResponse)
+async def analyze_image(
+    request: AnalyzeRequest,
+    service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Heavy step. Runs YOLO-seg + mask + CLIP and caches the feature vector
+    so the follow-up POST /sightings/ only has to write the row.
+
+    Authenticated (Feature #6): this is the most expensive call in the app,
+    so it must not be reachable without a valid session.
+    """
+    try:
+        result = await service.analyze_sighting_image(request.image_url)
+        return StandardResponse(
+            status=result["status"],
+            message=result["message"],
+            data=result.get("data"),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Analysis Error: {e}")
+
+
+@router.post("/", response_model=StandardResponse)
+async def report_sighting(
+    sighting: SightingCreate,
+    background_tasks: BackgroundTasks,
+    service: SightingService = Depends(get_sighting_service),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
+    sighting_repo: SightingRepository = Depends(get_sighting_repository),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Discovery hot step. Pulls the cached feature vector, INSERTs the sighting
+    with the USER-CONFIRMED species (may override YOLO's guess), and runs the
+    pgvector match RPC. Returns {sighting, matches} so the client doesn't
+    need a separate /matches call.
+
+    The pet-detail *targeted* flow does NOT use this endpoint — see
+    POST /sightings/targeted.
+    """
+    # Identity comes from the verified JWT, never from the request body.
+    sighting.hunter_id = user_id
+    try:
+        result = await service.process_and_save_sighting(sighting)
+
+        # Tell the owners of the matched pets, after responding — the hunter
+        # waits for their match list, not for someone else's push. A sighting
+        # that matched nothing has nobody to tell.
+        matched_pet_ids = [m["id"] for m in result["matches"] if m.get("id")]
+        if matched_pet_ids:
+            background_tasks.add_task(
+                notify_pet_owners,
+                notif_repo,
+                sighting_repo,
+                result["sighting"]["id"],
+                matched_pet_ids,
+                user_id,
+            )
+
+        return StandardResponse(
+            status="success",
+            message=f"Sighting saved with {len(result['matches'])} matches.",
+            data=result,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process sighting: {e}")
+
+
+@router.post("/targeted", response_model=StandardResponse)
+async def report_targeted_sighting(
+    sighting: TargetedSightingCreate,
+    background_tasks: BackgroundTasks,
+    service: SightingService = Depends(get_sighting_service),
+    notif_repo: NotificationRepository = Depends(get_notification_repository),
+    sighting_repo: SightingRepository = Depends(get_sighting_repository),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Targeted step. The hunter is reporting ONE known missing pet straight to
+    its owner (from that pet's detail view), so there is NO AI species
+    analysis and NO similarity matching — the row is persisted with
+    initial_target_pet_id set and no feature_vector. Returns
+    {sighting, matches: []} (same shape as POST /sightings/ so the client
+    parses both identically).
+
+    A report on the caller's own pet is refused with 400; the
+    discovery route drops the caller's own pets from its matches.
+    """
+    # Identity comes from the verified JWT, never from the request body.
+    sighting.hunter_id = user_id
+    try:
+        result = await service.save_targeted_sighting(sighting)
+
+        # "Sent to the owner" is what this endpoint has always claimed in its
+        # response; until now nothing was actually sent. This is the push that
+        # makes the message true.
+        background_tasks.add_task(
+            notify_pet_owners,
+            notif_repo,
+            sighting_repo,
+            result["sighting"]["id"],
+            [sighting.target_pet_id],
+            user_id,
+        )
+
+        return StandardResponse(
+            status="success",
+            message="Targeted sighting sent to the owner.",
+            data=result,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to process targeted sighting: {e}"
+        )
+
+
+@router.patch("/{sighting_id}/action", response_model=StandardResponse)
+async def confirm_sighting_action(
+    sighting_id: str,
+    payload: SightingActionUpdate,
+    service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Final-review step — the screen AFTER "Confirm Match".
+
+    The hunter has already picked which missing pet their photo matches; the
+    sighting row and its AI matches were persisted back at POST /sightings/,
+    and the owners were already pushed. All that is left is the one question
+    that screen asks: JUST SPOTTED or RESCUE. This writes that answer to
+    `sightings.action_type` ('Spotted' / 'Caught'), the column the resolve RPC
+    reads before paying a bounty.
+
+    Hunter-scoped from the JWT: a sighting somebody else reported is 404, never
+    403, so this cannot be used to probe which sighting ids exist. A sighting an
+    administrator has WITHDRAWN ('Dismissed') is 409 — it is out of the owner's
+    timeline and out of scoring, so flipping it to 'Caught' would retro-fit it
+    into the bounty-eligible shape. 'Verified' does NOT lock: it is written only
+    to reverse a dismissal, and a reversal restores the sighting completely,
+    the hunter's ability to change the action type included (see
+    `SightingService.confirm_sighting_action`).
+    """
+    try:
+        result = await service.confirm_sighting_action(
+            sighting_id, user_id, payload.action_type,
+        )
+    except LookupError as le:
+        raise HTTPException(status_code=404, detail=str(le))
+    except SightingActionLocked as sal:
+        # MUST precede the ValueError clause below — SightingActionLocked
+        # subclasses ValueError, so the generic 400 would swallow this 409.
+        raise HTTPException(status_code=409, detail=str(sal))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to confirm report status: {e}"
+        )
+    return StandardResponse(
+        status="success",
+        message=f"Report status set to {result['action_type']}.",
+        data=result,
+    )
+
+
+@router.get("/me", response_model=StandardResponse)
+async def get_my_activity(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Bounty Hunter activity log — own sightings + matches + earned points."""
+    try:
+        data = await service.get_hunter_activity(
+            user_id, limit=limit, offset=offset,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(data['sightings'])} sightings.",
+            data=data,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve activity: {e}"
+        )
+
+
+@router.get("/{sighting_id}/matches", response_model=StandardResponse)
+async def get_ranking(
+    sighting_id: str,
+    limit: int = 5,
+    threshold: float = 0.0,
+    service: SightingService = Depends(get_sighting_service),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Re-query matches for a previously stored sighting.
+
+    Authenticated since 2026-09-09 and scoped to the sighting's own hunter or
+    the owner of a pet it is linked to (see
+    `SightingService.get_matches_for_viewer`). A match names a missing pet and
+    the strength of the resemblance, which is not public information.
+
+    Answers 400, not 404, for a malformed request. `get_matches` raises
+    ValueError for a sighting that cannot be matched — one carrying no feature
+    vector, for instance — which is a bad request rather than a missing row, and
+    reporting it as 404 told the caller the sighting did not exist when it did.
+    """
+    try:
+        matches = await service.get_matches_for_viewer(
+            sighting_id, user_id, limit, threshold,
+        )
+        return StandardResponse(
+            status="success",
+            message=f"Retrieved {len(matches)} matches.",
+            data={"matches": matches},
+        )
+    except LookupError as le:
+        # No such sighting, or the caller may not read it. One answer for both.
+        raise HTTPException(status_code=404, detail=str(le))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ranking query failed: {e}")
+

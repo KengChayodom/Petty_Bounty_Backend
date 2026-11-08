@@ -1,0 +1,250 @@
+# schemas/sightings.py
+"""
+Pydantic schemas for sighting-related operations.
+
+2-step flow (mandated by wiki/api_flow.md Flow 3, step 6 — user must be
+able to override YOLO's species guess):
+
+    POST /sightings/analyze  →  server returns {species, confidence, bbox,
+                                  primary_color_hex}
+                                  AND caches the pre-computed CLIP vector
+    POST /sightings/         →  client sends user-CONFIRMED species; server
+                                  pulls the cached vector and saves
+"""
+from typing import Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.types import ImageUrl
+from app.services.sighting_logic import ACTION_SPOTTED, normalize_action_type
+
+
+class AnalyzeRequest(BaseModel):
+    """Request schema for POST /sightings/analyze."""
+
+    image_url: ImageUrl = Field(
+        ...,
+        description="Public URL of the image to analyze",
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {"image_url": "https://example.com/photos/sighting.jpg"}
+        }
+
+
+class SightingCreate(BaseModel):
+    """
+    Request schema for POST /sightings/.
+
+    `detected_species` is the user's confirmed species (possibly a manual
+    override of YOLO's guess from the /analyze step). The server stores
+    this value verbatim and uses it to filter the pgvector match query —
+    YOLO's guess is NOT trusted automatically.
+    """
+
+    hunter_id: str = Field(
+        ...,
+        description="ID of the bounty hunter (currently overridden server-side by TEST_USER_ID).",
+    )
+    image_url: ImageUrl = Field(
+        ...,
+        description="Public URL of the sighting photo. Must match the URL "
+                    "sent to /sightings/analyze for the cache to hit.",
+    )
+    latitude: float = Field(
+        ..., ge=-90.0, le=90.0,
+        description="GPS latitude where the pet was sighted (-90 to 90)",
+    )
+    longitude: float = Field(
+        ..., ge=-180.0, le=180.0,
+        description="GPS longitude where the pet was sighted (-180 to 180)",
+    )
+    detected_species: str = Field(
+        ..., min_length=1, max_length=50,
+        description="User-confirmed species (Cat / Dog / Bird / Other). "
+                    "Validator normalises to title-case.",
+    )
+    action_type: str = Field(
+        ACTION_SPOTTED,
+        description="Whether the hunter only spotted the pet or actually "
+                    "caught/returned it. 'Caught' is the action that makes a "
+                    "sighting eligible to be the bounty-paying final sighting. "
+                    "The UI wording 'Rescue' is accepted and normalised.",
+    )
+    notes: Optional[str] = Field(
+        None, max_length=500,
+        description="Optional free-form notes from the hunter",
+    )
+
+    @field_validator("detected_species")
+    @classmethod
+    def species_must_be_valid(cls, v: str) -> str:
+        valid_species = {"Cat", "Dog", "Bird", "Other"}
+        normalized = v.capitalize()
+        if normalized not in valid_species:
+            raise ValueError(f"Species must be one of {valid_species}")
+        return normalized
+
+    @field_validator("action_type")
+    @classmethod
+    def action_type_must_be_valid(cls, v: str) -> str:
+        """Route the create paths through the same vocabulary as the PATCH.
+
+        `sighting_logic.normalize_action_type` is the single definition of the
+        `action_type` enum plus the UI's own wording. A `Literal` here was a
+        second copy of that vocabulary that 422'd on the exact word the
+        final-review button says ("RESCUE") — accepted by
+        PATCH /sightings/{id}/action and rejected by this endpoint, for the
+        same field. Normalising here gives all three write paths one answer.
+        """
+        return normalize_action_type(v)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "hunter_id": "550e8400-e29b-41d4-a716-446655440000",
+                "image_url": "https://example.com/photos/sighting.jpg",
+                "latitude": 13.7563,
+                "longitude": 100.5018,
+                "detected_species": "Dog",
+                "action_type": "Spotted",
+                "notes": "Spotted near the park entrance",
+            }
+        }
+
+
+class TargetedSightingCreate(BaseModel):
+    """
+    Request schema for POST /sightings/targeted.
+
+    The targeted flow: the hunter is looking at ONE known missing-pet listing
+    and reporting it straight to that pet's owner. There is no AI species
+    analysis and no similarity matching — the pet is already chosen by eye —
+    so this path has no `feature_vector` and never runs the match RPC. That is
+    why it is a separate endpoint from the discovery `POST /sightings/` rather
+    than a mode flag on it: `target_pet_id` is REQUIRED here, which makes the
+    "targeted but no target" nonsense state unrepresentable.
+    """
+
+    hunter_id: str = Field(
+        ...,
+        description="ID of the bounty hunter (overridden server-side from the JWT).",
+    )
+    image_url: ImageUrl = Field(
+        ...,
+        description="Public URL of the sighting photo.",
+    )
+    latitude: float = Field(
+        ..., ge=-90.0, le=90.0,
+        description="GPS latitude where the pet was sighted (-90 to 90)",
+    )
+    longitude: float = Field(
+        ..., ge=-180.0, le=180.0,
+        description="GPS longitude where the pet was sighted (-180 to 180)",
+    )
+    detected_species: str = Field(
+        ..., min_length=1, max_length=50,
+        description="Species carried over from the targeted pet (no AI detection "
+                    "runs in this flow). Validator normalises to title-case.",
+    )
+    target_pet_id: str = Field(
+        ...,
+        description="UUID of the missing-pet listing being reported against. "
+                    "Required — the targeted flow always has a chosen pet.",
+    )
+    action_type: str = Field(
+        ACTION_SPOTTED,
+        description="Whether the hunter only spotted the pet or actually "
+                    "caught/returned it. The UI wording 'Rescue' is accepted "
+                    "and normalised.",
+    )
+    notes: Optional[str] = Field(
+        None, max_length=500,
+        description="Optional free-form notes from the hunter",
+    )
+
+    @field_validator("detected_species")
+    @classmethod
+    def species_must_be_valid(cls, v: str) -> str:
+        valid_species = {"Cat", "Dog", "Bird", "Other"}
+        normalized = v.capitalize()
+        if normalized not in valid_species:
+            raise ValueError(f"Species must be one of {valid_species}")
+        return normalized
+
+    @field_validator("action_type")
+    @classmethod
+    def action_type_must_be_valid(cls, v: str) -> str:
+        """Route the create paths through the same vocabulary as the PATCH.
+
+        `sighting_logic.normalize_action_type` is the single definition of the
+        `action_type` enum plus the UI's own wording. A `Literal` here was a
+        second copy of that vocabulary that 422'd on the exact word the
+        final-review button says ("RESCUE") — accepted by
+        PATCH /sightings/{id}/action and rejected by this endpoint, for the
+        same field. Normalising here gives all three write paths one answer.
+        """
+        return normalize_action_type(v)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "hunter_id": "550e8400-e29b-41d4-a716-446655440000",
+                "image_url": "https://example.com/photos/sighting.jpg",
+                "latitude": 13.7563,
+                "longitude": 100.5018,
+                "detected_species": "Dog",
+                "target_pet_id": "660e8400-e29b-41d4-a716-446655440111",
+                "action_type": "Spotted",
+                "notes": "Reported straight to the owner from the pet's page",
+            }
+        }
+
+
+class SightingActionUpdate(BaseModel):
+    """Request schema for PATCH /sightings/{sighting_id}/action.
+
+    The final-review screen (the step AFTER "Confirm Match") asks the hunter
+    one question: did you just see the animal, or did you rescue it? The
+    sighting row already exists by then — it was written by POST /sightings/
+    with the default 'Spotted' — so this endpoint updates that single column.
+
+    Deliberately a plain `str`, not a Literal: the UI's own button label is
+    "RESCUE", and the server normalises that (plus 'caught', 'just spotted', …)
+    onto the enum. A Literal would 422 on the exact word the user pressed;
+    normalisation gives a clean 400 for genuine nonsense and accepts the rest.
+    """
+
+    action_type: str = Field(
+        ...,
+        description="'Spotted' (only saw the animal) or 'Caught' (rescued / "
+                    "secured it). The UI wording 'Rescue' is accepted and "
+                    "normalised to 'Caught'. 'Caught' is what makes a sighting "
+                    "eligible to be the bounty-paying final sighting.",
+    )
+
+    class Config:
+        json_schema_extra = {"example": {"action_type": "Caught"}}
+
+
+class SightingResponse(BaseModel):
+    """Typed view of a stored sighting (feature_vector intentionally omitted)."""
+
+    id: str
+    hunter_id: str
+    image_url: str
+    sighted_location: str
+    detected_species: str
+    action_type: str
+    sighting_status: str
+    created_at: str
+    distance_meters: Optional[float] = None
+    similarity: Optional[float] = None
+    # Coat colour auto-extracted from the sighting photo ('#RRGGBB'); NULL when
+    # unreadable (near-black subject / full-frame fallback). Used server-side to
+    # exclude clearly-wrong-colour matches and to re-rank the rest.
+    primary_color_hex: Optional[str] = None
+
+    class Config:
+        from_attributes = True

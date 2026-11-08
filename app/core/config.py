@@ -1,0 +1,180 @@
+"""
+Core configuration settings for the Petty Bounty API.
+
+Loads environment variables and provides application-wide constants.
+"""
+import os
+from urllib.parse import urlsplit
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+class Settings:
+    """Application settings loaded from environment variables."""
+
+    # Supabase Configuration
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
+    # Anon (publishable) key — same one the Flutter app uses. Only needed by the
+    # DEV-ONLY auth helpers (app/api/dev_auth.py) to proxy Supabase GoTrue.
+    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
+
+    # Firebase Admin SDK — path to the service-account JSON used for FCM push
+    # (SRS-FR-12). Same load pattern as the Supabase keys, but intentionally
+    # NON-FATAL: if unset/invalid the app still boots and only FCM is disabled
+    # (see app/core/firebase.py). Never commit the JSON — load via env.
+    FIREBASE_CREDENTIALS: str = os.getenv("FIREBASE_CREDENTIALS", "")
+
+    # Matching Defaults
+    DEFAULT_SEARCH_RADIUS_KM: float = 10.0
+    DEFAULT_MATCH_THRESHOLD: float = 0.7
+    DEFAULT_MATCH_LIMIT: int = 5
+
+    # Colour-aware matching (see app/services/sighting_logic.rerank_by_color).
+    # The final match score blends CLIP cosine with coat-colour similarity:
+    #   combined = CLIP_MATCH_WEIGHT * clip_sim + COLOR_MATCH_WEIGHT * color_sim
+    # The two weights should sum to 1.0. Colour's weight is kept small because
+    # CLIP scores every cat in a narrow band (about 0.85 to 0.95): at 0.3 the
+    # colour term decided the order alone and pushed the true cat out of the
+    # top 5. Colour's main job is the exclusion below. eval_color_matching.py
+    # section 5 measured 0.05 as the best trade-off (2026-09-25).
+    CLIP_MATCH_WEIGHT: float = 0.95
+    COLOR_MATCH_WEIGHT: float = 0.05
+
+    # Colour exclusion works in two regimes, split by chroma (C* = √(a*²+b*²) in
+    # CIELab) so "grey vs black" and "grey vs orange" are judged by the right
+    # signal — see app/services/sighting_logic.color_similarity:
+    #
+    #   • A colour with C* below NEUTRAL_CHROMA_THRESHOLD is NEUTRAL (grey/
+    #     black/white/cream); at/above it the colour is CHROMATIC (orange/
+    #     ginger/brown/tan).
+    #   • neutral vs chromatic  → different family, EXCLUDE outright (grey coat
+    #     vs orange coat — the bug this whole feature exists to kill).
+    #   • both CHROMATIC → CIELab distance with lightness down-weighted
+    #     (COLOR_LIGHTNESS_WEIGHT) so a bright swatch and the same coat in shade
+    #     stay the same family; EXCLUDE past COLOR_EXCLUDE_DISTANCE.
+    #   • both NEUTRAL → chroma can't tell them apart, so brightness decides:
+    #     EXCLUDE when |ΔL*| exceeds NEUTRAL_LIGHTNESS_EXCLUDE (this is what
+    #     separates black from grey) while shade/lighting variants of one grey
+    #     coat stay together.
+    #
+    # Colour is only ever applied when BOTH sides have a colour — a missing
+    # colour never excludes (falls back to CLIP-only).
+    NEUTRAL_CHROMA_THRESHOLD: float = 10.0
+    NEUTRAL_LIGHTNESS_EXCLUDE: float = 45.0
+    COLOR_EXCLUDE_DISTANCE: float = 42.0
+    COLOR_LIGHTNESS_WEIGHT: float = 0.4
+
+    # Candidate pool the match RPC is asked for before the colour re-rank trims
+    # to the client's limit. Must exceed DEFAULT_MATCH_LIMIT so the colour pass
+    # can reorder/exclude before the top-N is cut (otherwise SQL's CLIP-only
+    # LIMIT would hide colour-better candidates ranked just outside it).
+    MATCH_CANDIDATE_POOL: int = 50
+
+    # Identity re-rank (see app/services/identity_index.py). CLIP still pulls
+    # the candidate pool from pgvector. The pool is then ordered by an image
+    # model trained for "same object in two photos" rather than "photo matches
+    # a caption": CLIP scores every cat within about 0.85 to 0.95 and cannot
+    # tell one silver tabby from another. Vectors live in process memory, so
+    # the database schema is unchanged. Set IDENTITY_RERANK=false to fall back
+    # to the CLIP + colour ranking above.
+    IDENTITY_RERANK_ENABLED: bool = os.getenv(
+        "IDENTITY_RERANK", "true"
+    ).lower() in ("1", "true", "yes")
+    IDENTITY_MODEL: str = os.getenv("IDENTITY_MODEL", "facebook/dinov2-base")
+    # Colour only nudges the identity order and never removes a candidate: a
+    # single colour reading shifts with lighting (a white cat under warm light
+    # measures cream) and must not hide a cat that looks the same.
+    IDENTITY_COLOR_WEIGHT: float = 0.1
+
+    # Star rating of a match card (1 to 3), decided here and not in the app so it
+    # comes from the same score that ordered the cards. See
+    # sighting_logic.stars_for_score.
+    #
+    # Identity ranking: the score is identity similarity + a small colour term.
+    # On the 23 labelled photos the true cat scored 0.85 to 0.90, other cats of
+    # the same colour family up to 0.82 (90th percentile 0.75), cats of another
+    # colour up to 0.62. There are only four same-cat pairs behind these, so
+    # treat them as a starting point and re-run eval/ when more pairs exist.
+    IDENTITY_STAR_THREE: float = 0.80
+    IDENTITY_STAR_TWO: float = 0.60
+    # CLIP-only ranking (identity re-rank off or failed): the rule the app used
+    # before the backend took over, applied to the raw CLIP cosine.
+    CLIP_STAR_THREE: float = 0.90
+    CLIP_STAR_TWO: float = 0.70
+
+    # API Configuration
+    API_PREFIX: str = "/api"
+    PROJECT_NAME: str = "Petty Bounty API"
+    VERSION: str = "1.0.0"
+
+    # Admin bypass, LOCAL DEV ONLY. When True, `require_admin` returns
+    # TEST_USER_ID without checking anything, so every /admin route is open.
+    # When False (the default), it validates the JWT and requires
+    # `users.role = 'admin'`. MUST stay False in any shared or public deploy.
+    ENABLE_UNAUTHED_ADMIN: bool = os.getenv(
+        "ENABLE_UNAUTHED_ADMIN", "false"
+    ).lower() in ("1", "true", "yes")
+
+    # Auth dev escape hatch — when True, requests with a missing or invalid
+    # bearer token fall back to the hardcoded TEST_USER_ID instead of being
+    # rejected with 401. Keeps the existing CLI smoke scripts and pytest suite
+    # working without a real Supabase session. MUST stay False (the default)
+    # in any shared or public deploy.
+    AUTH_DEV_BYPASS: bool = os.getenv(
+        "AUTH_DEV_BYPASS", "false"
+    ).lower() in ("1", "true", "yes")
+
+    # DEV-ONLY: when True, main.py mounts app/api/dev_auth.py (/dev/login,
+    # /dev/register) — thin proxies to Supabase GoTrue so a token can be minted
+    # from /docs without curl. When False (the default), those routes are not
+    # registered at all (404). MUST stay False/unset in any shared/public deploy.
+    ENABLE_DEV_AUTH: bool = os.getenv(
+        "ENABLE_DEV_AUTH", "false"
+    ).lower() in ("1", "true", "yes")
+
+    # Hosts the server may download a photo from (see app/utils/image_url.py).
+    # The project's own Supabase host is always allowed. Add a custom storage or
+    # CDN domain with IMAGE_ALLOWED_HOSTS="cdn.example.com,other.example.com".
+    #
+    # A plain class attribute and NOT an environment variable, deliberately:
+    # the switch exists so the unit suite, which uses made-up hosts, can turn the
+    # check off. A deploy must not be able to turn it off with a setting.
+    IMAGE_URL_ALLOWLIST_ENFORCED: bool = True
+
+    # Browser origins allowed to call the API (the admin console). The mobile
+    # app is not a browser and is not affected. Comma-separated, for example
+    # CORS_ALLOW_ORIGINS="https://admin.example.com". Unset means any origin,
+    # which is safe only because no route authenticates by cookie: the token
+    # travels in the Authorization header, so CORS credentials stay off.
+    def cors_allow_origins(self) -> list[str]:
+        origins = [
+            o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+            if o.strip()
+        ]
+        return origins or ["*"]
+
+    def image_allowed_hosts(self) -> set[str]:
+        """The project's storage host plus any extras from the environment."""
+        hosts = {
+            h.strip().lower()
+            for h in os.getenv("IMAGE_ALLOWED_HOSTS", "").split(",")
+            if h.strip()
+        }
+        project_host = urlsplit(self.SUPABASE_URL).hostname
+        if project_host:
+            hosts.add(project_host.lower())
+        return hosts
+
+    def __init__(self):
+        """Validate required settings on initialization."""
+        if not self.SUPABASE_URL:
+            raise ValueError("SUPABASE_URL environment variable must be set")
+        if not self.SUPABASE_SERVICE_KEY:
+            raise ValueError("SUPABASE_SERVICE_KEY environment variable must be set")
+
+
+# Create a singleton instance
+settings = Settings()

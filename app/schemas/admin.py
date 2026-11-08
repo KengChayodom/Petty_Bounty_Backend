@@ -1,0 +1,80 @@
+"""Pydantic schemas for admin-only operations (Feature #2)."""
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
+
+from app.services.moderation_logic import (
+    MAX_PENALTY_POINTS,
+    PENALTY_POINTS_BY_REASON,
+)
+
+
+class VerifySightingRequest(BaseModel):
+    """Body of PATCH /admin/sightings/{id}/verification."""
+
+    verification_status: Literal["Verified", "Dismissed"] = Field(
+        ...,
+        description="New verification state. 'Pending' is the default at "
+                    "creation time and is not settable here.",
+    )
+    note: Optional[str] = Field(
+        None, max_length=500,
+        description="Optional admin note (not currently persisted; reserved "
+                    "for an audit trail in a later iteration).",
+    )
+
+
+class ReviewReportRequest(BaseModel):
+    """
+    Body of PATCH /admin/reports/{report_id}.
+
+    `decision` is a plain string rather than a Literal so an unrecognised value
+    comes back as the 400 the spec calls for (raised by
+    `moderation_logic.normalize_flag_decision`) instead of FastAPI's 422, and so
+    the use-case wording ("Dismiss Flag" / "Uphold and Ban User") is accepted
+    alongside the enum values.
+    """
+
+    decision: str = Field(
+        ...,
+        description="'Dismissed' or 'Reviewed_Penalty' (also accepts 'Dismiss "
+                    "Flag', 'Uphold and Penalise User', and the legacy ban "
+                    "wording — upholding deducts score, it never bans).",
+    )
+    # Deliberately unconstrained here: the range is enforced in
+    # `moderation_logic.resolve_penalty_points`, which raises ValueError and so
+    # surfaces as the 400 this endpoint documents. Declaring ge/le would make
+    # Pydantic reject it first as a 422, contradicting `decision` right above.
+    penalty_points: Optional[int] = Field(
+        None,
+        description=(
+            "Score to deduct from the reported hunter. Omit to charge the "
+            "per-reason default ("
+            + ", ".join(
+                f"{r}={p}" for r, p in PENALTY_POINTS_BY_REASON.items()
+            )
+            + f"). Must be 0-{MAX_PENALTY_POINTS}. 0 upholds the flag and "
+            "withdraws the sighting without any deduction. Ignored when "
+            "`decision` is 'Dismissed'."
+        ),
+    )
+
+
+class AssignRoleRequest(BaseModel):
+    """
+    Body of PATCH /admin/users/{target_user_id}/role.
+
+    `role` is a plain string rather than a Literal for the same reason
+    `ReviewReportRequest.decision` is: an unrecognised value comes back as the
+    400 the spec calls for, raised by `role_logic.normalize_role`, instead of
+    FastAPI's 422 — and it lets "administrator" be accepted alongside the enum
+    value the column actually holds.
+    """
+
+    role: str = Field(
+        ...,
+        description="'user' or 'admin' (also accepts 'administrator'). "
+                    "Setting 'admin' grants access to this console. Setting "
+                    "'user' withdraws it and does nothing else to the account: "
+                    "no account is suspended, deactivated, or deleted.",
+    )

@@ -1,0 +1,238 @@
+"""Supabase adapter for SightingRepository.
+
+The ONLY place the sighting flow touches supabase-py. Each method is the
+`.table(...)/.rpc(...).execute()` chain moved verbatim out of the service, plus
+the `.data`/`.count` unwrap and the one vendor->domain error translation the
+port contract requires (SightingNotSaved on an empty INSERT). No logic beyond
+that lives here — filtering/mapping/assembly are pure functions in the service
+layer.
+"""
+from app.repositories.sighting_repository import (
+    SearchAlreadyClosed,
+    SightingAlreadyDecided,
+    SightingNotSaved,
+    SightingOutOfOrder,
+)
+
+# `owner_decide_sighting` refuses a verdict by RAISE-ing, which reaches us as
+# one opaque PostgREST error. PostgreSQL offers no way to attach a machine
+# code to a plpgsql RAISE that survives PostgREST, so the message text IS the
+# contract: these fragments are asserted by the integration tests against the
+# real function, and the migration that defines them says so above each RAISE.
+#
+# Order matters only in that the first match wins; the fragments are disjoint.
+_DECISION_ERRORS = (
+    ("not found or not owned by you", LookupError),
+    ("is not a match for pet",        LookupError),
+    ("has already been decided",      SightingAlreadyDecided),
+    ("is out of order",               SightingOutOfOrder),
+    ("is already closed",             SearchAlreadyClosed),
+    ("decision must be",              ValueError),
+)
+
+
+def _translate_decision_error(exc: Exception) -> Exception:
+    """Map an `owner_decide_sighting` failure onto a domain error.
+
+    Anything unrecognised is handed back as-is: a transport failure or a bug in
+    the function must surface as a 500, not be flattened into a client error
+    that tells the owner their perfectly valid request was invalid.
+    """
+    message = str(getattr(exc, "message", None) or exc)
+    for fragment, error_type in _DECISION_ERRORS:
+        if fragment in message:
+            return error_type(message)
+    return exc
+
+
+class SupabaseSightingRepository:
+    def __init__(self, db):
+        self._db = db
+
+    # --- writes ---------------------------------------------------------- #
+    def insert_sighting(self, payload: dict) -> dict:
+        res = self._db.table("sightings").insert(payload).execute()
+        if not res.data:
+            raise SightingNotSaved(payload)
+        return res.data[0]
+
+    def upsert_sighting_matches(self, rows: list[dict]) -> None:
+        (self._db.table("sighting_matches")
+                 .upsert(rows, on_conflict="sighting_id,missing_pet_id")
+                 .execute())
+
+    def set_sighting_status(self, sighting_id: str, status: str) -> dict | None:
+        res = (self._db.table("sightings")
+                       .update({"sighting_status": status})
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def owner_decide_sighting(
+        self, pet_id: str, sighting_id: str, owner_id: str, decision: str,
+    ) -> dict:
+        # One RPC, not four writes: see the port's docstring for why the verdict
+        # and everything that follows from it have to be one transaction.
+        try:
+            res = self._db.rpc("owner_decide_sighting", {
+                "p_pet_id":      pet_id,
+                "p_sighting_id": sighting_id,
+                "p_owner_id":    owner_id,
+                "p_decision":    decision,
+            }).execute()
+        except Exception as e:
+            raise _translate_decision_error(e) from e
+        return res.data or {}
+
+    def set_sighting_action_type(
+        self, sighting_id: str, hunter_id: str, action_type: str
+    ) -> dict | None:
+        # Hunter-scoped on purpose: the service already checked ownership on
+        # the read, but scoping the WRITE too means a row that changed hands
+        # (or a bad id) updates nothing instead of somebody else's sighting.
+        res = (self._db.table("sightings")
+                       .update({"action_type": action_type})
+                       .eq("id", sighting_id)
+                       .eq("hunter_id", hunter_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    # --- owner side of the loop ------------------------------------------ #
+    def get_pet_owners(self, pet_ids: list[str]) -> dict[str, str]:
+        """pet id -> owner id, for the pets a sighting was matched to.
+
+        A separate read because the `match_missing_pets` RPC does not return
+        `owner_id` — reading it here keeps the push fan-out working without a
+        migration to change that function's return type.
+        """
+        if not pet_ids:
+            return {}
+        res = (self._db.table("missing_pets")
+                       .select("id, owner_id")
+                       .in_("id", pet_ids)
+                       .execute())
+        return {
+            row["id"]: row["owner_id"]
+            for row in (res.data or [])
+            if row.get("id") and row.get("owner_id")
+        }
+
+    # --- discovery / match reads ---------------------------------------- #
+    def get_sighting_for_match(self, sighting_id: str) -> dict | None:
+        res = (self._db.table("sightings")
+                       .select("id, feature_vector, detected_species, "
+                               "sighted_location, primary_color_hex")
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def match_missing_pets(self, sighting_id: str, limit: int) -> list[dict]:
+        res = self._db.rpc("match_missing_pets", {
+            "p_sighting_id": sighting_id,
+            "match_limit": limit,
+        }).execute()
+        return res.data or []
+
+    def get_sighting(self, sighting_id: str) -> dict | None:
+        res = (self._db.table("sightings")
+                       .select("*")
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def get_sighting_for_action(self, sighting_id: str) -> dict | None:
+        """Just the columns the action-type confirmation needs to decide
+        404 (not yours / no such row) vs 409 (already reviewed) vs write."""
+        res = (self._db.table("sightings")
+                       .select("id, hunter_id, action_type, "
+                               "verification_status")
+                       .eq("id", sighting_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    # --- hunter activity / stats reads ---------------------------------- #
+    def count_sightings_for_hunter(self, hunter_id: str) -> int:
+        res = (self._db.table("sightings")
+                       .select("id", count="exact")
+                       .eq("hunter_id", hunter_id)
+                       .execute())
+        return res.count or 0
+
+    def list_sightings_for_hunter(
+        self, hunter_id: str, limit: int, offset: int
+    ) -> list[dict]:
+        res = (self._db.table("sightings")
+                       .select("id, image_url, detected_species, "
+                               "action_type, sighting_status, "
+                               "verification_status, sighted_location, "
+                               "initial_target_pet_id, created_at")
+                       .eq("hunter_id", hunter_id)
+                       .order("created_at", desc=True)
+                       .range(offset, offset + limit - 1)
+                       .execute())
+        return res.data or []
+
+    def get_matches_for_sightings(self, sighting_ids: list[str]) -> list[dict]:
+        res = (self._db.table("sighting_matches")
+                       .select("sighting_id, missing_pet_id, "
+                               "similarity_score, owner_status")
+                       .in_("sighting_id", sighting_ids)
+                       .execute())
+        return res.data or []
+
+    def get_awards_for_hunter(self, hunter_id: str) -> list[dict]:
+        res = (self._db.table("score_awards")
+                       .select("sighting_id, missing_pet_id, "
+                               "points, rank, awarded_at")
+                       .eq("user_id", hunter_id)
+                       .execute())
+        return res.data or []
+
+    def get_penalties_for_hunter(self, hunter_id: str) -> list[dict]:
+        # Mirror of get_awards_for_hunter over the deduction trail. `points` is
+        # what the admin ruled, which is what the hunter should be shown — the
+        # part their balance could not absorb was still a ruling against them.
+        res = (self._db.table("score_penalties")
+                       .select("sighting_id, report_id, points, reason, "
+                               "penalised_at")
+                       .eq("user_id", hunter_id)
+                       .execute())
+        return res.data or []
+
+    def get_user(self, hunter_id: str) -> dict | None:
+        res = (self._db.table("users")
+                       .select("total_score")
+                       .eq("id", hunter_id)
+                       .execute())
+        return res.data[0] if res.data else None
+
+    def count_owner_confirmed_sightings_for_hunter(self, hunter_id: str) -> int:
+        # Replaces a count of `verification_status = 'Verified'`, which stopped
+        # meaning anything when administrators stopped adjudicating sightings
+        # (2026-08-21): that count now reads 0 for every hunter alive.
+        #
+        # The verdict lives on sighting_matches, so the count starts there and
+        # reaches the hunter through an inner-joined embed. The obvious
+        # alternative — counting `sightings.sighting_status = 'Confirmed'` —
+        # looks equivalent and is not: closing a search rewrites that column to
+        # 'Closed', so a hunter's confirmations would evaporate the moment each
+        # case ended, which is exactly when they matter most.
+        res = (self._db.table("sighting_matches")
+                       .select("sighting_id, sightings!inner(hunter_id)")
+                       .eq("owner_status", "Confirmed")
+                       .eq("sightings.hunter_id", hunter_id)
+                       .execute())
+        # One photo can be confirmed by two different owners (it matched both
+        # their pets). That is one sighting the hunter reported, so the ids are
+        # deduplicated rather than counted server-side.
+        return len({
+            row["sighting_id"] for row in (res.data or [])
+            if row.get("sighting_id")
+        })
+
+    def count_contributions_for_hunter(self, hunter_id: str) -> int:
+        res = (self._db.table("score_awards")
+                       .select("missing_pet_id", count="exact")
+                       .eq("user_id", hunter_id)
+                       .execute())
+        return res.count or 0
